@@ -3410,6 +3410,273 @@
               }
             },
             {
+              "name": "GraphEdgePattern",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Operator(LeftBracket)"
+                  },
+                  {
+                    "nonTerminal": "Option(Identifier)"
+                  },
+                  {
+                    "nonTerminal": "Option(Tuple(Operator(Colon), Identifier))"
+                  },
+                  {
+                    "nonTerminal": "Option(GraphPropertyMap)"
+                  },
+                  {
+                    "nonTerminal": "Operator(RightBracket)"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphIncomingPattern",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Operator(LeftArrow)"
+                  },
+                  {
+                    "nonTerminal": "Option(GraphEdgePattern)"
+                  },
+                  {
+                    "nonTerminal": "Operator(Minus)"
+                  },
+                  {
+                    "nonTerminal": "GraphNodePattern"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphLimitClause",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Keyword(Limit)"
+                  },
+                  {
+                    "nonTerminal": "LimitValue"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphNodePattern",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Operator(LeftParenthesis)"
+                  },
+                  {
+                    "nonTerminal": "Option(Identifier)"
+                  },
+                  {
+                    "nonTerminal": "Option(Tuple(Operator(Colon), Identifier))"
+                  },
+                  {
+                    "nonTerminal": "Option(GraphPropertyMap)"
+                  },
+                  {
+                    "nonTerminal": "Operator(RightParenthesis)"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphOrderByClause",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Tuple(Keyword(Order), Keyword(By))"
+                  },
+                  {
+                    "nonTerminal": "Sequence(OrderByExpr, Operator(Comma))"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphOutgoingPattern",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Operator(Minus)"
+                  },
+                  {
+                    "nonTerminal": "Option(GraphEdgePattern)"
+                  },
+                  {
+                    "nonTerminal": "Operator(Arrow)"
+                  },
+                  {
+                    "nonTerminal": "GraphNodePattern"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphPathPattern",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "GraphNodePattern"
+                  },
+                  {
+                    "nonTerminal": "Vector(GraphPatternStep)"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphPatternStep",
+              "node": {
+                "choice": [
+                  {
+                    "sequence": [
+                      {
+                        "nonTerminal": "GraphOutgoingPattern"
+                      }
+                    ]
+                  },
+                  {
+                    "sequence": [
+                      {
+                        "nonTerminal": "GraphIncomingPattern"
+                      }
+                    ]
+                  },
+                  {
+                    "sequence": [
+                      {
+                        "nonTerminal": "GraphUndirectedPattern"
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphPropertyEntry",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Identifier"
+                  },
+                  {
+                    "nonTerminal": "Operator(Colon)"
+                  },
+                  {
+                    "nonTerminal": "Box(Expression)"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphPropertyMap",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Operator(LeftBrace)"
+                  },
+                  {
+                    "nonTerminal": "Option(Sequence(GraphPropertyEntry, Operator(Comma)))"
+                  },
+                  {
+                    "nonTerminal": "Operator(RightBrace)"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphQuery",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Keyword(Match)"
+                  },
+                  {
+                    "nonTerminal": "Sequence(GraphPathPattern, Operator(Comma))"
+                  },
+                  {
+                    "nonTerminal": "Option(GraphWhereClause)"
+                  },
+                  {
+                    "nonTerminal": "GraphReturnClause"
+                  },
+                  {
+                    "nonTerminal": "Option(GraphOrderByClause)"
+                  },
+                  {
+                    "nonTerminal": "Option(GraphSkipClause)"
+                  },
+                  {
+                    "nonTerminal": "Option(GraphLimitClause)"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphReturnClause",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Keyword(Return)"
+                  },
+                  {
+                    "nonTerminal": "Sequence(Expression, Operator(Comma))"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphSkipClause",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Keyword(Skip)"
+                  },
+                  {
+                    "nonTerminal": "Box(Expression)"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphUndirectedPattern",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Operator(Minus)"
+                  },
+                  {
+                    "nonTerminal": "Option(GraphEdgePattern)"
+                  },
+                  {
+                    "nonTerminal": "Operator(Minus)"
+                  },
+                  {
+                    "nonTerminal": "GraphNodePattern"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "GraphWhereClause",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Keyword(Where)"
+                  },
+                  {
+                    "nonTerminal": "Expression"
+                  }
+                ]
+              }
+            },
+            {
               "name": "GroupByClause",
               "node": {
                 "sequence": [
@@ -5259,6 +5526,14 @@
               }
             },
             {
+              "name": "Keyword(Match)",
+              "node": {
+                "terminal": {
+                  "keyword": "MATCH"
+                }
+              }
+            },
+            {
               "name": "Keyword(Matched)",
               "node": {
                 "terminal": {
@@ -5691,6 +5966,14 @@
               }
             },
             {
+              "name": "Keyword(Return)",
+              "node": {
+                "terminal": {
+                  "keyword": "RETURN"
+                }
+              }
+            },
+            {
               "name": "Keyword(Right)",
               "node": {
                 "terminal": {
@@ -5831,6 +6114,14 @@
               "node": {
                 "terminal": {
                   "keyword": "SIMILAR"
+                }
+              }
+            },
+            {
+              "name": "Keyword(Skip)",
+              "node": {
+                "terminal": {
+                  "keyword": "SKIP"
                 }
               }
             },
@@ -6940,6 +7231,22 @@
               }
             },
             {
+              "name": "Operator(LeftArrow)",
+              "node": {
+                "terminal": {
+                  "operator": "<-"
+                }
+              }
+            },
+            {
+              "name": "Operator(LeftBrace)",
+              "node": {
+                "terminal": {
+                  "operator": "{"
+                }
+              }
+            },
+            {
               "name": "Operator(LeftBracket)",
               "node": {
                 "terminal": {
@@ -7032,6 +7339,14 @@
               "node": {
                 "terminal": {
                   "operator": "+"
+                }
+              }
+            },
+            {
+              "name": "Operator(RightBrace)",
+              "node": {
+                "terminal": {
+                  "operator": "}"
                 }
               }
             },
@@ -7268,6 +7583,54 @@
               }
             },
             {
+              "name": "Option(GraphEdgePattern)",
+              "node": {
+                "optional": {
+                  "nonTerminal": "GraphEdgePattern"
+                }
+              }
+            },
+            {
+              "name": "Option(GraphLimitClause)",
+              "node": {
+                "optional": {
+                  "nonTerminal": "GraphLimitClause"
+                }
+              }
+            },
+            {
+              "name": "Option(GraphOrderByClause)",
+              "node": {
+                "optional": {
+                  "nonTerminal": "GraphOrderByClause"
+                }
+              }
+            },
+            {
+              "name": "Option(GraphPropertyMap)",
+              "node": {
+                "optional": {
+                  "nonTerminal": "GraphPropertyMap"
+                }
+              }
+            },
+            {
+              "name": "Option(GraphSkipClause)",
+              "node": {
+                "optional": {
+                  "nonTerminal": "GraphSkipClause"
+                }
+              }
+            },
+            {
+              "name": "Option(GraphWhereClause)",
+              "node": {
+                "optional": {
+                  "nonTerminal": "GraphWhereClause"
+                }
+              }
+            },
+            {
               "name": "Option(GroupByClause)",
               "node": {
                 "optional": {
@@ -7296,6 +7659,14 @@
               "node": {
                 "optional": {
                   "nonTerminal": "IdentList"
+                }
+              }
+            },
+            {
+              "name": "Option(Identifier)",
+              "node": {
+                "optional": {
+                  "nonTerminal": "Identifier"
                 }
               }
             },
@@ -7580,6 +7951,14 @@
               }
             },
             {
+              "name": "Option(Sequence(GraphPropertyEntry, Operator(Comma)))",
+              "node": {
+                "optional": {
+                  "nonTerminal": "Sequence(GraphPropertyEntry, Operator(Comma))"
+                }
+              }
+            },
+            {
               "name": "Option(Sequence(StructField, Operator(Comma)))",
               "node": {
                 "optional": {
@@ -7800,6 +8179,14 @@
               "node": {
                 "optional": {
                   "nonTerminal": "Tuple(Keyword(With), Keyword(Serdeproperties), PropertyList)"
+                }
+              }
+            },
+            {
+              "name": "Option(Tuple(Operator(Colon), Identifier))",
+              "node": {
+                "optional": {
+                  "nonTerminal": "Tuple(Operator(Colon), Identifier)"
                 }
               }
             },
@@ -8706,6 +9093,50 @@
               }
             },
             {
+              "name": "Sequence(GraphPathPattern, Operator(Comma))",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "GraphPathPattern"
+                  },
+                  {
+                    "oneOrMore": {
+                      "sequence": [
+                        {
+                          "nonTerminal": "Operator(Comma)"
+                        },
+                        {
+                          "nonTerminal": "GraphPathPattern"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "name": "Sequence(GraphPropertyEntry, Operator(Comma))",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "GraphPropertyEntry"
+                  },
+                  {
+                    "oneOrMore": {
+                      "sequence": [
+                        {
+                          "nonTerminal": "Operator(Comma)"
+                        },
+                        {
+                          "nonTerminal": "GraphPropertyEntry"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
               "name": "Sequence(GroupingExpr, Operator(Comma))",
               "node": {
                 "sequence": [
@@ -9294,6 +9725,13 @@
                     "sequence": [
                       {
                         "nonTerminal": "Query"
+                      }
+                    ]
+                  },
+                  {
+                    "sequence": [
+                      {
+                        "nonTerminal": "GraphQuery"
                       }
                     ]
                   },
@@ -11343,6 +11781,19 @@
               }
             },
             {
+              "name": "Tuple(Operator(Colon), Identifier)",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Operator(Colon)"
+                  },
+                  {
+                    "nonTerminal": "Identifier"
+                  }
+                ]
+              }
+            },
+            {
               "name": "Tuple(Operator(Comma), IntegerLiteral)",
               "node": {
                 "sequence": [
@@ -11712,6 +12163,14 @@
               "node": {
                 "zeroOrMore": {
                   "nonTerminal": "CreateViewClause"
+                }
+              }
+            },
+            {
+              "name": "Vector(GraphPatternStep)",
+              "node": {
+                "zeroOrMore": {
+                  "nonTerminal": "GraphPatternStep"
                 }
               }
             },
