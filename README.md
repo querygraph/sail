@@ -1,5 +1,13 @@
 # Sail
 
+> **Fork notice.** This is a fork of [Sail](https://github.com/lakehq/sail) used
+> for **LakeCat** development. LakeCat-targeted changes live on the `lakecat`
+> branch (see [`LAKECAT-SAIL.md`](LAKECAT-SAIL.md)). Agents and contributors
+> working here **must read [`lakecat/AGENTS.md`](lakecat/AGENTS.md)** for working
+> discipline — PR conventions, design-before-code on shared internals, and BDD
+> `.feature` tests. The upstream instructions under
+> [`.github/`](.github/copilot-instructions.md) remain authoritative.
+
 [![Build Status](https://github.com/lakehq/sail/actions/workflows/build.yml/badge.svg?branch=main&event=push)](https://github.com/lakehq/sail/actions)
 [![Codecov](https://codecov.io/gh/lakehq/sail/graph/badge.svg)](https://app.codecov.io/gh/lakehq/sail)
 [![PyPI Release](https://img.shields.io/pypi/v/pysail)](https://pypi.org/project/pysail/)
