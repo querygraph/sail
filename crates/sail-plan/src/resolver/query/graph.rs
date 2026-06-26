@@ -1673,6 +1673,7 @@ mod tests {
                     replace: true,
                     comment: None,
                     properties: graph_table_properties(GRAPH_TABLE_KIND_NODE, "Person"),
+                    source: None,
                 },
             )
             .await?;
@@ -1704,6 +1705,7 @@ mod tests {
                     replace: true,
                     comment: None,
                     properties: vec![],
+                    source: None,
                 },
             )
             .await?;
@@ -1772,6 +1774,7 @@ mod tests {
                     replace: true,
                     comment: None,
                     properties: vec![],
+                    source: None,
                 },
             )
             .await?;
@@ -1794,6 +1797,7 @@ mod tests {
                     replace: true,
                     comment: None,
                     properties: vec![],
+                    source: None,
                 },
             )
             .await?;
@@ -1845,6 +1849,7 @@ mod tests {
                     replace: true,
                     comment: None,
                     properties: vec![],
+                    source: None,
                 },
             )
             .await?;
@@ -1864,6 +1869,7 @@ mod tests {
                     replace: true,
                     comment: None,
                     properties: graph_table_properties(GRAPH_TABLE_KIND_EDGE, "KNOWS"),
+                    source: None,
                 },
             )
             .await?;
@@ -1896,6 +1902,7 @@ mod tests {
                     replace: true,
                     comment: None,
                     properties: graph_table_properties(GRAPH_TABLE_KIND_NODE, "Animal"),
+                    source: None,
                 },
             )
             .await?;
@@ -1938,6 +1945,7 @@ mod tests {
                     replace: true,
                     comment: None,
                     properties: graph_table_properties(GRAPH_TABLE_KIND_EDGE, "LIKES"),
+                    source: None,
                 },
             )
             .await?;
@@ -1959,6 +1967,7 @@ mod tests {
                     replace: true,
                     comment: None,
                     properties: vec![],
+                    source: None,
                 },
             )
             .await?;
@@ -1993,6 +2002,7 @@ mod tests {
                     replace: true,
                     comment: None,
                     properties: vec![],
+                    source: None,
                 },
             )
             .await?;
