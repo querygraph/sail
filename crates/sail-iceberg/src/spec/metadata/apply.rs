@@ -31,7 +31,7 @@
 use datafusion_common::{not_impl_err, DataFusionError, Result};
 
 use crate::spec::catalog::TableUpdate;
-use crate::spec::metadata::table_metadata::TableMetadata;
+use crate::spec::metadata::table_metadata::{SnapshotLog, TableMetadata};
 
 /// Apply a sequence of `TableUpdate`s to `metadata` in order. On any applied
 /// change, `last_updated_ms` is advanced to `now_ms`.
@@ -41,7 +41,7 @@ pub fn apply_table_updates(
     now_ms: i64,
 ) -> Result<()> {
     for update in updates {
-        apply_one(metadata, update)?;
+        apply_one(metadata, update, now_ms)?;
     }
     if !updates.is_empty() {
         metadata.last_updated_ms = now_ms;
@@ -49,7 +49,7 @@ pub fn apply_table_updates(
     Ok(())
 }
 
-fn apply_one(metadata: &mut TableMetadata, update: &TableUpdate) -> Result<()> {
+fn apply_one(metadata: &mut TableMetadata, update: &TableUpdate, now_ms: i64) -> Result<()> {
     match update {
         TableUpdate::SetProperties { updates } => {
             for (k, v) in updates {
@@ -170,9 +170,50 @@ fn apply_one(metadata: &mut TableMetadata, update: &TableUpdate) -> Result<()> {
                 .statistics
                 .retain(|s| s.snapshot_id != *snapshot_id);
         }
-        // These require partition-spec binding, snapshot sequencing, or
-        // snapshot-ref state machinery — defer to a complete builder rather than
-        // produce incorrect metadata.
+        TableUpdate::AddSnapshot { snapshot } => {
+            // Append the snapshot to the table's snapshot set. Per the Iceberg
+            // spec, `add-snapshot` only adds the snapshot and advances
+            // `last-sequence-number` (and the v3 row-id counter); the current ref
+            // and snapshot log are moved by a following `set-snapshot-ref`. A
+            // stock append (pyiceberg/Spark) sends both in one commit.
+            let seq = snapshot.sequence_number();
+            if seq > metadata.last_sequence_number {
+                metadata.last_sequence_number = seq;
+            }
+            if let Some(added_rows) = snapshot.added_rows {
+                metadata.advance_next_row_id(added_rows);
+            }
+            metadata.snapshots.push(snapshot.clone());
+        }
+        TableUpdate::SetSnapshotRef {
+            ref_name,
+            reference,
+        } => {
+            // Set or move a branch/tag ref. The referenced snapshot must already
+            // be present (added earlier in this commit, or pre-existing). Moving
+            // `main` advances the table's current snapshot and records a
+            // snapshot-log entry.
+            if !metadata
+                .snapshots
+                .iter()
+                .any(|s| s.snapshot_id() == reference.snapshot_id)
+            {
+                return Err(invalid(format!(
+                    "set-snapshot-ref '{ref_name}' references unknown snapshot-id {}",
+                    reference.snapshot_id
+                )));
+            }
+            metadata.refs.insert(ref_name.clone(), reference.clone());
+            if ref_name == "main" {
+                metadata.current_snapshot_id = Some(reference.snapshot_id);
+                metadata.snapshot_log.push(SnapshotLog {
+                    timestamp_ms: now_ms,
+                    snapshot_id: reference.snapshot_id,
+                });
+            }
+        }
+        // `add-spec` still requires partition-spec binding machinery — defer to a
+        // complete builder rather than produce incorrect metadata.
         other => {
             return not_impl_err!(
                 "TableUpdate not yet supported by apply_table_updates: {}",
@@ -186,8 +227,6 @@ fn apply_one(metadata: &mut TableMetadata, update: &TableUpdate) -> Result<()> {
 fn update_kind(update: &TableUpdate) -> &'static str {
     match update {
         TableUpdate::AddSpec { .. } => "add-spec",
-        TableUpdate::AddSnapshot { .. } => "add-snapshot",
-        TableUpdate::SetSnapshotRef { .. } => "set-snapshot-ref",
         _ => "unsupported",
     }
 }
