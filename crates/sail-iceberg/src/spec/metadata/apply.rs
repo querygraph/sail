@@ -234,3 +234,165 @@ fn update_kind(update: &TableUpdate) -> &'static str {
 fn invalid(msg: impl Into<String>) -> DataFusionError {
     DataFusionError::Plan(msg.into())
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::spec::snapshots::snapshot::{
+        Operation, Snapshot, SnapshotReference, SnapshotRetention, Summary,
+    };
+
+    /// A minimal, snapshot-free format-version-2 table metadata.
+    fn empty_v2_metadata() -> TableMetadata {
+        let json = br#"{
+            "format-version": 2,
+            "table-uuid": "00000000-0000-0000-0000-000000000001",
+            "location": "s3://warehouse/t",
+            "last-sequence-number": 0,
+            "last-updated-ms": 0,
+            "last-column-id": 1,
+            "current-schema-id": 0,
+            "schemas": [
+                {"type": "struct", "schema-id": 0,
+                 "fields": [{"id": 1, "name": "x", "required": false, "type": "long"}]}
+            ],
+            "default-spec-id": 0,
+            "partition-specs": [{"spec-id": 0, "fields": []}],
+            "last-partition-id": 999,
+            "default-sort-order-id": 0,
+            "sort-orders": [{"order-id": 0, "fields": []}],
+            "properties": {},
+            "current-snapshot-id": null,
+            "snapshots": [],
+            "snapshot-log": [],
+            "metadata-log": [],
+            "refs": {}
+        }"#;
+        TableMetadata::from_json(json).expect("valid v2 metadata")
+    }
+
+    fn snapshot(id: i64, seq: i64) -> Snapshot {
+        Snapshot {
+            snapshot_id: id,
+            parent_snapshot_id: None,
+            sequence_number: seq,
+            timestamp_ms: 1_000,
+            manifest_list: format!("s3://warehouse/t/metadata/snap-{id}.avro"),
+            manifests: None,
+            summary: Summary::new(Operation::Append),
+            schema_id: None,
+            first_row_id: None,
+            added_rows: Some(10),
+            key_id: None,
+        }
+    }
+
+    fn main_branch(snapshot_id: i64) -> SnapshotReference {
+        SnapshotReference {
+            snapshot_id,
+            retention: SnapshotRetention::Branch {
+                min_snapshots_to_keep: None,
+                max_snapshot_age_ms: None,
+                max_ref_age_ms: None,
+            },
+        }
+    }
+
+    #[test]
+    fn append_adds_snapshot_and_moves_main() {
+        let mut m = empty_v2_metadata();
+        let updates = vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot(100, 1),
+            },
+            TableUpdate::SetSnapshotRef {
+                ref_name: "main".to_string(),
+                reference: main_branch(100),
+            },
+        ];
+        apply_table_updates(&mut m, &updates, 5_000).expect("append applies");
+
+        assert_eq!(m.snapshots.len(), 1);
+        assert_eq!(m.snapshots[0].snapshot_id, 100);
+        assert_eq!(m.last_sequence_number, 1);
+        assert_eq!(m.current_snapshot_id, Some(100));
+        assert_eq!(m.refs.get("main").map(|r| r.snapshot_id), Some(100));
+        assert_eq!(m.snapshot_log.len(), 1);
+        assert_eq!(m.snapshot_log[0].snapshot_id, 100);
+        assert_eq!(m.snapshot_log[0].timestamp_ms, 5_000);
+        assert_eq!(m.last_updated_ms, 5_000);
+    }
+
+    #[test]
+    fn add_snapshot_alone_does_not_move_current_or_log() {
+        let mut m = empty_v2_metadata();
+        apply_table_updates(
+            &mut m,
+            &[TableUpdate::AddSnapshot {
+                snapshot: snapshot(7, 3),
+            }],
+            5_000,
+        )
+        .expect("add-snapshot applies");
+
+        assert_eq!(m.snapshots.len(), 1);
+        assert_eq!(m.last_sequence_number, 3);
+        // Per the spec, add-snapshot alone does not move the current ref or log.
+        assert_eq!(m.current_snapshot_id, None);
+        assert!(m.snapshot_log.is_empty());
+    }
+
+    #[test]
+    fn set_snapshot_ref_to_unknown_snapshot_errors() {
+        let mut m = empty_v2_metadata();
+        let err = apply_table_updates(
+            &mut m,
+            &[TableUpdate::SetSnapshotRef {
+                ref_name: "main".to_string(),
+                reference: main_branch(999),
+            }],
+            5_000,
+        )
+        .expect_err("ref to unknown snapshot is rejected");
+        assert!(err.to_string().contains("unknown snapshot-id 999"), "{err}");
+    }
+
+    #[test]
+    fn second_append_keeps_both_snapshots_and_advances() {
+        let mut m = empty_v2_metadata();
+        apply_table_updates(
+            &mut m,
+            &[
+                TableUpdate::AddSnapshot {
+                    snapshot: snapshot(1, 1),
+                },
+                TableUpdate::SetSnapshotRef {
+                    ref_name: "main".to_string(),
+                    reference: main_branch(1),
+                },
+            ],
+            1_000,
+        )
+        .expect("first append");
+        apply_table_updates(
+            &mut m,
+            &[
+                TableUpdate::AddSnapshot {
+                    snapshot: snapshot(2, 2),
+                },
+                TableUpdate::SetSnapshotRef {
+                    ref_name: "main".to_string(),
+                    reference: main_branch(2),
+                },
+            ],
+            2_000,
+        )
+        .expect("second append");
+
+        assert_eq!(m.snapshots.len(), 2);
+        assert_eq!(m.current_snapshot_id, Some(2));
+        assert_eq!(m.last_sequence_number, 2);
+        assert_eq!(m.snapshot_log.len(), 2);
+    }
+}
