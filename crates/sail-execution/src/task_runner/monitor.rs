@@ -1,8 +1,8 @@
 use datafusion::execution::SendableRecordBatchStream;
 use futures::StreamExt;
+use sail_common::actor::{Actor, ActorHandle};
 use sail_common_datafusion::error::CommonErrorCause;
 use sail_python_udf::error::PyErrExtractor;
-use sail_server::actor::{Actor, ActorHandle};
 use tokio::sync::oneshot;
 
 use crate::driver::TaskStatus;
@@ -71,7 +71,7 @@ where
 
     /// Drains the output stream and builds a succeeded or failed status message.
     async fn execute(key: TaskKey, mut stream: SendableRecordBatchStream) -> T::Message {
-        let event = loop {
+        loop {
             let Some(batch) = stream.next().await else {
                 break T::Message::report_task_status(
                     key.clone(),
@@ -95,7 +95,6 @@ where
                     Some(cause),
                 );
             }
-        };
-        event
+        }
     }
 }

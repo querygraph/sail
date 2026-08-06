@@ -1,8 +1,10 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::execution::TaskContext;
+use sail_common::telemetry::{SpanAssociation, SpanAttribute};
 use sail_common_datafusion::error::CommonErrorCause;
-use sail_telemetry::common::{SpanAssociation, SpanAttribute};
 use tokio::sync::oneshot;
 
 use crate::driver::TaskStatus;
@@ -11,7 +13,7 @@ use crate::id::{JobId, TaskKey, TaskStreamKey, WorkerId};
 use crate::stream::reader::TaskStreamSource;
 use crate::stream::writer::{LocalStreamStorage, TaskStreamSink};
 use crate::task::definition::TaskDefinition;
-use crate::worker::gen;
+use crate::worker::r#gen;
 
 pub enum WorkerEvent {
     ServerReady {
@@ -48,9 +50,9 @@ pub enum WorkerEvent {
         result: oneshot::Sender<ExecutionResult<Box<dyn TaskStreamSink>>>,
     },
     CreateRemoteStream {
-        uri: String,
         key: TaskStreamKey,
         schema: SchemaRef,
+        context: Arc<TaskContext>,
         result: oneshot::Sender<ExecutionResult<Box<dyn TaskStreamSink>>>,
     },
     FetchDriverStream {
@@ -64,9 +66,9 @@ pub enum WorkerEvent {
         result: oneshot::Sender<ExecutionResult<TaskStreamSource>>,
     },
     FetchRemoteStream {
-        uri: String,
         key: TaskStreamKey,
         schema: SchemaRef,
+        context: Arc<TaskContext>,
         result: oneshot::Sender<ExecutionResult<TaskStreamSource>>,
     },
     CleanUpJob {
@@ -210,7 +212,6 @@ impl SpanAssociation for WorkerEvent {
                 ));
             }
             WorkerEvent::CreateRemoteStream {
-                uri,
                 key:
                     TaskStreamKey {
                         job_id,
@@ -220,6 +221,7 @@ impl SpanAssociation for WorkerEvent {
                         channel,
                     },
                 schema: _,
+                context: _,
                 result: _,
             } => {
                 p.push((SpanAttribute::EXECUTION_JOB_ID, job_id.to_string()));
@@ -227,7 +229,6 @@ impl SpanAssociation for WorkerEvent {
                 p.push((SpanAttribute::EXECUTION_PARTITION, partition.to_string()));
                 p.push((SpanAttribute::EXECUTION_ATTEMPT, attempt.to_string()));
                 p.push((SpanAttribute::EXECUTION_CHANNEL, channel.to_string()));
-                p.push((SpanAttribute::EXECUTION_STREAM_REMOTE_URI, uri.clone()));
             }
             WorkerEvent::FetchDriverStream {
                 key:
@@ -269,7 +270,6 @@ impl SpanAssociation for WorkerEvent {
                 p.push((SpanAttribute::EXECUTION_CHANNEL, channel.to_string()));
             }
             WorkerEvent::FetchRemoteStream {
-                uri,
                 key:
                     TaskStreamKey {
                         job_id,
@@ -279,6 +279,7 @@ impl SpanAssociation for WorkerEvent {
                         channel,
                     },
                 schema: _,
+                context: _,
                 result: _,
             } => {
                 p.push((SpanAttribute::EXECUTION_JOB_ID, job_id.to_string()));
@@ -286,7 +287,6 @@ impl SpanAssociation for WorkerEvent {
                 p.push((SpanAttribute::EXECUTION_PARTITION, partition.to_string()));
                 p.push((SpanAttribute::EXECUTION_ATTEMPT, attempt.to_string()));
                 p.push((SpanAttribute::EXECUTION_CHANNEL, channel.to_string()));
-                p.push((SpanAttribute::EXECUTION_STREAM_REMOTE_URI, uri.clone()));
             }
             WorkerEvent::CleanUpJob { job_id, stage } => {
                 p.push((SpanAttribute::EXECUTION_JOB_ID, job_id.to_string()));
@@ -306,7 +306,7 @@ pub struct WorkerLocation {
     pub port: u16,
 }
 
-impl From<WorkerLocation> for gen::WorkerLocation {
+impl From<WorkerLocation> for r#gen::WorkerLocation {
     fn from(value: WorkerLocation) -> Self {
         Self {
             worker_id: value.worker_id.into(),
@@ -316,10 +316,10 @@ impl From<WorkerLocation> for gen::WorkerLocation {
     }
 }
 
-impl TryFrom<gen::WorkerLocation> for WorkerLocation {
+impl TryFrom<r#gen::WorkerLocation> for WorkerLocation {
     type Error = ExecutionError;
 
-    fn try_from(value: gen::WorkerLocation) -> Result<Self, Self::Error> {
+    fn try_from(value: r#gen::WorkerLocation) -> Result<Self, Self::Error> {
         let port = u16::try_from(value.port).map_err(|_| {
             ExecutionError::InvalidArgument(format!("invalid port: {}", value.port))
         })?;

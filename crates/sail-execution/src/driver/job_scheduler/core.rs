@@ -7,23 +7,23 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use indexmap::{IndexMap, IndexSet};
 use log::{debug, warn};
+use sail_common::actor::ActorContext;
 use sail_common_datafusion::error::CommonErrorCause;
 use sail_python_udf::error::PyErrExtractor;
-use sail_server::actor::ActorContext;
 
+use crate::driver::DriverActor;
 use crate::driver::job_scheduler::state::{
     JobDescriptor, JobState, StageState, TaskAttemptDescriptor, TaskRegionState, TaskState,
 };
 use crate::driver::job_scheduler::topology::TaskRegionTopology;
 use crate::driver::job_scheduler::{JobAction, JobScheduler, JobSchedulerOptions};
 use crate::driver::output::build_job_output;
-use crate::driver::DriverActor;
 use crate::error::{ExecutionError, ExecutionResult};
 use crate::id::{JobId, TaskKey, TaskKeyDisplay, TaskStreamKey};
 use crate::job_graph::{
     InputMode, JobGraph, OutputDistribution, OutputMode, Stage, StageInput, TaskPlacement,
 };
-use crate::proto::encode::{try_encode_physical_expr, try_encode_physical_plan};
+use crate::proto::{encode_remote_physical_expr, encode_remote_physical_plan};
 use crate::task::definition::{
     TaskDefinition, TaskInput, TaskInputKey, TaskInputLocator, TaskOutput, TaskOutputDistribution,
     TaskOutputLocator,
@@ -34,7 +34,7 @@ use crate::task::scheduling::{
 
 impl JobScheduler {
     fn next_job_id(&mut self) -> ExecutionResult<JobId> {
-        self.job_id_generator.next()
+        self.job_id_generator.generate()
     }
 
     pub fn accept_job(
@@ -49,11 +49,16 @@ impl JobScheduler {
             "job {job_id} execution plan\n{}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent(true)
         );
-        let graph = JobGraph::try_new(plan)?;
+        let graph = JobGraph::try_new(
+            plan,
+            crate::job_graph::JobGraphOptions {
+                use_blocking_shuffle: self.options.use_blocking_shuffle,
+            },
+        )?;
         debug!("job {job_id} job graph \n{graph}");
 
         let (output, stream) = build_job_output(ctx, job_id, graph.schema().clone());
-        let descriptor = JobDescriptor::try_new(graph, JobState::Running { output, context })?;
+        let descriptor = JobDescriptor::try_new(graph, JobState::Running { output }, context)?;
         self.jobs.insert(job_id, descriptor);
 
         Ok((job_id, stream))
@@ -169,12 +174,11 @@ impl JobScheduler {
         for (r, region) in job.topology.regions.iter().enumerate() {
             let failed = region.tasks.iter().any(|t| {
                 let attempts = &job.stages[t.stage].tasks[t.partition].attempts;
-                if let Some(attempt) = attempts.last() {
-                    if matches!(attempt.state, TaskState::Failed | TaskState::Canceled)
-                        && attempts.len() >= options.task_max_attempts
-                    {
-                        return true;
-                    }
+                if let Some(attempt) = attempts.last()
+                    && matches!(attempt.state, TaskState::Failed | TaskState::Canceled)
+                    && attempts.len() >= options.task_max_attempts
+                {
+                    return true;
                 }
                 false
             });
@@ -204,10 +208,10 @@ impl JobScheduler {
 
             for t in &region.tasks {
                 let attempts = &job.stages[t.stage].tasks[t.partition].attempts;
-                if let Some(attempt) = attempts.last() {
-                    if matches!(attempt.state, TaskState::Failed) {
-                        failed = true;
-                    }
+                if let Some(attempt) = attempts.last()
+                    && matches!(attempt.state, TaskState::Failed)
+                {
+                    failed = true;
                 }
             }
 
@@ -262,6 +266,7 @@ impl JobScheduler {
                 actions.push(JobAction::CleanUpJob {
                     job_id,
                     stage: Some(s),
+                    context: job.context.clone(),
                 });
             }
         }
@@ -431,10 +436,10 @@ impl JobScheduler {
         for (s, stage) in job.stages.iter().enumerate() {
             for (t, task) in stage.tasks.iter().enumerate() {
                 for attempt in task.attempts.iter() {
-                    if matches!(attempt.state, TaskState::Failed) {
-                        if let Some(cause) = &attempt.cause {
-                            causes.entry((s, t)).or_default().push(cause);
-                        }
+                    if matches!(attempt.state, TaskState::Failed)
+                        && let Some(cause) = &attempt.cause
+                    {
+                        causes.entry((s, t)).or_default().push(cause);
                     }
                 }
             }
@@ -490,6 +495,7 @@ impl JobScheduler {
         actions.push(JobAction::CleanUpJob {
             job_id,
             stage: None,
+            context: job.context.clone(),
         });
         if matches!(job.state, JobState::Draining) {
             job.state = JobState::Succeeded;
@@ -512,12 +518,6 @@ impl JobScheduler {
                 key.job_id
             )));
         };
-        let JobState::Running { context, .. } = &job.state else {
-            return Err(ExecutionError::InvalidArgument(format!(
-                "job {} is not running",
-                key.job_id
-            )));
-        };
         let Some(stage) = job.graph.stages().get(key.stage) else {
             return Err(ExecutionError::InvalidArgument(format!(
                 "stage {} not found in job {}",
@@ -525,7 +525,7 @@ impl JobScheduler {
             )));
         };
 
-        let plan = try_encode_physical_plan(self.codec.as_ref(), stage.plan.clone())?;
+        let plan = encode_remote_physical_plan(self.codec.as_ref(), stage.plan.clone())?;
         let inputs = stage
             .inputs
             .iter()
@@ -537,7 +537,7 @@ impl JobScheduler {
             inputs,
             output,
         };
-        Ok((definition, context.clone()))
+        Ok((definition, job.context.clone()))
     }
 
     pub fn stop(&mut self) {
@@ -653,14 +653,10 @@ impl JobScheduler {
                     }
                 }
             },
-            OutputMode::Blocking => {
-                let uri = Err(ExecutionError::InternalError("not implemented".to_string()))?;
-                TaskInputLocator::Remote {
-                    uri,
-                    stage: input.stage,
-                    keys,
-                }
-            }
+            OutputMode::Blocking => TaskInputLocator::Remote {
+                stage: input.stage,
+                keys,
+            },
         };
         Ok(TaskInput { locator })
     }
@@ -677,7 +673,7 @@ impl JobScheduler {
                 let keys = keys
                     .iter()
                     .map(|expr| {
-                        let expr = try_encode_physical_expr(self.codec.as_ref(), expr)?;
+                        let expr = encode_remote_physical_expr(self.codec.as_ref(), expr)?;
                         Ok(Arc::from(expr))
                     })
                     .collect::<ExecutionResult<Vec<Arc<[u8]>>>>()?;
@@ -697,10 +693,7 @@ impl JobScheduler {
         };
         let locator = match stage.mode {
             OutputMode::Pipelined => TaskOutputLocator::Local { replicas },
-            OutputMode::Blocking => {
-                let uri = Err(ExecutionError::InternalError("not implemented".to_string()))?;
-                TaskOutputLocator::Remote { uri }
-            }
+            OutputMode::Blocking => TaskOutputLocator::Remote,
         };
         Ok(TaskOutput {
             distribution,

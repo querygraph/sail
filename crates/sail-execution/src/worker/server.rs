@@ -1,18 +1,18 @@
 use log::debug;
 use prost::Message;
-use sail_server::actor::ActorHandle;
+use sail_common::actor::ActorHandle;
 use tonic::{Request, Response, Status};
 
 use crate::error::{ExecutionError, ExecutionResult};
 use crate::id::TaskKey;
 use crate::task::definition::TaskDefinition;
+use crate::worker::WorkerEvent;
 use crate::worker::actor::WorkerActor;
-use crate::worker::gen::worker_service_server::WorkerService;
-use crate::worker::gen::{
+use crate::worker::r#gen::worker_service_server::WorkerService;
+use crate::worker::r#gen::{
     CleanUpJobRequest, CleanUpJobResponse, RunTaskRequest, RunTaskResponse, StopTaskRequest,
     StopTaskResponse, StopWorkerRequest, StopWorkerResponse,
 };
-use crate::worker::WorkerEvent;
 
 pub struct WorkerServer {
     handle: ActorHandle<WorkerActor>,
@@ -44,7 +44,7 @@ impl WorkerService for WorkerServer {
             .into_iter()
             .map(|x| x.try_into())
             .collect::<ExecutionResult<Vec<_>>>()?;
-        let definition = crate::task::gen::TaskDefinition::decode(definition.as_slice())
+        let definition = crate::task::r#gen::TaskDefinition::decode(definition.as_slice())
             .map_err(|e| Status::invalid_argument(format!("invalid task definition: {e}")))?;
         let event = WorkerEvent::RunTask {
             key: TaskKey {
