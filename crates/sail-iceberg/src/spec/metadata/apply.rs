@@ -76,6 +76,7 @@ fn apply_one(metadata: &mut TableMetadata, update: &TableUpdate, now_ms: i64) ->
             if let Some(existing) = metadata
                 .schemas
                 .iter_mut()
+                .rev()
                 .find(|s| s.schema_id() == schema_id)
             {
                 *existing = (**schema).clone();
@@ -93,7 +94,12 @@ fn apply_one(metadata: &mut TableMetadata, update: &TableUpdate, now_ms: i64) ->
             } else {
                 *schema_id
             };
-            if !metadata.schemas.iter().any(|s| s.schema_id() == resolved) {
+            if !metadata
+                .schemas
+                .iter()
+                .rev()
+                .any(|s| s.schema_id() == resolved)
+            {
                 return Err(invalid(format!("unknown schema-id {resolved}")));
             }
             metadata.current_schema_id = resolved;
@@ -115,6 +121,7 @@ fn apply_one(metadata: &mut TableMetadata, update: &TableUpdate, now_ms: i64) ->
             if let Some(existing) = metadata
                 .sort_orders
                 .iter_mut()
+                .rev()
                 .find(|o| o.order_id == order_id)
             {
                 *existing = sort_order.clone();
@@ -196,6 +203,7 @@ fn apply_one(metadata: &mut TableMetadata, update: &TableUpdate, now_ms: i64) ->
             if !metadata
                 .snapshots
                 .iter()
+                .rev()
                 .any(|s| s.snapshot_id() == reference.snapshot_id)
             {
                 return Err(invalid(format!(
