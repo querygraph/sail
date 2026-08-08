@@ -236,7 +236,7 @@ fn invalid(msg: impl Into<String>) -> DataFusionError {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, clippy::expect_used)]
+#[expect(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::spec::snapshots::snapshot::{
