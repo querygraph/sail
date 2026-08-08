@@ -68,5 +68,9 @@ harness = false
 name = "manifest_parsing"
 harness = false
 
+[[bench]]
+name = "delete_index"
+harness = false
+
 [lints]
 workspace = true
