@@ -10,7 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
@@ -36,6 +36,7 @@ use sail_common_datafusion::catalog::{
 use sail_iceberg::utils::partition_transform::catalog_partition_field_from_iceberg;
 use sail_iceberg::{
     arrow_type_to_iceberg, iceberg_type_to_arrow, FormatVersion, Literal, NestedField, StructType,
+    Transform,
 };
 use tokio::sync::OnceCell;
 
@@ -1377,6 +1378,7 @@ where
         if let Some(id) = id {
             items
                 .iter()
+                .rev()
                 .find(|item| get_id(item) == Some(id))
                 .or_else(|| items.last())
         } else {
@@ -3280,48 +3282,68 @@ pub fn load_table_result_to_status(
     let current_schema = find_by_id_or_last(schemas.as_ref(), current_schema_id, |s| s.schema_id);
     let default_partition_spec =
         find_by_id_or_last(partition_specs.as_ref(), default_spec_id, |s| s.spec_id);
+    let default_sort_order = find_by_id_or_last(sort_orders.as_ref(), default_sort_order_id, |o| {
+        Some(o.order_id)
+    });
 
-    let partition_field_ids: std::collections::HashSet<i32> = default_partition_spec
-        .map(|spec| spec.fields.iter().map(|f| f.source_id).collect())
-        .unwrap_or_default();
-
-    let bucket_field_ids: std::collections::HashSet<i32> = default_partition_spec
-        .map(|spec| {
-            spec.fields
+    let has_field_relationships = default_partition_spec
+        .is_some_and(|spec| !spec.fields.is_empty())
+        || default_sort_order.is_some_and(|order| !order.fields.is_empty())
+        || current_schema
+            .and_then(|schema| schema.identifier_field_ids.as_ref())
+            .is_some_and(|ids| !ids.is_empty());
+    let fields_by_id = if has_field_relationships {
+        current_schema.map(|schema| {
+            schema
+                .fields
                 .iter()
-                .filter(|f| f.transform.trim().to_lowercase().starts_with("bucket"))
-                .map(|f| f.source_id)
-                .collect()
+                .rev()
+                .map(|field| (field.id, field.as_ref()))
+                .collect::<HashMap<i32, &NestedField>>()
         })
-        .unwrap_or_default();
-
-    let partition_by = match (current_schema, default_partition_spec) {
-        (Some(schema), Some(spec)) => spec
-            .fields
-            .iter()
-            .map(|field| {
-                let source_column = schema
-                    .fields
-                    .iter()
-                    .find(|f| f.id == field.source_id)
-                    .ok_or_else(|| {
-                        CatalogError::External(format!(
-                            "Partition field source id {} not found in schema",
-                            field.source_id
-                        ))
-                    })?
-                    .name
-                    .clone();
-                let transform = field.transform.parse().map_err(CatalogError::External)?;
-                catalog_partition_field_from_iceberg(source_column, transform)
-                    .map_err(CatalogError::External)
-            })
-            .collect::<CatalogResult<Vec<_>>>()?,
-        _ => Vec::new(),
+    } else {
+        None
+    };
+    let field_by_id = |field_id| {
+        fields_by_id
+            .as_ref()
+            .and_then(|fields| fields.get(&field_id).copied())
     };
 
+    let (partition_by, partition_field_ids, bucket_field_ids) =
+        match (current_schema, default_partition_spec) {
+            (Some(_), Some(spec)) => {
+                let mut partition_by = Vec::with_capacity(spec.fields.len());
+                let mut partition_field_ids = HashSet::with_capacity(spec.fields.len());
+                let mut bucket_field_ids = HashSet::with_capacity(spec.fields.len());
+                for field in &spec.fields {
+                    let source_column = field_by_id(field.source_id)
+                        .ok_or_else(|| {
+                            CatalogError::External(format!(
+                                "Partition field source id {} not found in schema",
+                                field.source_id
+                            ))
+                        })?
+                        .name
+                        .clone();
+                    let transform: Transform =
+                        field.transform.parse().map_err(CatalogError::External)?;
+                    partition_field_ids.insert(field.source_id);
+                    if matches!(transform, Transform::Bucket(_)) {
+                        bucket_field_ids.insert(field.source_id);
+                    }
+                    partition_by.push(
+                        catalog_partition_field_from_iceberg(source_column, transform)
+                            .map_err(CatalogError::External)?,
+                    );
+                }
+                (partition_by, partition_field_ids, bucket_field_ids)
+            }
+            _ => (Vec::new(), HashSet::new(), HashSet::new()),
+        };
+
     let columns = if let Some(schema) = current_schema {
-        let mut cols = Vec::new();
+        let mut cols = Vec::with_capacity(schema.fields.len());
         for field in &schema.fields {
             let data_type = iceberg_type_to_arrow(&field.field_type).map_err(|e| {
                 CatalogError::External(format!(
@@ -3348,10 +3370,6 @@ pub fn load_table_result_to_status(
         Vec::new()
     };
 
-    let default_sort_order = find_by_id_or_last(sort_orders.as_ref(), default_sort_order_id, |o| {
-        Some(o.order_id)
-    });
-
     let sort_by: Vec<CatalogTableSort> = default_sort_order
         .map(|order| {
             order
@@ -3359,21 +3377,15 @@ pub fn load_table_result_to_status(
                 .iter()
                 .filter_map(|sort_field| {
                     let field_id = sort_field.source_id;
-                    current_schema.and_then(|schema| {
-                        schema
-                            .fields
-                            .iter()
-                            .find(|f| f.id == field_id)
-                            .map(|field| {
-                                let ascending = match sort_field.direction {
-                                    crate::models::SortDirection::Asc => true,
-                                    crate::models::SortDirection::Desc => false,
-                                };
-                                CatalogTableSort {
-                                    column: field.name.clone(),
-                                    ascending,
-                                }
-                            })
+                    field_by_id(field_id).map(|field| {
+                        let ascending = match sort_field.direction {
+                            crate::models::SortDirection::Asc => true,
+                            crate::models::SortDirection::Desc => false,
+                        };
+                        CatalogTableSort {
+                            column: field.name.clone(),
+                            ascending,
+                        }
                     })
                 })
                 .collect()
@@ -3388,13 +3400,7 @@ pub fn load_table_result_to_status(
                 } else {
                     let pk_columns: Vec<String> = ids
                         .iter()
-                        .filter_map(|id| {
-                            schema
-                                .fields
-                                .iter()
-                                .find(|f| f.id == *id)
-                                .map(|f| f.name.clone())
-                        })
+                        .filter_map(|id| field_by_id(*id).map(|field| field.name.clone()))
                         .collect();
                     if pk_columns.is_empty() {
                         None
