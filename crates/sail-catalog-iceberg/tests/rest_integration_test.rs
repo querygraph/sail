@@ -13,15 +13,19 @@
 #![expect(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use arrow::datatypes::DataType;
+use sail_catalog::credentials::EmptyCatalogCredentials;
 use sail_catalog::provider::{
     CatalogPartitionField, CatalogProvider, CreateDatabaseOptions, CreateTableColumnOptions,
     CreateTableMode, CreateTableOptions, CreateViewColumnOptions, CreateViewOptions,
     DropDatabaseOptions, DropTableOptions, DropViewOptions, Namespace, PartitionTransform,
     RuntimeAwareCatalogProvider,
 };
-use sail_catalog_iceberg::{IcebergRestCatalogProvider, REST_CATALOG_PROP_URI};
+use sail_catalog_iceberg::{
+    IcebergRestCatalogOptions, IcebergRestCatalogProvider, REST_CATALOG_PROP_URI,
+};
 use sail_common::runtime::RuntimeHandle;
 use sail_common_datafusion::catalog::{
     CatalogTableConstraint, CatalogTableSort, TableColumnStatus, TableKind,
@@ -108,7 +112,13 @@ async fn setup_catalog(
     let catalog = RuntimeAwareCatalogProvider::try_new(
         || {
             let props = HashMap::from([(REST_CATALOG_PROP_URI.to_string(), rest_url)]);
-            let provider = IcebergRestCatalogProvider::new("test".to_string(), props);
+            let provider = IcebergRestCatalogProvider::new(
+                "test".to_string(),
+                IcebergRestCatalogOptions {
+                    credentials: Arc::new(EmptyCatalogCredentials),
+                    properties: props,
+                },
+            );
             Ok(provider)
         },
         runtime.io().clone(),
@@ -141,10 +151,12 @@ async fn test_create_namespace() {
     assert_eq!(created_db.database, Vec::<String>::from(namespace.clone()));
     assert_eq!(created_db.comment, Some("test comment".to_string()));
     assert_eq!(created_db.location, Some("s3://bucket/path".to_string()));
-    assert!(created_db
-        .properties
-        .iter()
-        .any(|(k, v)| k == "key1" && v == "value1"));
+    assert!(
+        created_db
+            .properties
+            .iter()
+            .any(|(k, v)| k == "key1" && v == "value1")
+    );
 
     let result = rest_catalog
         .create_database(
@@ -248,19 +260,23 @@ async fn test_get_namespace() {
 
     assert_eq!(created_db.database, Vec::<String>::from(namespace.clone()));
     for (key, value) in &properties {
-        assert!(created_db
-            .properties
-            .iter()
-            .any(|(k, v)| k == key && v == value));
+        assert!(
+            created_db
+                .properties
+                .iter()
+                .any(|(k, v)| k == key && v == value)
+        );
     }
 
     let get_db = rest_catalog.get_database(&namespace).await.unwrap();
     assert_eq!(get_db.database, Vec::<String>::from(namespace));
     for (key, value) in &properties {
-        assert!(get_db
-            .properties
-            .iter()
-            .any(|(k, v)| k == key && v == value));
+        assert!(
+            get_db
+                .properties
+                .iter()
+                .any(|(k, v)| k == key && v == value)
+        );
     }
 }
 
@@ -316,12 +332,14 @@ async fn test_list_namespaces() {
     let dbs = rest_catalog.list_databases(Some(&parent)).await.unwrap();
 
     assert_eq!(dbs.len(), 2);
-    assert!(dbs
-        .iter()
-        .any(|db| db.database == Vec::<String>::from(ns1.clone())));
-    assert!(dbs
-        .iter()
-        .any(|db| db.database == Vec::<String>::from(ns2.clone())));
+    assert!(
+        dbs.iter()
+            .any(|db| db.database == Vec::<String>::from(ns1.clone()))
+    );
+    assert!(
+        dbs.iter()
+            .any(|db| db.database == Vec::<String>::from(ns2.clone()))
+    );
 }
 
 #[tokio::test]
@@ -661,12 +679,16 @@ async fn test_create_table() {
     assert_eq!(static_properties, expected_properties);
     assert!(properties.iter().any(|(k, v)| k == "metadata-location"
         && v.starts_with("s3://icebergdata/demo/test_create_table/apple/ios/t1/metadata/")));
-    assert!(properties
-        .iter()
-        .any(|(k, v)| k == "metadata.last-updated-ms" && !v.is_empty()));
-    assert!(properties
-        .iter()
-        .any(|(k, v)| k == "metadata.table-uuid" && !v.is_empty()));
+    assert!(
+        properties
+            .iter()
+            .any(|(k, v)| k == "metadata.last-updated-ms" && !v.is_empty())
+    );
+    assert!(
+        properties
+            .iter()
+            .any(|(k, v)| k == "metadata.table-uuid" && !v.is_empty())
+    );
 
     assert_eq!(table.name, "t1".to_string());
     assert_eq!(table.catalog, Some("test".to_string()));
@@ -1069,12 +1091,16 @@ async fn test_get_table() {
     assert_eq!(static_properties, expected_properties);
     assert!(properties.iter().any(|(k, v)| k == "metadata-location"
         && v.starts_with("s3://icebergdata/custom/path/meow/metadata/")));
-    assert!(properties
-        .iter()
-        .any(|(k, v)| k == "metadata.last-updated-ms" && !v.is_empty()));
-    assert!(properties
-        .iter()
-        .any(|(k, v)| k == "metadata.table-uuid" && !v.is_empty()));
+    assert!(
+        properties
+            .iter()
+            .any(|(k, v)| k == "metadata.last-updated-ms" && !v.is_empty())
+    );
+    assert!(
+        properties
+            .iter()
+            .any(|(k, v)| k == "metadata.table-uuid" && !v.is_empty())
+    );
 
     assert_eq!(table.name, "t2".to_string());
     assert_eq!(table.catalog, Some("test".to_string()));
@@ -1460,9 +1486,11 @@ async fn test_create_view() {
     assert_eq!(properties.len(), 6);
     assert!(properties.iter().any(|(k, v)| k == "metadata-location"
         && v.starts_with("s3://icebergdata/demo/test_create_view/view1/metadata/")));
-    assert!(properties
-        .iter()
-        .any(|(k, v)| k == "metadata.view-uuid" && !v.is_empty()));
+    assert!(
+        properties
+            .iter()
+            .any(|(k, v)| k == "metadata.view-uuid" && !v.is_empty())
+    );
     assert_eq!(static_properties, expected_properties);
 
     assert_eq!(view.name, "view1".to_string());

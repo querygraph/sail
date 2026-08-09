@@ -1,7 +1,7 @@
 use chumsky::extra::ParserExtra;
 use chumsky::input::{Input, ValueInput};
 use chumsky::label::LabelError;
-use chumsky::prelude::{end, Recursive};
+use chumsky::prelude::{Recursive, end};
 use chumsky::{IterParser, Parser};
 
 use crate::ast::data_type::DataType;
@@ -165,6 +165,25 @@ where
                 .repeated()
                 .collect(),
         )
+        .then_ignore(end())
+}
+
+/// Creates a parser specialized for exactly one SQL statement.
+pub fn create_one_statement_parser<'a, I, E>(
+    options: &'a ParserOptions,
+) -> impl Parser<'a, I, Statement, E> + Clone
+where
+    I: Input<'a, Token = Token<'a>> + ValueInput<'a>,
+    I::Span: Into<TokenSpan> + Clone,
+    E: ParserExtra<'a, I> + 'a,
+    E::Error: LabelError<'a, I, TokenLabel>,
+{
+    let semicolon = Semicolon::parser((), options);
+    whitespace()
+        .repeated()
+        .ignore_then(semicolon.clone().repeated())
+        .ignore_then(statement(options))
+        .then_ignore(semicolon.repeated())
         .then_ignore(end())
 }
 

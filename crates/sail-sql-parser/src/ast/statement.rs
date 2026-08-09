@@ -5,7 +5,7 @@ use crate::ast;
 use crate::ast::data_type::DataType;
 use crate::ast::expression::{BooleanLiteral, Expr, OrderDirection};
 use crate::ast::graph::GraphQuery;
-use crate::ast::identifier::{table_ident, Ident, ObjectName};
+use crate::ast::identifier::{Ident, ObjectName, table_ident};
 use crate::ast::keywords::{
     Add, After, All, Alter, Always, Analyze, And, As, Buckets, By, Cache, Cascade, Catalog,
     Catalogs, Change, Check, Clear, Cluster, Clustered, Codegen, Collection, Column, Columns,
@@ -17,13 +17,16 @@ use crate::ast::keywords::{
     Name, Namespace, Namespaces, Noscan, Not, Null, On, Options, Or, Outputformat, Overwrite,
     Partition, Partitioned, Partitions, Properties, Purge, Recover, Refresh, Rename, Replace,
     Restrict, Row, Schema, Schemas, Serde, Serdeproperties, Set, Show, Sorted, Source, Start,
-    Statistics, Stored, Table, Tables, Target, Tblproperties, Temp, Temporary, Terminated, Then,
-    Time, To, Type, Uncache, Unset, Update, Use, Using, Values, Verbose, View, Views, When, With,
-    Zone,
+    Statistics, Stored, System, Table, Tables, Target, Tblproperties, Temp, Temporary, Terminated,
+    Then, Time, To, Type, Uncache, Unset, Update, Use, User, Using, Values, Verbose, View, Views,
+    When, With, Zone,
 };
 use crate::ast::literal::{IntegerLiteral, NumberLiteral, StringLiteral};
 use crate::ast::operator::{
-    Asterisk, Colon, Comma, Equals, ExclamationMark, LeftParenthesis, Minus, Plus, RightParenthesis,
+    Ampersand, Asterisk, Caret, Colon, Comma, DoubleEquals, DoubleGreaterThan, DoubleLessThan,
+    DoubleVerticalBar, Equals, ExclamationMark, GreaterThan, GreaterThanEquals, LeftParenthesis,
+    LessThan, LessThanEquals, LessThanGreaterThan, Minus, NotEquals, Percent, Plus,
+    RightParenthesis, Slash, Spaceship, Tilde, TripleGreaterThan, VerticalBar,
 };
 use crate::ast::query::{AliasClause, IdentList, Query, WhereClause};
 use crate::combinator::{boxed, compose, sequence, unit};
@@ -195,7 +198,9 @@ pub enum Statement {
     },
     ShowFunctions {
         show: Show,
+        scope: Option<ShowFunctionScope>,
         functions: Functions,
+        clause: Option<ShowFunctionsClause>,
     },
     Explain {
         explain: Explain,
@@ -571,6 +576,26 @@ pub enum DatabaseKeyword {
     Database(Database),
     Schema(Schema),
     Namespace(Namespace),
+}
+
+#[derive(Debug, Clone, TreeParser, TreeSyntax, TreeText)]
+pub enum ShowFunctionScope {
+    All(All),
+    User(User),
+    System(System),
+}
+
+#[derive(Debug, Clone, TreeParser, TreeSyntax, TreeText)]
+pub enum ShowFunctionsClause {
+    NamespacePattern(Either<From, In>, ObjectName, Like, StringLiteral),
+    Namespace(Either<From, In>, ObjectName),
+    Pattern(Option<Like>, ShowFunctionsPattern),
+}
+
+#[derive(Debug, Clone, TreeParser, TreeSyntax, TreeText)]
+pub enum ShowFunctionsPattern {
+    String(StringLiteral),
+    Name(ObjectName),
 }
 
 #[derive(Debug, Clone, TreeParser, TreeSyntax, TreeText)]
@@ -1057,7 +1082,7 @@ pub enum DescribeItem {
     Function {
         function: Function,
         extended: Option<Extended>,
-        item: Either<ObjectName, StringLiteral>,
+        item: DescribeFunctionName,
     },
     Catalog {
         catalog: Catalog,
@@ -1092,6 +1117,35 @@ pub enum DescribeItem {
         #[parser(function = |(q, _), _| q)]
         item: Query,
     },
+}
+
+#[derive(Debug, Clone, TreeParser, TreeSyntax, TreeText)]
+pub enum DescribeFunctionName {
+    Name(ObjectName),
+    String(StringLiteral),
+    TripleGreaterThan(TripleGreaterThan),
+    DoubleVerticalBar(DoubleVerticalBar),
+    DoubleGreaterThan(DoubleGreaterThan),
+    DoubleLessThan(DoubleLessThan),
+    GreaterThanEquals(GreaterThanEquals),
+    LessThanEquals(LessThanEquals),
+    LessThanGreaterThan(LessThanGreaterThan),
+    Spaceship(Spaceship),
+    NotEquals(NotEquals),
+    DoubleEquals(DoubleEquals),
+    ExclamationMark(ExclamationMark),
+    GreaterThan(GreaterThan),
+    LessThan(LessThan),
+    Plus(Plus),
+    Minus(Minus),
+    Asterisk(Asterisk),
+    Slash(Slash),
+    Percent(Percent),
+    Ampersand(Ampersand),
+    VerticalBar(VerticalBar),
+    Caret(Caret),
+    Tilde(Tilde),
+    Equals(Equals),
 }
 
 #[derive(Debug, Clone, TreeParser, TreeSyntax, TreeText)]

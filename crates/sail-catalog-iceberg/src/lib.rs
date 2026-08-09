@@ -10,77 +10,90 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![expect(unused_imports)]
-#![expect(dead_code)]
-#![expect(clippy::all)]
-
-pub mod apis;
-mod models;
+mod adapter;
 mod provider;
 
-pub use provider::{
-    IcebergRestCatalogProvider, REST_CATALOG_PROP_PREFIX, REST_CATALOG_PROP_URI,
-    REST_CATALOG_PROP_WAREHOUSE,
-};
+#[expect(unused_imports)]
+#[expect(clippy::enum_variant_names)]
+#[expect(clippy::match_overlapping_arm)]
+#[expect(clippy::doc_lazy_continuation)]
+pub mod r#gen {
+    include!(concat!(env!("OUT_DIR"), "/iceberg_rest_catalog_gen.rs"));
 
-#[cfg(test)]
-mod table_update_tests {
-    //! Regression tests for the discriminated `TableUpdate` / `ViewUpdate`
-    //! models. Before the spec was given a discriminator, these were generated
-    //! as flat structs with every field required, so any real update (e.g.
-    //! `set-properties`) failed to deserialize with `missing field uuid`.
-    #![expect(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-    use crate::models;
-
-    #[test]
-    fn commit_table_request_accepts_set_properties_update() {
-        let request: models::CommitTableRequest = serde_json::from_value(serde_json::json!({
-            "requirements": [{"type": "assert-table-uuid", "uuid": "11111111-1111-1111-1111-111111111111"}],
-            "updates": [{"action": "set-properties", "updates": {"k": "v"}}]
-        }))
-        .expect("set-properties commit must deserialize");
-        assert_eq!(request.updates.len(), 1);
-        assert!(matches!(
-            request.updates[0],
-            models::TableUpdate::SetPropertiesUpdate {}
-        ));
+    // The discriminator is missing for `ReportMetricsRequest` in the OpenAPI specification,
+    // so this schema is excluded from generation and defined manually.
+    // See also: https://github.com/apache/iceberg/issues/12696
+    #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+    #[serde(tag = "report-type")]
+    pub enum ReportMetricsRequest {
+        #[serde(rename = "scan-report")]
+        ScanReport(Box<ScanReport>),
+        #[serde(rename = "commit-report")]
+        CommitReport(Box<CommitReport>),
     }
 
-    #[test]
-    fn table_update_discriminates_on_action() {
-        let cases = [
-            ("assign-uuid", "AssignUuidUpdate"),
-            ("add-snapshot", "AddSnapshotUpdate"),
-            ("set-location", "SetLocationUpdate"),
-            ("remove-properties", "RemovePropertiesUpdate"),
-            ("upgrade-format-version", "UpgradeFormatVersionUpdate"),
-        ];
-        for (action, _name) in cases {
-            let update: models::TableUpdate =
-                serde_json::from_value(serde_json::json!({"action": action}))
-                    .unwrap_or_else(|err| panic!("action {action} must deserialize: {err}"));
-            // Round-trips back to the same tagged action.
-            let value = serde_json::to_value(&update).unwrap();
-            assert_eq!(value["action"], serde_json::json!(action));
+    // TODO: Generate this schema once the OpenAPI generator supports objects with both fixed
+    // properties and additional properties.
+    pub mod snapshot {
+        #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+        pub enum Operation {
+            #[serde(rename = "append")]
+            Append,
+            #[serde(rename = "replace")]
+            Replace,
+            #[serde(rename = "overwrite")]
+            Overwrite,
+            #[serde(rename = "delete")]
+            Delete,
+        }
+
+        impl std::fmt::Display for Operation {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    Self::Append => f.write_str("append"),
+                    Self::Replace => f.write_str("replace"),
+                    Self::Overwrite => f.write_str("overwrite"),
+                    Self::Delete => f.write_str("delete"),
+                }
+            }
+        }
+
+        #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+        pub struct Summary {
+            pub operation: Operation,
+            #[serde(flatten)]
+            pub additional_properties: std::collections::HashMap<String, String>,
         }
     }
 
-    #[test]
-    fn view_update_accepts_set_properties() {
-        let request: models::CommitViewRequest = serde_json::from_value(serde_json::json!({
-            "updates": [{"action": "set-properties", "updates": {"k": "v"}}]
-        }))
-        .expect("view set-properties commit must deserialize");
-        assert!(matches!(
-            request.updates[0],
-            models::ViewUpdate::SetPropertiesUpdate {}
-        ));
-    }
-
-    #[test]
-    fn unknown_action_is_rejected() {
-        let result: Result<models::TableUpdate, _> =
-            serde_json::from_value(serde_json::json!({"action": "not-a-real-update"}));
-        assert!(result.is_err(), "unknown action must not deserialize");
+    #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+    pub struct Snapshot {
+        #[serde(rename = "added-rows")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub added_rows: Option<i64>,
+        #[serde(rename = "first-row-id")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub first_row_id: Option<i64>,
+        #[serde(rename = "manifest-list")]
+        pub manifest_list: String,
+        #[serde(rename = "parent-snapshot-id")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub parent_snapshot_id: Option<i64>,
+        #[serde(rename = "schema-id")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub schema_id: Option<i32>,
+        #[serde(rename = "sequence-number")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub sequence_number: Option<i64>,
+        #[serde(rename = "snapshot-id")]
+        pub snapshot_id: i64,
+        pub summary: snapshot::Summary,
+        #[serde(rename = "timestamp-ms")]
+        pub timestamp_ms: i64,
     }
 }
+
+pub use provider::{
+    IcebergRestCatalogOptions, IcebergRestCatalogProvider, REST_CATALOG_PROP_PREFIX,
+    REST_CATALOG_PROP_URI, REST_CATALOG_PROP_WAREHOUSE,
+};

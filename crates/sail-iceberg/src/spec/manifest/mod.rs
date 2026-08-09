@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use apache_avro::{from_value as avro_from_value, Reader as AvroReader};
+use apache_avro::{Reader as AvroReader, from_value as avro_from_value};
 
 mod _serde;
 mod data_file;
@@ -29,15 +29,15 @@ mod schema;
 mod writer;
 
 // Provide data file avro helpers API surface
-use apache_avro::{to_value, Writer as AvroWriter};
+use apache_avro::{Writer as AvroWriter, to_value};
 pub use data_file::*;
 pub use entry::*;
 pub use metadata::*;
 pub use writer::*;
 
+use crate::spec::Schema as IcebergSchema;
 use crate::spec::metadata::format::FormatVersion;
 use crate::spec::types::StructType;
-use crate::spec::Schema as IcebergSchema;
 
 /// Convert data files to avro bytes and write to writer. Return the bytes written.
 pub fn write_data_files_to_avro<W: std::io::Write>(
@@ -140,7 +140,6 @@ impl Manifest {
             .partition_spec
             .partition_type(&metadata.schema)
             .map_err(|e| format!("Partition type error: {e}"))?;
-        let reader = AvroReader::new(bs).map_err(|e| format!("Avro read error: {e}"))?;
         for value in reader {
             let value = value.map_err(|e| format!("Avro read value error: {e}"))?;
             let entry: _serde::ManifestEntryV2 =

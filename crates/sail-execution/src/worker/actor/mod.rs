@@ -1,13 +1,18 @@
 mod core;
+mod extensions;
 mod handler;
+mod message;
+mod options;
 mod rpc;
+
+use extensions::WorkerExtensions;
+pub(crate) use message::{WorkerLocation, WorkerMessage, WorkerStreamOwner};
+pub(crate) use options::WorkerOptions;
 
 use crate::driver::DriverClientSet;
 use crate::rpc::ServerMonitor;
-use crate::stream_manager::StreamManager;
 use crate::task_runner::TaskRunner;
 use crate::worker::peer_tracker::PeerTracker;
-use crate::worker::WorkerOptions;
 
 pub struct WorkerActor {
     options: WorkerOptions,
@@ -15,7 +20,7 @@ pub struct WorkerActor {
     driver_client_set: DriverClientSet,
     peer_tracker: PeerTracker,
     task_runner: TaskRunner,
-    stream_manager: StreamManager,
-    /// A monotonically increasing sequence number for ordered events.
+    extensions: WorkerExtensions,
+    /// A monotonically increasing sequence number for ordered messages.
     sequence: u64,
 }
