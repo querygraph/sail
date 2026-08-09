@@ -23,6 +23,11 @@ FROM sales \
 GROUP BY customer_id, event_time \
 HAVING SUM(amount) > 100 \
 ORDER BY total DESC LIMIT 100";
+const GRAPH_QUERY: &str = "MATCH (a:Person)-[e:KNOWS]->(b:Person) \
+    WHERE a.age > 30 \
+    RETURN a.id, b.id, e.since \
+    ORDER BY e.since DESC \
+    SKIP 5 LIMIT 10";
 const COMPLEX_EXPRESSION: &str = "CASE \
     WHEN amount > 100 AND category IN ('books', 'games', 'tools') \
     THEN COALESCE(discounted_amount, amount * 0.9) \
@@ -67,8 +72,10 @@ fn main() {
         .join(";");
     let simple_ast = parse_one_statement(SIMPLE_SQL).expect("parse simple SQL");
     let complex_ast = parse_one_statement(COMPLEX_SQL).expect("parse complex SQL");
+    let graph_ast = parse_one_statement(GRAPH_QUERY).expect("parse graph query");
     from_ast_statement(simple_ast.clone()).expect("analyze simple SQL");
     from_ast_statement(complex_ast.clone()).expect("analyze complex SQL");
+    from_ast_statement(graph_ast.clone()).expect("analyze graph query");
 
     measure("parse_object_name", 20_000, || {
         black_box(parse_object_name(black_box("catalog.analytics.events")).expect("object name"));
@@ -85,6 +92,9 @@ fn main() {
     measure("parse_statement_complex", 200, || {
         black_box(parse_one_statement(black_box(COMPLEX_SQL)).expect("complex SQL"));
     });
+    measure("parse_statement_graph", 200, || {
+        black_box(parse_one_statement(black_box(GRAPH_QUERY)).expect("graph query"));
+    });
     measure("parse_statements_batch_64", 30, || {
         black_box(parse_statements(black_box(&batch_sql)).expect("SQL batch"));
     });
@@ -94,6 +104,9 @@ fn main() {
     measure("analyze_cloned_ast_complex", 500, || {
         black_box(from_ast_statement(black_box(complex_ast.clone())).expect("complex analysis"));
     });
+    measure("analyze_cloned_ast_graph", 500, || {
+        black_box(from_ast_statement(black_box(graph_ast.clone())).expect("graph analysis"));
+    });
     measure("frontend_simple", 1_000, || {
         let ast = parse_one_statement(black_box(SIMPLE_SQL)).expect("simple SQL");
         black_box(from_ast_statement(ast).expect("simple analysis"));
@@ -101,5 +114,9 @@ fn main() {
     measure("frontend_complex", 100, || {
         let ast = parse_one_statement(black_box(COMPLEX_SQL)).expect("complex SQL");
         black_box(from_ast_statement(ast).expect("complex analysis"));
+    });
+    measure("frontend_graph", 100, || {
+        let ast = parse_one_statement(black_box(GRAPH_QUERY)).expect("graph query");
+        black_box(from_ast_statement(ast).expect("graph analysis"));
     });
 }
