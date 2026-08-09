@@ -719,6 +719,7 @@ mod tests {
     use datafusion::arrow::ipc::reader::StreamReader;
     use datafusion::arrow::util::display::{ArrayFormatter, FormatOptions};
     use pyo3::Python;
+    use sail_common::actor::ActorSystem;
     use sail_common::config::AppConfig;
     use sail_common::runtime::RuntimeManager;
     use tonic::codegen::tokio_stream::StreamExt;
@@ -817,9 +818,12 @@ mod tests {
         let config = Arc::new(AppConfig::load()?);
         let runtime = RuntimeManager::try_new(&config.runtime)?;
         let handle = runtime.handle();
-        let manager = handle
-            .primary()
-            .block_on(async { create_spark_session_manager(config, handle.clone()) })?;
+        let mut system = ActorSystem::new();
+        let manager = handle.primary().block_on(create_spark_session_manager(
+            config,
+            handle.clone(),
+            &mut system,
+        ))?;
         let ctx = handle
             .primary()
             .block_on(manager.get_or_create_session_context("graph".to_string(), "".to_string()))?;
