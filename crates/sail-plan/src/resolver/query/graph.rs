@@ -316,8 +316,8 @@ impl PlanResolver<'_> {
     ) -> PlanResult<LogicalPlan> {
         let scan_fields =
             graph_alias_scan_fields(field_usage.get(alias), &pattern.properties, &["id"]);
-        if let Some(label) = pattern.label.as_ref() {
-            if let Some(plan) = self
+        if let Some(label) = pattern.label.as_ref()
+            && let Some(plan) = self
                 .try_resolve_typed_graph_scan(
                     &typed_node_table(label.as_ref())?,
                     alias,
@@ -328,17 +328,16 @@ impl PlanResolver<'_> {
                     state,
                 )
                 .await?
-            {
-                bindings.set_source(
-                    alias,
-                    GraphAliasSource::Typed {
-                        label: label.as_ref().to_string(),
-                    },
-                )?;
-                return self
-                    .apply_graph_properties(plan, alias, &pattern.properties, bindings, state)
-                    .await;
-            }
+        {
+            bindings.set_source(
+                alias,
+                GraphAliasSource::Typed {
+                    label: label.as_ref().to_string(),
+                },
+            )?;
+            return self
+                .apply_graph_properties(plan, alias, &pattern.properties, bindings, state)
+                .await;
         }
         bindings.set_source(alias, GraphAliasSource::Generic)?;
         let plan = self
@@ -441,8 +440,8 @@ impl PlanResolver<'_> {
             &pattern.properties,
             &["src_id", "dst_id"],
         );
-        if let Some(label) = pattern.label.as_ref() {
-            if let Some(plan) = self
+        if let Some(label) = pattern.label.as_ref()
+            && let Some(plan) = self
                 .try_resolve_typed_graph_scan(
                     &typed_edge_table(label.as_ref())?,
                     alias,
@@ -453,17 +452,16 @@ impl PlanResolver<'_> {
                     state,
                 )
                 .await?
-            {
-                bindings.set_source(
-                    alias,
-                    GraphAliasSource::Typed {
-                        label: label.as_ref().to_string(),
-                    },
-                )?;
-                return self
-                    .apply_graph_properties(plan, alias, &pattern.properties, bindings, state)
-                    .await;
-            }
+        {
+            bindings.set_source(
+                alias,
+                GraphAliasSource::Typed {
+                    label: label.as_ref().to_string(),
+                },
+            )?;
+            return self
+                .apply_graph_properties(plan, alias, &pattern.properties, bindings, state)
+                .await;
         }
         bindings.set_source(alias, GraphAliasSource::Generic)?;
         let plan = self
