@@ -414,6 +414,74 @@ The branch has completed the in-process version of steps 1-4:
   the dependency direction clean: `grust-sail` may call Sail over Spark
   Connect, while Sail's core planner stays independent of Grust backend crates.
 
+### Performance and Validation Baseline
+
+The graph branch merges the implementation from upstream performance PR
+[lakehq/sail#2400](https://github.com/lakehq/sail/pull/2400) at `ce5dada0` and
+preserves the QueryGraph graph extension on top. The SQL frontend benchmark now
+includes a representative one-hop graph query with labels, a property filter,
+three projected properties, ordering, offset, and limit:
+
+```cypher
+MATCH (a:Person)-[e:KNOWS]->(b:Person)
+WHERE a.age > 30
+RETURN a.id, b.id, e.since
+ORDER BY e.since DESC
+SKIP 5 LIMIT 10
+```
+
+The 2026-08-09 comparison used the historical graph implementation
+`d9e0fa42`, with only benchmark instrumentation `f693ea70` and `1915ab81`
+applied, against the aligned implementation at `4142168a`. Both revisions ran
+inside the same `querygraph-bench-runner` container on the same CPU core with
+Rust 1.96.0, `target-cpu=native`, optimization level 3, thin LTO, one codegen
+unit, stripped symbols, and incremental compilation disabled. Each reported
+value is the median of seven process-level medians; each process-level median
+contains 11 timed samples after warmup. Lower is better.
+
+| Graph frontend operation | Historical | Aligned | Change |
+|---|---:|---:|---:|
+| Parse one graph statement | 275.753 us | 263.504 us | 4.44% faster |
+| Analyze a cloned graph AST | 4.740 us | 4.726 us | 0.30% faster |
+| Parse and analyze end to end | 279.430 us | 267.689 us | 4.20% faster |
+
+This result has the expected locality. The upstream single-statement parser
+fast path removes multi-statement machinery from graph command parsing, so the
+parse and end-to-end rows improve while analysis of an already parsed AST is
+effectively unchanged. The benchmark remains in `sail-sql-analyzer` and can be
+reproduced with:
+
+```bash
+SAIL_BENCH_FILTER=graph \
+  cargo bench --locked -p sail-sql-analyzer --bench sql_frontend -j1
+```
+
+The aligned source also passes the complete parser/analyzer graph surface (14
+analyzer tests, four parser unit tests, and the syntax-gold suite), 21 targeted
+planner graph tests, and all 24 Spark Connect tests including service-level
+Cypher execution and plan gold files. The following strict lint gate passes on
+Rust 1.96.0:
+
+```bash
+cargo clippy --locked \
+  -p sail-common \
+  -p sail-sql-parser \
+  -p sail-sql-analyzer \
+  -p sail-plan \
+  -p sail-spark-connect \
+  --all-targets -j1 -- -D warnings
+```
+
+The validation container has 7.8 GiB of RAM. Large debug test binaries exceed
+GNU ld's practical memory envelope there, so validation links those binaries
+with Clang and lld and disables test-profile debug information. This changes
+link resource use, not the tested source or runtime semantics:
+
+```bash
+cargo rustc --tests --profile test -p <package> -- \
+  -Cdebuginfo=0 -Clinker=/usr/bin/clang -Clink-arg=-fuse-ld=lld
+```
+
 Local verification notes:
 
 - The graph PySpark smoke passes through the default Hatch environment with a
