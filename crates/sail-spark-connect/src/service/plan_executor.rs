@@ -728,7 +728,7 @@ mod tests {
     use crate::session_manager::create_spark_session_manager;
     use crate::spark::connect::execute_plan_response::ResponseType;
     use crate::spark::connect::relation::RelType;
-    use crate::spark::connect::{execute_plan_response, Relation, SqlCommand as SparkSqlCommand};
+    use crate::spark::connect::{Relation, SqlCommand as SparkSqlCommand, execute_plan_response};
 
     fn executor_metadata() -> ExecutorMetadata {
         ExecutorMetadata {

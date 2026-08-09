@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use datafusion_common::tree_node::TreeNode;
 use datafusion_common::JoinType;
+use datafusion_common::tree_node::TreeNode;
 use datafusion_expr::{
-    build_join_schema, Filter, Limit, LogicalPlan, LogicalPlanBuilder, Projection, SubqueryAlias,
+    Filter, Limit, LogicalPlan, LogicalPlanBuilder, Projection, SubqueryAlias, build_join_schema,
 };
 use sail_catalog::manager::CatalogManager;
 use sail_common::spec;
@@ -12,12 +12,12 @@ use sail_common_datafusion::catalog::TableColumnStatus;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 
 use crate::error::{PlanError, PlanResult};
+use crate::resolver::PlanResolver;
 use crate::resolver::state::PlanResolverState;
 use crate::resolver::tree::explode::ExplodeRewriter;
 use crate::resolver::tree::monotonic_id::MonotonicIdRewriter;
 use crate::resolver::tree::spark_partition_id::SparkPartitionIdRewriter;
 use crate::resolver::tree::window::WindowRewriter;
-use crate::resolver::PlanResolver;
 
 const GRAPH_NODES_TABLE: &str = "grust_nodes";
 const GRAPH_EDGES_TABLE: &str = "grust_edges";
@@ -1449,11 +1449,7 @@ fn is_edge_physical_field(field: &str) -> bool {
 }
 
 fn edge_physical_field(field: &str) -> &str {
-    if field == "label" {
-        "edge_type"
-    } else {
-        field
-    }
+    if field == "label" { "edge_type" } else { field }
 }
 
 fn attr(alias: impl Into<String>, field: &str) -> spec::Expr {
@@ -2105,12 +2101,14 @@ mod tests {
             ),
             [r#"grust.graph.label="Animal", expected "Person""#]
         );
-        assert!(graph_table_metadata_mismatches(
-            &graph_table_properties(GRAPH_TABLE_KIND_EDGE, "KNOWS"),
-            GRAPH_TABLE_KIND_EDGE,
-            "KNOWS"
-        )
-        .is_empty());
+        assert!(
+            graph_table_metadata_mismatches(
+                &graph_table_properties(GRAPH_TABLE_KIND_EDGE, "KNOWS"),
+                GRAPH_TABLE_KIND_EDGE,
+                "KNOWS"
+            )
+            .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -2532,8 +2530,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_cypher_graph_query_multiple_patterns_over_typed_grust_views(
-    ) -> PlanResult<()> {
+    async fn test_execute_cypher_graph_query_multiple_patterns_over_typed_grust_views()
+    -> PlanResult<()> {
         let ctx = create_session()?;
         let resolver = PlanResolver::new(&ctx, Arc::new(PlanConfig::new()?));
         create_typed_graph_views_with_data(&ctx).await?;
@@ -2679,8 +2677,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cypher_graph_query_falls_back_when_typed_edge_lacks_structural_fields(
-    ) -> PlanResult<()> {
+    async fn test_cypher_graph_query_falls_back_when_typed_edge_lacks_structural_fields()
+    -> PlanResult<()> {
         let ctx = create_session()?;
         let resolver = PlanResolver::new(&ctx, Arc::new(PlanConfig::new()?));
         create_graph_views_with_data(&ctx).await?;
@@ -2713,8 +2711,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cypher_graph_query_falls_back_when_typed_node_metadata_mismatches(
-    ) -> PlanResult<()> {
+    async fn test_cypher_graph_query_falls_back_when_typed_node_metadata_mismatches()
+    -> PlanResult<()> {
         let ctx = create_session()?;
         let resolver = PlanResolver::new(&ctx, Arc::new(PlanConfig::new()?));
         create_graph_views_with_data(&ctx).await?;
@@ -2733,8 +2731,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cypher_graph_query_falls_back_when_typed_edge_metadata_mismatches(
-    ) -> PlanResult<()> {
+    async fn test_cypher_graph_query_falls_back_when_typed_edge_metadata_mismatches()
+    -> PlanResult<()> {
         let ctx = create_session()?;
         let resolver = PlanResolver::new(&ctx, Arc::new(PlanConfig::new()?));
         create_graph_views_with_data(&ctx).await?;
