@@ -21,15 +21,15 @@
 
 use std::fmt;
 use std::ops::Range;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use foyer_common::error::Error as FoyerError;
 use foyer_memory::{Cache, CacheBuilder};
 use futures::stream::BoxStream;
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{stream, StreamExt, TryStreamExt};
 use object_store::path::Path;
 use object_store::{
     Attributes, CopyOptions, Error, GetOptions, GetRange, GetResult, GetResultPayload, ListResult,
@@ -733,8 +733,8 @@ impl ObjectStore for CachingObjectStore {
 mod tests {
     use std::sync::atomic::AtomicUsize;
 
-    use object_store::ObjectStoreExt;
     use object_store::local::LocalFileSystem;
+    use object_store::ObjectStoreExt;
     use tempfile::tempdir;
 
     use super::*;
@@ -1017,18 +1017,14 @@ mod tests {
         let out_of_bounds = 1000..1001;
         let reversed = Range { start: 20, end: 10 };
 
-        assert!(
-            cache
-                .get_ranges(&path, std::slice::from_ref(&out_of_bounds))
-                .await
-                .is_err()
-        );
-        assert!(
-            cache
-                .get_ranges(&path, std::slice::from_ref(&reversed))
-                .await
-                .is_err()
-        );
+        assert!(cache
+            .get_ranges(&path, std::slice::from_ref(&out_of_bounds))
+            .await
+            .is_err());
+        assert!(cache
+            .get_ranges(&path, std::slice::from_ref(&reversed))
+            .await
+            .is_err());
         assert_eq!(
             cache.get_ranges(&path, &[]).await.unwrap(),
             Vec::<Bytes>::new()
