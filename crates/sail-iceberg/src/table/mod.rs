@@ -15,7 +15,7 @@ pub mod metadata_loader;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use datafusion::catalog::Session;
 use datafusion::common::{DataFusionError, Result};
-pub use metadata_loader::find_latest_metadata_file;
+pub use metadata_loader::{decode_metadata_file, find_latest_metadata_file};
 use url::Url;
 
 use crate::datasource::provider::IcebergTableProvider;

@@ -119,7 +119,11 @@ fn metadata_file_codec_from_path(path: &str) -> Option<MetadataFileCodec> {
         .map(|file| file.codec)
 }
 
-pub(crate) fn decode_metadata_file(path: &str, data: &[u8]) -> io::Result<Vec<u8>> {
+/// Decode Iceberg table metadata according to its standard filename suffix.
+///
+/// Catalog implementations can use this at metadata-pointer ingestion
+/// boundaries without reimplementing Iceberg's gzip filename conventions.
+pub fn decode_metadata_file(path: &str, data: &[u8]) -> io::Result<Vec<u8>> {
     match metadata_file_codec_from_path(path) {
         Some(MetadataFileCodec::Gzip) => {
             let mut decoder = GzDecoder::new(data);
