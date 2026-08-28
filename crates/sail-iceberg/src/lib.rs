@@ -21,6 +21,7 @@ pub mod physical;
 pub mod physical_plan;
 pub(crate) mod properties;
 pub mod schema_evolution;
+pub mod semantic_binding;
 pub mod spec;
 pub mod table;
 pub mod table_format;

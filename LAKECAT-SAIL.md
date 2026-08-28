@@ -1,5 +1,9 @@
 # LakeCat ↔ Sail: Catalog & Iceberg Changes
 
+Sail owns reusable semantic-to-physical Iceberg validation. Its
+`semantic_binding` module checks field existence, exact Iceberg type,
+nullability, and the physical inputs of already-parsed executable expressions.
+
 Sail exposes bounded and unbounded Iceberg metadata decoders for catalog
 registration paths that must ingest standard uncompressed or gzip-compressed
 metadata pointers without duplicating filename semantics.
