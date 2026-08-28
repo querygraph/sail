@@ -166,6 +166,7 @@ pub enum TableRequirement {
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum TableUpdate {
     UpgradeFormatVersion {
+        #[serde(rename = "format-version")]
         format_version: FormatVersion,
     },
     AssignUuid {
@@ -319,6 +320,7 @@ pub enum ViewUpdate {
         uuid: Uuid,
     },
     UpgradeFormatVersion {
+        #[serde(rename = "format-version")]
         format_version: ViewFormatVersion,
     },
     AddSchema {
@@ -382,5 +384,39 @@ mod _serde_set_statistics {
             }
         }
         Ok(statistics)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TableUpdate, ViewUpdate};
+
+    #[test]
+    fn format_version_updates_use_the_iceberg_rest_field_name() {
+        let table: TableUpdate = serde_json::from_value(serde_json::json!({
+            "action": "upgrade-format-version",
+            "format-version": 2
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(table).unwrap(),
+            serde_json::json!({
+                "action": "upgrade-format-version",
+                "format-version": 2
+            })
+        );
+
+        let view: ViewUpdate = serde_json::from_value(serde_json::json!({
+            "action": "upgrade-format-version",
+            "format-version": "1"
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(view).unwrap(),
+            serde_json::json!({
+                "action": "upgrade-format-version",
+                "format-version": "1"
+            })
+        );
     }
 }
