@@ -1,7 +1,8 @@
 # LakeCat ↔ Sail: Catalog & Iceberg Changes
 
-Sail exposes `table::decode_metadata_file` for catalog registration paths that
-must ingest standard uncompressed or gzip-compressed Iceberg metadata pointers.
+Sail exposes bounded and unbounded Iceberg metadata decoders for catalog
+registration paths that must ingest standard uncompressed or gzip-compressed
+metadata pointers without duplicating filename semantics.
 
 This document summarizes the bug fixes and enabling changes we have made to
 **Sail** in the course of building **LakeCat**, an Iceberg REST catalog designed

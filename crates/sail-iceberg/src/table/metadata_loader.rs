@@ -124,14 +124,36 @@ fn metadata_file_codec_from_path(path: &str) -> Option<MetadataFileCodec> {
 /// Catalog implementations can use this at metadata-pointer ingestion
 /// boundaries without reimplementing Iceberg's gzip filename conventions.
 pub fn decode_metadata_file(path: &str, data: &[u8]) -> io::Result<Vec<u8>> {
+    decode_metadata_file_with_limit(path, data, usize::MAX)
+}
+
+/// Decode Iceberg metadata while refusing output larger than `max_bytes`.
+pub fn decode_metadata_file_with_limit(
+    path: &str,
+    data: &[u8],
+    max_bytes: usize,
+) -> io::Result<Vec<u8>> {
     match metadata_file_codec_from_path(path) {
         Some(MetadataFileCodec::Gzip) => {
             let mut decoder = GzDecoder::new(data);
             let mut decoded = Vec::new();
-            decoder.read_to_end(&mut decoded)?;
+            decoder
+                .by_ref()
+                .take(max_bytes.saturating_add(1) as u64)
+                .read_to_end(&mut decoded)?;
+            if decoded.len() > max_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "decoded Iceberg metadata exceeds configured byte limit",
+                ));
+            }
             Ok(decoded)
         }
-        Some(MetadataFileCodec::None) | None => Ok(data.to_vec()),
+        Some(MetadataFileCodec::None) | None if data.len() <= max_bytes => Ok(data.to_vec()),
+        Some(MetadataFileCodec::None) | None => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Iceberg metadata exceeds configured byte limit",
+        )),
     }
 }
 
@@ -298,9 +320,10 @@ mod tests {
     use url::Url;
 
     use super::{
-        decode_metadata_file, encode_metadata_file, find_latest_metadata_file,
-        metadata_file_extension_from_properties, metadata_location_to_object_path,
-        parse_metadata_file_name, MetadataFileCodec, MetadataFileName,
+        decode_metadata_file, decode_metadata_file_with_limit, encode_metadata_file,
+        find_latest_metadata_file, metadata_file_extension_from_properties,
+        metadata_location_to_object_path, parse_metadata_file_name, MetadataFileCodec,
+        MetadataFileName,
     };
 
     #[test]
@@ -439,6 +462,23 @@ mod tests {
             br#"{"format-version":2}"#.to_vec()
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn bounds_decoded_metadata_files() -> io::Result<()> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(br#"{"format-version":2}"#)?;
+        let encoded = encoder.finish()?;
+
+        assert!(
+            decode_metadata_file_with_limit("metadata/v1.metadata.json.gz", &encoded, 4).is_err()
+        );
+        assert!(decode_metadata_file_with_limit("metadata/v1.metadata.json", b"12345", 4).is_err());
+        assert_eq!(
+            decode_metadata_file_with_limit("metadata/v1.metadata.json", b"1234", 4)?,
+            b"1234"
+        );
         Ok(())
     }
 
