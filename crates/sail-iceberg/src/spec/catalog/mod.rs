@@ -163,7 +163,11 @@ pub enum TableRequirement {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-#[serde(tag = "action", rename_all = "kebab-case")]
+#[serde(
+    tag = "action",
+    rename_all = "kebab-case",
+    rename_all_fields = "kebab-case"
+)]
 pub enum TableUpdate {
     UpgradeFormatVersion {
         #[serde(rename = "format-version")]
@@ -314,7 +318,11 @@ pub enum ViewFormatVersion {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "kebab-case")]
+#[serde(
+    tag = "action",
+    rename_all = "kebab-case",
+    rename_all_fields = "kebab-case"
+)]
 pub enum ViewUpdate {
     AssignUuid {
         uuid: Uuid,
@@ -389,7 +397,7 @@ mod _serde_set_statistics {
 
 #[cfg(test)]
 mod tests {
-    use super::{TableUpdate, ViewUpdate};
+    use super::{SortOrder, TableUpdate, ViewUpdate};
 
     #[test]
     fn format_version_updates_use_the_iceberg_rest_field_name() {
@@ -404,6 +412,16 @@ mod tests {
                 "action": "upgrade-format-version",
                 "format-version": 2
             })
+        );
+
+        let sort_order = SortOrder {
+            order_id: 1,
+            fields: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_value(TableUpdate::AddSortOrder { sort_order }).unwrap()["sort-order"]
+                ["order-id"],
+            serde_json::json!(1)
         );
 
         let view: ViewUpdate = serde_json::from_value(serde_json::json!({
