@@ -55,6 +55,20 @@ pub(crate) struct MetadataFileName {
     pub codec: MetadataFileCodec,
 }
 
+#[derive(Clone, Debug)]
+struct MetadataCandidate {
+    version: i32,
+    path: ObjectPath,
+    last_modified: chrono::DateTime<chrono::Utc>,
+}
+
+impl MetadataCandidate {
+    fn is_newer_than(&self, other: &Self) -> bool {
+        (self.version, &self.last_modified, self.path.as_ref())
+            > (other.version, &other.last_modified, other.path.as_ref())
+    }
+}
+
 fn metadata_file_stem(file_name: &str) -> Option<(&str, MetadataFileCodec)> {
     if let Some(stem) = file_name.strip_suffix(".metadata.json.gz") {
         return Some((stem, MetadataFileCodec::Gzip));
@@ -101,19 +115,45 @@ pub(crate) fn metadata_location_to_object_path_string(metadata_location: &str) -
 fn metadata_file_codec_from_path(path: &str) -> Option<MetadataFileCodec> {
     path.rsplit('/')
         .next()
-        .and_then(parse_metadata_file_name)
-        .map(|file| file.codec)
+        .and_then(metadata_file_stem)
+        .map(|(_, codec)| codec)
 }
 
-pub(crate) fn decode_metadata_file(path: &str, data: &[u8]) -> io::Result<Vec<u8>> {
+/// Decode Iceberg table metadata according to its standard filename suffix.
+///
+/// Catalog implementations can use this at metadata-pointer ingestion
+/// boundaries without reimplementing Iceberg's gzip filename conventions.
+pub fn decode_metadata_file(path: &str, data: &[u8]) -> io::Result<Vec<u8>> {
+    decode_metadata_file_with_limit(path, data, usize::MAX)
+}
+
+/// Decode Iceberg metadata while refusing output larger than `max_bytes`.
+pub fn decode_metadata_file_with_limit(
+    path: &str,
+    data: &[u8],
+    max_bytes: usize,
+) -> io::Result<Vec<u8>> {
     match metadata_file_codec_from_path(path) {
         Some(MetadataFileCodec::Gzip) => {
             let mut decoder = GzDecoder::new(data);
             let mut decoded = Vec::new();
-            decoder.read_to_end(&mut decoded)?;
+            decoder
+                .by_ref()
+                .take(max_bytes.saturating_add(1) as u64)
+                .read_to_end(&mut decoded)?;
+            if decoded.len() > max_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "decoded Iceberg metadata exceeds configured byte limit",
+                ));
+            }
             Ok(decoded)
         }
-        Some(MetadataFileCodec::None) | None => Ok(data.to_vec()),
+        Some(MetadataFileCodec::None) | None if data.len() <= max_bytes => Ok(data.to_vec()),
+        Some(MetadataFileCodec::None) | None => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Iceberg metadata exceeds configured byte limit",
+        )),
     }
 }
 
@@ -158,8 +198,6 @@ pub async fn find_latest_metadata_file(
     object_store: &Arc<dyn object_store::ObjectStore>,
     table_url: &Url,
 ) -> Result<String> {
-    use futures::TryStreamExt;
-
     log::trace!("Finding latest metadata file");
     let base_path = crate::utils::url_to_object_path(table_url)?;
     let version_hint_path = base_path.clone().join("metadata").join("version-hint.text");
@@ -188,67 +226,80 @@ pub async fn find_latest_metadata_file(
     log::trace!("Listing metadata directory");
     let metadata_prefix = base_path.join("metadata");
 
+    let mut latest = None;
+    let mut hinted = None;
     let objects = object_store.list(Some(&metadata_prefix));
-
-    let metadata_files: Result<Vec<_>, _> = objects
-        .try_filter_map(|obj| async move {
-            let path_str = obj.location.to_string();
-            if let Some(filename) = path_str.split('/').next_back() {
-                if let Some(metadata_file) = parse_metadata_file_name(filename) {
-                    return Ok(Some((metadata_file.version, path_str, obj.last_modified)));
-                }
-            }
-            Ok(None)
+    let result = if hinted_filename.is_none() && hinted_version.is_none() {
+        visit_metadata_candidates(objects, |candidate| {
+            update_latest_candidate(&mut latest, candidate);
         })
-        .try_collect()
-        .await;
-
-    match metadata_files {
-        Ok(mut files) => {
-            log::trace!("find_latest_metadata_file: found files: {:?}", &files);
-            files.sort_by(|left, right| {
-                left.0
-                    .cmp(&right.0)
-                    .then_with(|| left.2.cmp(&right.2))
-                    .then_with(|| left.1.cmp(&right.1))
-            });
-
-            if let Some(fname) = hinted_filename {
-                if let Some((version, path, _)) =
-                    files.iter().rev().find(|(_, p, _)| p.ends_with(&fname))
-                {
-                    log::trace!(
-                        "find_latest_metadata_file: selected by filename hint version {} path={}",
-                        version,
-                        &path
-                    );
-                    return Ok(path.clone());
-                }
-            } else if let Some(hint) = hinted_version {
-                if let Some((version, path, _)) = files.iter().rev().find(|(v, _, _)| *v == hint) {
-                    log::trace!(
-                        "find_latest_metadata_file: selected by numeric hint version {} path={}",
-                        version,
-                        &path
-                    );
-                    return Ok(path.clone());
-                }
+        .await
+    } else {
+        visit_metadata_candidates(objects, |candidate| {
+            let matches_hint = hinted_filename
+                .as_deref()
+                .is_some_and(|filename| candidate.path.as_ref().ends_with(filename))
+                || hinted_version.is_some_and(|version| candidate.version == version);
+            if matches_hint {
+                update_latest_candidate(&mut hinted, candidate.clone());
             }
+            update_latest_candidate(&mut latest, candidate);
+        })
+        .await
+    }
+    .map_err(|error| DataFusionError::Plan(format!("Failed to list metadata directory: {error}")));
+    result?;
 
-            if let Some((version, latest_file, _)) = files.last() {
-                log::trace!(
-                    "find_latest_metadata_file: selected version {} path={}",
-                    version,
-                    &latest_file
-                );
-                Ok(latest_file.clone())
-            } else {
-                plan_err!("No metadata files found in table location: {}", table_url)
-            }
-        }
-        Err(e) => {
-            plan_err!("Failed to list metadata directory: {}", e)
-        }
+    if let Some(candidate) = hinted {
+        log::trace!(
+            "find_latest_metadata_file: selected hinted version {} path={}",
+            candidate.version,
+            candidate.path
+        );
+        return Ok(candidate.path.to_string());
+    }
+
+    if let Some(candidate) = latest {
+        log::trace!(
+            "find_latest_metadata_file: selected version {} path={}",
+            candidate.version,
+            candidate.path
+        );
+        Ok(candidate.path.to_string())
+    } else {
+        plan_err!("No metadata files found in table location: {}", table_url)
+    }
+}
+
+async fn visit_metadata_candidates(
+    mut objects: futures::stream::BoxStream<'_, object_store::Result<object_store::ObjectMeta>>,
+    mut visit: impl FnMut(MetadataCandidate),
+) -> object_store::Result<()> {
+    use futures::TryStreamExt;
+
+    while let Some(object) = objects.try_next().await? {
+        let Some(metadata_file) = object
+            .location
+            .filename()
+            .and_then(parse_metadata_file_name)
+        else {
+            continue;
+        };
+        visit(MetadataCandidate {
+            version: metadata_file.version,
+            path: object.location,
+            last_modified: object.last_modified,
+        });
+    }
+    Ok(())
+}
+
+fn update_latest_candidate(current: &mut Option<MetadataCandidate>, candidate: MetadataCandidate) {
+    if current
+        .as_ref()
+        .is_none_or(|current| candidate.is_newer_than(current))
+    {
+        *current = Some(candidate);
     }
 }
 
@@ -256,13 +307,21 @@ pub async fn find_latest_metadata_file(
 mod tests {
     use std::collections::HashMap;
     use std::io::{self, Write};
+    use std::sync::Arc;
 
+    use bytes::Bytes;
     use datafusion::common::Result;
     use flate2::write::GzEncoder;
     use flate2::Compression;
+    use futures::executor::block_on;
+    use object_store::memory::InMemory;
+    use object_store::path::Path;
+    use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
+    use url::Url;
 
     use super::{
-        decode_metadata_file, encode_metadata_file, metadata_file_extension_from_properties,
+        decode_metadata_file, decode_metadata_file_with_limit, encode_metadata_file,
+        find_latest_metadata_file, metadata_file_extension_from_properties,
         metadata_location_to_object_path, parse_metadata_file_name, MetadataFileCodec,
         MetadataFileName,
     };
@@ -315,6 +374,61 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::expect_used)]
+    fn discovers_hinted_metadata_and_falls_back_to_latest() {
+        block_on(async {
+            let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+            for path in [
+                "events/metadata/00001-first.metadata.json",
+                "events/metadata/00003-latest.metadata.json",
+            ] {
+                store
+                    .put(&Path::from(path), PutPayload::from(Bytes::new()))
+                    .await
+                    .expect("seed metadata file");
+            }
+            let hint_path = Path::from("events/metadata/version-hint.text");
+            let table_url = Url::parse("memory://warehouse/events").expect("table URL");
+
+            store
+                .put(&hint_path, PutPayload::from(Bytes::from_static(b"1")))
+                .await
+                .expect("seed numeric hint");
+            assert_eq!(
+                find_latest_metadata_file(&store, &table_url)
+                    .await
+                    .expect("discover numeric hint"),
+                "events/metadata/00001-first.metadata.json"
+            );
+
+            store
+                .put(&hint_path, PutPayload::from(Bytes::from_static(b"2")))
+                .await
+                .expect("seed missing hint");
+            assert_eq!(
+                find_latest_metadata_file(&store, &table_url)
+                    .await
+                    .expect("fall back to latest metadata"),
+                "events/metadata/00003-latest.metadata.json"
+            );
+
+            store
+                .put(
+                    &hint_path,
+                    PutPayload::from(Bytes::from_static(b"00001-first.metadata.json")),
+                )
+                .await
+                .expect("seed filename hint");
+            assert_eq!(
+                find_latest_metadata_file(&store, &table_url)
+                    .await
+                    .expect("discover filename hint"),
+                "events/metadata/00001-first.metadata.json"
+            );
+        });
+    }
+
+    #[test]
     fn parses_windows_drive_metadata_locations_as_object_paths() -> Result<()> {
         assert_eq!(
             metadata_location_to_object_path(
@@ -344,10 +458,31 @@ mod tests {
             br#"{"format-version":2}"#.to_vec()
         );
         assert_eq!(
+            decode_metadata_file("metadata/catalog-generated.gz.metadata.json", &encoded)?,
+            br#"{"format-version":2}"#.to_vec()
+        );
+        assert_eq!(
             decode_metadata_file("metadata/v1.metadata.json", br#"{"format-version":2}"#)?,
             br#"{"format-version":2}"#.to_vec()
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn bounds_decoded_metadata_files() -> io::Result<()> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(br#"{"format-version":2}"#)?;
+        let encoded = encoder.finish()?;
+
+        assert!(
+            decode_metadata_file_with_limit("metadata/v1.metadata.json.gz", &encoded, 4).is_err()
+        );
+        assert!(decode_metadata_file_with_limit("metadata/v1.metadata.json", b"12345", 4).is_err());
+        assert_eq!(
+            decode_metadata_file_with_limit("metadata/v1.metadata.json", b"1234", 4)?,
+            b"1234"
+        );
         Ok(())
     }
 

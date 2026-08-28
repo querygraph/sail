@@ -39,3 +39,7 @@ tokio = { workspace = true }
 wiremock = { workspace = true }
 testcontainers = { workspace = true }
 arrow = { workspace = true }
+
+[[bench]]
+name = "table_status"
+harness = false

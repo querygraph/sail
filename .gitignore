@@ -106,5 +106,7 @@ docs/.vitepress/.temp
 
 CLAUDE.md
 AGENTS.md
+# LakeCat fork: track the committed working-guidance file (overrides AGENTS.md above)
+!lakecat/AGENTS.md
 # roborev snapshots
 /.roborev/
