@@ -115,8 +115,8 @@ pub(crate) fn metadata_location_to_object_path_string(metadata_location: &str) -
 fn metadata_file_codec_from_path(path: &str) -> Option<MetadataFileCodec> {
     path.rsplit('/')
         .next()
-        .and_then(parse_metadata_file_name)
-        .map(|file| file.codec)
+        .and_then(metadata_file_stem)
+        .map(|(_, codec)| codec)
 }
 
 /// Decode Iceberg table metadata according to its standard filename suffix.
@@ -455,6 +455,10 @@ mod tests {
 
         assert_eq!(
             decode_metadata_file("metadata/v1.metadata.json.gz", &encoded)?,
+            br#"{"format-version":2}"#.to_vec()
+        );
+        assert_eq!(
+            decode_metadata_file("metadata/catalog-generated.gz.metadata.json", &encoded)?,
             br#"{"format-version":2}"#.to_vec()
         );
         assert_eq!(
