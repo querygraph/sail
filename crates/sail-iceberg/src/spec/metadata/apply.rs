@@ -22,16 +22,15 @@
 //! document it then persists. This is engine-owned table-format work, so it
 //! lives in Sail rather than being hand-rolled in the catalog.
 //!
-//! The metadata-only and removal updates are implemented fully. Updates that
-//! require deeper engine machinery (partition-spec binding, snapshot
-//! sequencing, snapshot-ref state) return `NotImplemented` rather than
-//! silently producing incorrect metadata; those belong in a complete
-//! `TableMetadataBuilder` port.
+//! Updates that can be applied deterministically from the current metadata are
+//! implemented here. Remaining updates return `NotImplemented` rather than
+//! silently producing incorrect metadata.
 
 use datafusion_common::{not_impl_err, DataFusionError, Result};
 
 use crate::spec::catalog::TableUpdate;
 use crate::spec::metadata::table_metadata::{SnapshotLog, TableMetadata};
+use crate::spec::partition::PartitionSpec;
 
 /// Apply a sequence of `TableUpdate`s to `metadata` in order. On any applied
 /// change, `last_updated_ms` is advanced to `now_ms`.
@@ -103,6 +102,42 @@ fn apply_one(metadata: &mut TableMetadata, update: &TableUpdate, now_ms: i64) ->
                 return Err(invalid(format!("unknown schema-id {resolved}")));
             }
             metadata.current_schema_id = resolved;
+        }
+        TableUpdate::AddSpec { spec } => {
+            let spec_id = metadata
+                .partition_specs
+                .iter()
+                .map(PartitionSpec::spec_id)
+                .max()
+                .unwrap_or(-1)
+                .checked_add(1)
+                .ok_or_else(|| invalid("partition spec id overflow"))?;
+            let mut next_field_id = metadata
+                .last_partition_id
+                .checked_add(1)
+                .ok_or_else(|| invalid("partition field id overflow"))?
+                .max(1000);
+            let mut builder = PartitionSpec::builder().with_spec_id(spec_id);
+            for field in &spec.fields {
+                builder = builder.add_field_with_id(
+                    field.source_id,
+                    next_field_id,
+                    &field.name,
+                    field.transform.clone(),
+                );
+                next_field_id = next_field_id
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("partition field id overflow"))?;
+            }
+            let bound = builder.build();
+            let current_schema = metadata
+                .current_schema()
+                .ok_or_else(|| invalid("cannot add partition spec without a current schema"))?;
+            bound.partition_type(current_schema).map_err(invalid)?;
+            if let Some(highest) = bound.highest_field_id() {
+                metadata.last_partition_id = metadata.last_partition_id.max(highest);
+            }
+            metadata.partition_specs.push(bound);
         }
         TableUpdate::SetDefaultSpec { spec_id } => {
             let resolved = if *spec_id == -1 {
@@ -220,8 +255,6 @@ fn apply_one(metadata: &mut TableMetadata, update: &TableUpdate, now_ms: i64) ->
                 });
             }
         }
-        // `add-spec` still requires partition-spec binding machinery — defer to a
-        // complete builder rather than produce incorrect metadata.
         other => {
             return not_impl_err!(
                 "TableUpdate not yet supported by apply_table_updates: {}",
@@ -234,7 +267,7 @@ fn apply_one(metadata: &mut TableMetadata, update: &TableUpdate, now_ms: i64) ->
 
 fn update_kind(update: &TableUpdate) -> &'static str {
     match update {
-        TableUpdate::AddSpec { .. } => "add-spec",
+        TableUpdate::SetPartitionStatistics { .. } => "set-partition-statistics",
         _ => "unsupported",
     }
 }
@@ -349,6 +382,34 @@ mod tests {
         // Per the spec, add-snapshot alone does not move the current ref or log.
         assert_eq!(m.current_snapshot_id, None);
         assert!(m.snapshot_log.is_empty());
+    }
+
+    #[test]
+    fn add_spec_binds_ids_and_set_default_minus_one_selects_it() {
+        let mut m = empty_v2_metadata();
+        apply_table_updates(
+            &mut m,
+            &[
+                TableUpdate::AddSpec {
+                    spec: crate::spec::partition::UnboundPartitionSpec {
+                        fields: vec![crate::spec::partition::UnboundPartitionField {
+                            source_id: 1,
+                            name: "x".to_string(),
+                            transform: crate::spec::Transform::Identity,
+                        }],
+                    },
+                },
+                TableUpdate::SetDefaultSpec { spec_id: -1 },
+            ],
+            5_000,
+        )
+        .expect("partition spec updates apply");
+
+        assert_eq!(m.partition_specs.len(), 2);
+        assert_eq!(m.partition_specs[1].spec_id(), 1);
+        assert_eq!(m.partition_specs[1].fields()[0].field_id, 1000);
+        assert_eq!(m.default_spec_id, 1);
+        assert_eq!(m.last_partition_id, 1000);
     }
 
     #[test]
