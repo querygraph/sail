@@ -34,11 +34,11 @@ impl Manifest {
             return plan_err!("extension name and version must not be empty");
         }
         if self.api_version != 1
-            || self.datafusion_version != "55.1.0"
+            || self.datafusion_version != "55.0.0"
             || self.arrow_version != "59.3.0"
         {
             return plan_err!(
-                "extension {} build mismatch: host api=1 DataFusion=55.1.0 Arrow=59.3.0; package api={} DataFusion={} Arrow={}",
+                "extension {} build mismatch: host api=1 DataFusion=55.0.0 Arrow=59.3.0; package api={} DataFusion={} Arrow={}",
                 self.name,
                 self.api_version,
                 self.datafusion_version,
@@ -87,7 +87,7 @@ mod tests {
             name: "fixture".into(),
             version: "1".into(),
             api_version: 1,
-            datafusion_version: "55.1.0".into(),
+            datafusion_version: "55.0.0".into(),
             arrow_version: "59.3.0".into(),
             placement: "driver".into(),
             memory_bytes: None,
@@ -101,7 +101,7 @@ mod tests {
         let mut manifest = valid();
         manifest.datafusion_version = "54.1.0".into();
         assert!(
-            matches!(manifest.validate(), Err(error) if error.to_string().contains("fixture") && error.to_string().contains("55.1.0") && error.to_string().contains("54.1.0"))
+            matches!(manifest.validate(), Err(error) if error.to_string().contains("fixture") && error.to_string().contains("55.0.0") && error.to_string().contains("54.1.0"))
         );
     }
 
