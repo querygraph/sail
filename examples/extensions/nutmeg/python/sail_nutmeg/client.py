@@ -85,6 +85,27 @@ class Nutmeg:
         """Scan this session's staged edge snapshot, preserving duplicate edges."""
         return self._relation("edges", graph)
 
+    def checkpointed(self, path, key, partitions, *, graph="__checkpoint__"):
+        """Scan a bucketed, sorted Parquet checkpoint and declare its layout.
+
+        `path` is a directory of exactly `partitions` Parquet files, one per
+        bucket of `key`, each sorted by `key`, as `checkpoint` writes them.
+        The scan declares Hash(key, partitions) and the key order, so joins
+        and aggregates on `key` between such scans need no shuffle and no
+        sort. The declaration is trusted: only join checkpoints written by
+        the same session with the same `partitions`.
+        """
+        return self._relation("checkpointed", graph, options={"path": path, "key": key, "partitions": int(partitions)})
+
+    def checkpoint(self, frame, path, key, partitions):
+        """Write `frame` bucketed and sorted by `key`, then scan it declared.
+
+        Sail writes one file per partition with the partition index in its
+        name; the returned DataFrame reads them back through `checkpointed`.
+        """
+        frame.repartition(int(partitions), key).sortWithinPartitions(key).write.mode("error").parquet(path)
+        return self.checkpointed(path, key, partitions)
+
     def status(self):
         """Read native admission, revision/cache counts and actual kernel states."""
         return json.loads(self._relation("diagnostics", "__session__").collect()[0].status)

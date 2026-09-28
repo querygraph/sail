@@ -32,8 +32,8 @@ def _check_input_schema(spark, vertices, edges):
 
 
 def _snapshot(run, vertices, edges, edge_columns=("src", "dst")):
-    _, vertices = run.materialize(vertices.select("id"))
-    _, edges = run.materialize(edges.select(*edge_columns))
+    _, vertices = run.materialize(vertices.select("id"), key="id")
+    _, edges = run.materialize(edges.select(*edge_columns), key="src")
     run.cancellation.check()
     if vertices.where(F.col("id").isNull()).limit(1).count():
         raise ValueError("vertex IDs must not be null")
@@ -59,10 +59,18 @@ class GraphAlgorithms:
     sources. Results contain structural columns, not input properties.
     """
 
-    def __init__(self, spark, *, observer=None):
+    def __init__(self, spark, *, observer=None, layout="shuffle"):
+        """`layout="declared"` needs the Nutmeg extension loaded in Sail; see StagingRun."""
         self.spark = spark
         self.utils = GraphUtils(spark)
         self.observer = observer
+        self.layout = layout
+        self.nutmeg = None
+        if layout == "declared":
+            from sail_nutmeg.client import Nutmeg
+            self.nutmeg = Nutmeg(spark)
+        elif layout != "shuffle":
+            raise ValueError("layout must be 'shuffle' or 'declared'")
 
     def _observe(self, run, algorithm, step, kind, **metrics):
         if self.observer is not None:
@@ -77,7 +85,8 @@ class GraphAlgorithms:
         cancellation.attach(self.spark)
         run = None
         try:
-            run = StagingRun(self.spark, self.utils, cancellation, partitions)
+            run = StagingRun(self.spark, self.utils, cancellation, partitions,
+                             layout=self.layout, nutmeg=self.nutmeg)
             vertices, edges, size = _snapshot(run, vertices, edges, edge_columns)
             return body(run, vertices, edges, size)
         except BaseException as error:
@@ -158,13 +167,16 @@ class GraphAlgorithms:
                 path, result = run.materialize(vertices.withColumn("pagerank", F.lit(0.0)), expected_rows=0)
                 return run.finish(path, result, algorithm="pagerank", iterations=0, converged=True)
             _, weighted = run.materialize(
-                edges.join(edges.groupBy("src").count().withColumnRenamed("count", "degree"), "src")
+                edges.join(edges.groupBy("src").count().withColumnRenamed("count", "degree"), "src"),
+                key="src",
             )
             # Static dangling vertices need no per-iteration anti-join.
             _, dangling = run.materialize(
-                vertices.join(edges.select(F.col("src").alias("id")).distinct(), "id", "left_anti")
+                vertices.join(edges.select(F.col("src").alias("id")).distinct(), "id", "left_anti"),
+                key="id",
             )
-            path, rank = run.materialize(vertices.withColumn("pagerank", F.lit(1.0 / size)), expected_rows=size)
+            path, rank = run.materialize(vertices.withColumn("pagerank", F.lit(1.0 / size)),
+                                         expected_rows=size, key="id")
             converged = None if tolerance is None else False
             for step in range(1, max_iterations + 1):
                 run.cancellation.check()
@@ -174,12 +186,21 @@ class GraphAlgorithms:
                 message = weighted.join(rank, weighted.src == rank.id).select(
                     weighted.dst.alias("id"), (rank.pagerank / weighted.degree).alias("message")
                 ).groupBy("id").agg(F.sum("message").alias("incoming"))
+                message_path = None
+                if run.declared:
+                    # Materialize the aggregated messages bucketed by id: the
+                    # join back to vertices then sees exact O(|V|) statistics
+                    # and a co-partitioned input, instead of the O(|E|) row
+                    # estimate an aggregate inherits from its input.
+                    message_path, message = run.materialize(message, key="id")
                 updated = vertices.join(message, "id", "left").select(
                     "id", (F.lit(reset_probability / size) + F.lit(1.0 - reset_probability) * (
                         F.coalesce(F.col("incoming"), F.lit(0.0)) + F.lit(dangling_mass / size)
                     )).alias("pagerank"),
                 )
-                next_path, next_rank = run.materialize(updated, expected_rows=size)
+                next_path, next_rank = run.materialize(updated, expected_rows=size, key="id")
+                if message_path is not None:
+                    run.remove(message_path)
                 if tolerance is not None:
                     run.cancellation.check()
                     before = rank.select("id", F.col("pagerank").alias("before"))

@@ -3,12 +3,33 @@
 from .lifecycle import GraphResult
 
 
+LAYOUTS = ("shuffle", "declared")
+
+
 class StagingRun:
-    def __init__(self, spark, utils, cancellation, partitions):
+    """One algorithm's Parquet generations.
+
+    `layout="shuffle"` writes each stage `repartition(partitions)` and reads
+    it back as an ordinary Parquet scan, so every later join or aggregate on
+    it shuffles again. `layout="declared"` writes a stage that names a `key`
+    bucketed and sorted by that key, one file per bucket, and reads it back
+    through the Nutmeg extension's `checkpointed` relation, whose scan
+    declares the bucketing and the order; joins and aggregates on `key`
+    between such stages then need no shuffle and no sort. Stages that name
+    no key are written and read the shuffle way under either layout.
+    """
+
+    def __init__(self, spark, utils, cancellation, partitions, *, layout="shuffle", nutmeg=None):
+        if layout not in LAYOUTS:
+            raise ValueError(f"layout must be one of {LAYOUTS}")
+        if layout == "declared" and nutmeg is None:
+            raise ValueError("the declared layout needs the Nutmeg client for checkpointed scans")
         self.spark = spark
         self.utils = utils
         self.cancellation = cancellation
         self.partitions = partitions
+        self.layout = layout
+        self.nutmeg = nutmeg
         self.path, self.token = utils.allocate()
         self.closed = False
         self.write_uncertain = False
@@ -22,10 +43,23 @@ class StagingRun:
         if not self.utils.exists(self.path, self.token):
             raise RuntimeError("graph staging session expired or its files were removed")
 
-    def materialize(self, frame, *, expected_rows=None):
+    @property
+    def declared(self):
+        return self.layout == "declared"
+
+    def materialize(self, frame, *, expected_rows=None, key=None):
+        """Write `frame` as the next stage and read it back.
+
+        With `key` under the declared layout the stage is bucketed and sorted
+        by `key` and read back declared; otherwise it is written and read the
+        shuffle way. `key` must be a column of `frame`.
+        """
         self.cancellation.check()
         self.touch()
         self.cancellation.check()
+        if key is not None and key not in frame.columns:
+            raise ValueError(f"stage key {key!r} is not a column of the frame")
+        declared = self.declared and key is not None
         path = self.path.rstrip("/") + f"/stage-{self._serial:05d}"
         self._serial += 1
         # Record before writing, so a partially failed stage is still owned.
@@ -33,7 +67,10 @@ class StagingRun:
         # A failed/interrupted write RPC is not a distributed writer-drain
         # barrier. Keep ownership for session teardown if its outcome is unknown.
         self.write_uncertain = True
-        frame.repartition(self.partitions).write.mode("error").parquet(path)
+        if declared:
+            frame.repartition(self.partitions, key).sortWithinPartitions(key).write.mode("error").parquet(path)
+        else:
+            frame.repartition(self.partitions).write.mode("error").parquet(path)
         self.write_uncertain = False
         self.cancellation.check()
         stored = self.spark.read.parquet(path)
@@ -41,6 +78,8 @@ class StagingRun:
             # Some engines create no data files for an empty write. Preserve
             # the known schema when there is no Parquet footer to infer it from.
             stored = self.spark.read.schema(frame.schema).parquet(path)
+        elif declared:
+            stored = self.nutmeg.checkpointed(path, key, self.partitions)
         if stored.schema != frame.schema:
             # Parquet readers may widen nullability; column names/types are
             # contractual, while nullability is not a portable file guarantee.

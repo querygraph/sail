@@ -17,11 +17,12 @@ sail-native-resource-ffi = { path = "../../../crates/sail-native-resource-ffi" }
 sail-argentea-core = { path = "../argentea" }
 grust-procedures = "=0.23.0"
 grust-arrow = "=0.23.0"
-datafusion = { version = "=55.1.0", default-features = false, features = ["recursive_protection"] }
+datafusion = { version = "=55.1.0", default-features = false, features = ["recursive_protection", "parquet"] }
 datafusion-common = { version = "=55.1.0", default-features = false }
 datafusion-execution = { version = "=55.1.0", default-features = false }
 datafusion-ffi = { version = "=55.1.0" }
 arrow = "=59.3.0"
+parquet = { version = "=59.3.0", default-features = false, features = ["arrow"] }
 # Pin the complete Arrow family, including transitive dependencies.
 arrow-arith = "=59.3.0"
 arrow-array = "=59.3.0"

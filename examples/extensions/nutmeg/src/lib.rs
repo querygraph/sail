@@ -1,5 +1,6 @@
 //! Independently compiled Nutmeg Connect extension. No Sail engine dependency.
 mod argentea;
+mod checkpoint;
 mod context;
 mod diagnostics;
 mod mutation;
@@ -141,8 +142,37 @@ fn plan(
                 request.graph,
             )))
         }
+        "checkpointed" => {
+            if !inputs.is_empty() {
+                return plan_err!("nutmeg: checkpointed accepts no inputs");
+            }
+            if request.algorithm.is_some()
+                || request.column_names.is_some()
+                || !request.node_mapping.is_empty()
+                || !request.edge_mapping.is_empty()
+            {
+                return plan_err!("nutmeg: checkpointed accepts only version, verb, graph and options");
+            }
+            let mut options = request.options;
+            let path = match options.remove("path") {
+                Some(serde_json::Value::String(path)) => path,
+                _ => return plan_err!("nutmeg: checkpointed requires options.path (string)"),
+            };
+            let key = match options.remove("key") {
+                Some(serde_json::Value::String(key)) => key,
+                _ => return plan_err!("nutmeg: checkpointed requires options.key (string)"),
+            };
+            let partitions = match options.remove("partitions").and_then(|v| v.as_u64()) {
+                Some(n) if n >= 1 && n <= 65536 => n as usize,
+                _ => return plan_err!("nutmeg: checkpointed requires options.partitions in 1..=65536"),
+            };
+            if !options.is_empty() {
+                return plan_err!("nutmeg: checkpointed accepts only path, key and partitions options");
+            }
+            Ok(Arc::new(checkpoint::CheckpointedTable::open(&path, &key, partitions)?))
+        }
         other => plan_err!(
-            "nutmeg: unknown verb {other}; registered verbs: stage, run, nodes, edges, diagnostics, drop"
+            "nutmeg: unknown verb {other}; registered verbs: stage, run, nodes, edges, diagnostics, drop, checkpointed"
         ),
     }
 }
