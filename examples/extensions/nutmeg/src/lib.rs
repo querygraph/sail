@@ -1,5 +1,6 @@
 //! Independently compiled Nutmeg Connect extension. No Sail engine dependency.
 mod argentea;
+mod bucket;
 mod checkpoint;
 mod context;
 mod diagnostics;
@@ -26,7 +27,13 @@ use serde::Deserialize;
 pub const TYPE_URL: &str = "type.googleapis.com/nutmeg.v1.NutmegApi";
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+        // Checkpoint writes sort and encode every bucket on this runtime; two
+        // threads made them the slowest step of a relational round.
+        .worker_threads(
+            std::thread::available_parallelism()
+                .map(|n| n.get().clamp(2, 16))
+                .unwrap_or(2),
+        )
         .enable_all()
         .build()
         .expect("Nutmeg runtime")
@@ -288,6 +295,8 @@ impl BoundExtension {
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<BoundExtension>()?;
+    module.add_class::<bucket::BoundBucket>()?;
+    module.add_class::<bucket::NativeScalarUdf>()?;
     module.add_class::<argentea::BoundArgentea>()?;
     module.add_function(wrap_pyfunction!(argentea::plan_worker_relation, module)?)?;
     Ok(())

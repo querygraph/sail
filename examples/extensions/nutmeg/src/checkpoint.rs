@@ -52,9 +52,42 @@ pub struct CheckpointedTable {
     directory: PathBuf,
     key: String,
     key_index: usize,
-    /// Absolute path and size of bucket `i`, at index `i`.
-    files: Vec<(PathBuf, u64)>,
+    /// The files of bucket `i`, at index `i`: one file for a checkpoint the
+    /// extension wrote, one or more for a `partitionBy` directory.
+    buckets: Vec<Vec<(PathBuf, u64)>>,
     schema: SchemaRef,
+}
+
+/// The bucket a `partitionBy` directory names: `__bucket=7` gives 7.
+fn directory_bucket(name: &str) -> Option<usize> {
+    let (column, value) = name.split_once('=')?;
+    if column != BUCKET_COLUMN {
+        return None;
+    }
+    value.parse().ok()
+}
+
+/// The partition column `checkpoint(..., mode="distributed")` writes by.
+pub const BUCKET_COLUMN: &str = "__bucket";
+
+fn parquet_files(directory: &Path) -> Result<Vec<(PathBuf, u64)>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(directory).map_err(|e| {
+        datafusion_common::DataFusionError::Plan(format!("nutmeg: checkpointed cannot list {}: {e}", directory.display()))
+    })? {
+        let entry = entry.map_err(|e| datafusion_common::DataFusionError::Plan(e.to_string()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".parquet") || name.starts_with('.') || name.starts_with('_') {
+            continue;
+        }
+        let size = entry
+            .metadata()
+            .map_err(|e| datafusion_common::DataFusionError::Plan(e.to_string()))?
+            .len();
+        files.push((entry.path(), size));
+    }
+    files.sort();
+    Ok(files)
 }
 
 /// The trailing integer of a Parquet file name, before its extensions:
@@ -99,35 +132,47 @@ impl CheckpointedTable {
                 directory.display()
             ))
         })?;
-        let mut files: Vec<Option<(PathBuf, u64)>> = vec![None; partitions];
+        let mut buckets: Vec<Option<Vec<(PathBuf, u64)>>> = vec![None; partitions];
         for entry in entries {
             let entry = entry.map_err(|e| datafusion_common::DataFusionError::Plan(e.to_string()))?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(".parquet") || name.starts_with('.') || name.starts_with('_') {
-                continue;
-            }
-            let Some(index) = bucket_index(&name) else {
-                return plan_err!("nutmeg: checkpointed file {name} has no bucket index");
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let (index, files) = if is_dir {
+                let Some(index) = directory_bucket(&name) else {
+                    continue;
+                };
+                (index, parquet_files(&entry.path())?)
+            } else {
+                if !name.ends_with(".parquet") || name.starts_with('.') || name.starts_with('_') {
+                    continue;
+                }
+                let Some(index) = bucket_index(&name) else {
+                    return plan_err!("nutmeg: checkpointed file {name} has no bucket index");
+                };
+                let size = entry
+                    .metadata()
+                    .map_err(|e| datafusion_common::DataFusionError::Plan(e.to_string()))?
+                    .len();
+                (index, vec![(entry.path(), size)])
             };
             if index >= partitions {
                 return plan_err!(
-                    "nutmeg: checkpointed file {name} names bucket {index}, beyond partitions={partitions}"
+                    "nutmeg: checkpointed {name} names bucket {index}, beyond partitions={partitions}"
                 );
             }
-            if files[index].is_some() {
-                return plan_err!("nutmeg: checkpointed bucket {index} has more than one file");
+            if files.is_empty() {
+                return plan_err!("nutmeg: checkpointed bucket {index} directory has no Parquet file");
             }
-            let size = entry
-                .metadata()
-                .map_err(|e| datafusion_common::DataFusionError::Plan(e.to_string()))?
-                .len();
-            files[index] = Some((entry.path(), size));
+            if buckets[index].is_some() {
+                return plan_err!("nutmeg: checkpointed bucket {index} has more than one file or directory");
+            }
+            buckets[index] = Some(files);
         }
-        let files: Vec<(PathBuf, u64)> = files
+        let buckets: Vec<Vec<(PathBuf, u64)>> = buckets
             .into_iter()
             .enumerate()
-            .map(|(index, file)| {
-                file.ok_or_else(|| {
+            .map(|(index, files)| {
+                files.ok_or_else(|| {
                     datafusion_common::DataFusionError::Plan(format!(
                         "nutmeg: checkpointed bucket {index} of {partitions} is missing in {}",
                         directory.display()
@@ -135,25 +180,32 @@ impl CheckpointedTable {
                 })
             })
             .collect::<Result<_>>()?;
-        let schema = read_schema(&files[0].0)?;
+        let first = &buckets[0][0].0;
+        let schema = read_schema(first)?;
         let key_index = schema.index_of(key).map_err(|_| {
             datafusion_common::DataFusionError::Plan(format!(
                 "nutmeg: checkpointed key `{key}` is not a column of {}",
-                files[0].0.display()
+                first.display()
             ))
         })?;
         Ok(Self {
             directory,
             key: key.to_string(),
             key_index,
-            files,
+            buckets,
             schema,
         })
     }
 
+    /// Whether every bucket is one file, so that its sort order can be
+    /// declared: a bucket of several files is sorted within each file only.
+    pub fn single_file_buckets(&self) -> bool {
+        self.buckets.iter().all(|files| files.len() == 1)
+    }
+
     /// The bucket count, which is the partition count the scan declares.
     pub fn partitions(&self) -> usize {
-        self.files.len()
+        self.buckets.len()
     }
 
     /// The directory the buckets were listed from.
@@ -201,20 +253,23 @@ impl TableProvider for CheckpointedTable {
         let ordering = LexOrdering::new([PhysicalSortExpr::new(Arc::clone(&key), key_order())])
         .ok_or_else(|| datafusion_common::DataFusionError::Internal("empty ordering".into()))?;
         let groups = self
-            .files
+            .buckets
             .iter()
-            .map(|(path, size)| {
-                FileGroup::new(vec![PartitionedFile::new(
-                    path.to_string_lossy().into_owned(),
-                    *size,
-                )])
+            .map(|files| {
+                FileGroup::new(
+                    files
+                        .iter()
+                        .map(|(path, size)| PartitionedFile::new(path.to_string_lossy().into_owned(), *size))
+                        .collect(),
+                )
             })
             .collect();
         let source = Arc::new(ParquetSource::new(Arc::clone(&self.schema)));
+        let orderings = if self.single_file_buckets() { vec![ordering] } else { vec![] };
         let config = FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source)
             .with_file_groups(groups)
-            .with_output_ordering(vec![ordering])
-            .with_output_partitioning(Some(Partitioning::Hash(vec![key], self.files.len())))
+            .with_output_ordering(orderings)
+            .with_output_partitioning(Some(Partitioning::Hash(vec![key], self.buckets.len())))
             .with_projection_indices(projection.cloned())?
             .with_limit(limit)
             .build();
@@ -664,6 +719,52 @@ mod tests {
             .collect()
             .await;
         assert!(again.unwrap_err().to_string().contains("non-empty"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn partition_directories_per_bucket_are_read_and_declared() {
+        let n = 3;
+        let dir = scratch("hive");
+        let keys: Vec<i64> = (0..600).map(|i| (i * 31) % 211).collect();
+        let vals: Vec<f64> = keys.iter().map(|k| *k as f64).collect();
+        let key_array: ArrayRef = Arc::new(Int64Array::from(keys.clone()));
+        let mut hashes = vec![0u64; keys.len()];
+        create_hashes(&[key_array], REPARTITION_RANDOM_STATE.random_state(), &mut hashes).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("v", DataType::Float64, false),
+        ]));
+        for bucket in 0..n {
+            let sub = dir.join(format!("{BUCKET_COLUMN}={bucket}"));
+            std::fs::create_dir_all(&sub).unwrap();
+            let mut rows: Vec<(i64, f64)> = keys.iter().zip(&vals).zip(&hashes)
+                .filter(|(_, h)| (**h % n as u64) as usize == bucket).map(|((k, v), _)| (*k, *v)).collect();
+            rows.sort_by_key(|r| r.0);
+            // Two files in bucket 0, one elsewhere: order is declared only when every bucket is one file.
+            let pieces: Vec<&[(i64, f64)]> = if bucket == 0 { vec![&rows[..rows.len() / 2], &rows[rows.len() / 2..]] } else { vec![&rows[..]] };
+            for (j, piece) in pieces.iter().enumerate() {
+                let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
+                    Arc::new(Int64Array::from(piece.iter().map(|r| r.0).collect::<Vec<_>>())),
+                    Arc::new(Float64Array::from(piece.iter().map(|r| r.1).collect::<Vec<_>>())),
+                ]).unwrap();
+                let file = File::create(sub.join(format!("token_{j}.zst.parquet"))).unwrap();
+                let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
+                writer.write(&batch).unwrap();
+                writer.close().unwrap();
+            }
+        }
+        let table = CheckpointedTable::open(dir.to_str().unwrap(), "id", n).unwrap();
+        assert_eq!(table.partitions(), n);
+        assert!(!table.single_file_buckets());
+        let ctx = SessionContext::new_with_config(SessionConfig::new().with_target_partitions(n));
+        let t = ctx.read_table(Arc::new(table)).unwrap();
+        let agg = t.aggregate(vec![col("id")], vec![datafusion::functions_aggregate::sum::sum(col("v"))]).unwrap();
+        let plan = agg.create_physical_plan().await.unwrap();
+        let text = displayable(plan.as_ref()).indent(true).to_string();
+        assert!(!text.contains("RepartitionExec"), "{text}");
+        let rows: usize = collect(plan, ctx.task_ctx()).await.unwrap().iter().map(|b| b.num_rows()).sum();
+        assert_eq!(rows, 211);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

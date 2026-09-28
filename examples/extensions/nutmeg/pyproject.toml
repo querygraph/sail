@@ -15,6 +15,7 @@ client = ["pyspark[connect]>=4.0,<4.2"]
 [project.entry-points."pysail.extensions"]
 nutmeg = "sail_nutmeg:extension"
 argentea = "sail_nutmeg.argentea_factory:extension"
+nutmeg-bucket = "sail_nutmeg.bucket_factory:extension"
 
 [tool.maturin]
 python-source = "python"
