@@ -1,0 +1,120 @@
+{
+  "algorithm": "pagerank",
+  "engine": "nutmeg",
+  "dataset": "example-directed",
+  "size_class": "-",
+  "params": {
+    "max_memory": "24G",
+    "use_smj": false,
+    "join": "hash",
+    "partitions": 8,
+    "threads": 8,
+    "tol": 1e-05,
+    "damping": 0.85,
+    "max_iter": 0,
+    "nutmeg_kernel": "pagerankDelta",
+    "nutmeg_memory": "8G",
+    "sail_binary": "/home/ubuntu/sail/target/release/sail",
+    "work_dir": "/home/ubuntu/sail/examples/extensions/benchmarks/sem_benchmark/work/nutmeg_example-directed",
+    "runs": 1,
+    "warmup": 0,
+    "target_samples": 300,
+    "align": "dtw",
+    "disk_mode": "du"
+  },
+  "graph": {
+    "vertices": 10,
+    "edges": 17,
+    "nodes_str": "10",
+    "edges_str": "17"
+  },
+  "warmup": {
+    "wall_time_s": null,
+    "sampling_interval_s": null
+  },
+  "runs": [
+    {
+      "index": 0,
+      "wall_time_s": 0.017144581000138714,
+      "peak_rss_kb": 59572.0,
+      "peak_disk_bytes": 0.0,
+      "n_samples": 1,
+      "details": {
+        "stage_seconds": 0.008541557000171451,
+        "stage_receipt": {
+          "graph": "benchmark",
+          "nodeCount": 10,
+          "edgeCount": 17,
+          "revision": 1
+        },
+        "wall_time_s": 0.017144581000138714,
+        "result": "/home/ubuntu/sail/examples/extensions/benchmarks/sem_benchmark/work/nutmeg_example-directed/run_0/result",
+        "native": {
+          "iterations": 15,
+          "converged": true,
+          "residual": 3.6059769127350094e-06,
+          "frontier_edges": 247,
+          "certificate_passes": 2
+        }
+      }
+    }
+  ],
+  "stats": {
+    "wall_time_s": {
+      "n": 1,
+      "median": 0.017144581000138714,
+      "mean": 0.017144581000138714,
+      "std": 0.0,
+      "min": 0.017144581000138714,
+      "max": 0.017144581000138714,
+      "p90": 0.017144581000138714,
+      "p95": 0.017144581000138714
+    },
+    "peak_rss_kb": {
+      "n": 1,
+      "median": 59572.0,
+      "mean": 59572.0,
+      "std": 0.0,
+      "min": 59572.0,
+      "max": 59572.0,
+      "p90": 59572.0,
+      "p95": 59572.0
+    },
+    "peak_disk_bytes": {
+      "n": 1,
+      "median": 0.0,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0,
+      "p90": 0.0,
+      "p95": 0.0
+    },
+    "medges_per_sec": 0.0009915669563381254
+  },
+  "series": null,
+  "raw_series": [
+    {
+      "t": [
+        0.0001332320007350063
+      ],
+      "rss_kb": [
+        59572.0
+      ],
+      "disk_bytes": [
+        0.0
+      ]
+    }
+  ],
+  "environment": {
+    "timestamp": "2026-09-28T13:43:35.100687+00:00",
+    "platform": "Linux-7.0.0-1006-aws-x86_64-with-glibc2.43",
+    "python": "3.12.14",
+    "cpu_count": 16,
+    "gnuplot": false,
+    "package:pyspark": "4.0.1",
+    "package:sail-nutmeg": "0.1.0",
+    "package:gfrs-poc": "0.1.0",
+    "git_commit": "2fbc6c50ac1815371e4813e3f49e687b7639ae94"
+  }
+}
