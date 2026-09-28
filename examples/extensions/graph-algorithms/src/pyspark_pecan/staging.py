@@ -68,18 +68,18 @@ class StagingRun:
         # barrier. Keep ownership for session teardown if its outcome is unknown.
         self.write_uncertain = True
         if declared:
-            frame.repartition(self.partitions, key).sortWithinPartitions(key).write.mode("error").parquet(path)
+            # The extension writes the buckets itself; see Nutmeg.checkpoint.
+            stored = self.nutmeg.checkpoint(frame, path, key, self.partitions)
+            self.write_uncertain = False
         else:
             frame.repartition(self.partitions).write.mode("error").parquet(path)
-        self.write_uncertain = False
-        self.cancellation.check()
-        stored = self.spark.read.parquet(path)
-        if not stored.schema.fields:
-            # Some engines create no data files for an empty write. Preserve
-            # the known schema when there is no Parquet footer to infer it from.
-            stored = self.spark.read.schema(frame.schema).parquet(path)
-        elif declared:
-            stored = self.nutmeg.checkpointed(path, key, self.partitions)
+            self.write_uncertain = False
+            self.cancellation.check()
+            stored = self.spark.read.parquet(path)
+            if not stored.schema.fields:
+                # Some engines create no data files for an empty write. Preserve
+                # the known schema when there is no Parquet footer to infer it from.
+                stored = self.spark.read.schema(frame.schema).parquet(path)
         if stored.schema != frame.schema:
             # Parquet readers may widen nullability; column names/types are
             # contractual, while nullability is not a portable file guarantee.

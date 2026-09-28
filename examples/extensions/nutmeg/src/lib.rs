@@ -142,8 +142,12 @@ fn plan(
                 request.graph,
             )))
         }
-        "checkpointed" => {
-            if !inputs.is_empty() {
+        "checkpoint" | "checkpointed" => {
+            let writing = request.verb == "checkpoint";
+            if writing && inputs.len() != 1 {
+                return plan_err!("nutmeg: checkpoint requires a Sail envelope with one input");
+            }
+            if !writing && !inputs.is_empty() {
                 return plan_err!("nutmeg: checkpointed accepts no inputs");
             }
             if request.algorithm.is_some()
@@ -151,7 +155,7 @@ fn plan(
                 || !request.node_mapping.is_empty()
                 || !request.edge_mapping.is_empty()
             {
-                return plan_err!("nutmeg: checkpointed accepts only version, verb, graph and options");
+                return plan_err!("nutmeg: checkpoint/checkpointed accept only version, verb, graph and options");
             }
             let mut options = request.options;
             let path = match options.remove("path") {
@@ -167,12 +171,21 @@ fn plan(
                 _ => return plan_err!("nutmeg: checkpointed requires options.partitions in 1..=65536"),
             };
             if !options.is_empty() {
-                return plan_err!("nutmeg: checkpointed accepts only path, key and partitions options");
+                return plan_err!("nutmeg: checkpoint/checkpointed accept only path, key and partitions options");
             }
-            Ok(Arc::new(checkpoint::CheckpointedTable::open(&path, &key, partitions)?))
+            if writing {
+                Ok(Arc::new(checkpoint::CheckpointWriteTable::new(
+                    Arc::clone(&inputs[0]),
+                    &path,
+                    &key,
+                    partitions,
+                )?))
+            } else {
+                Ok(Arc::new(checkpoint::CheckpointedTable::open(&path, &key, partitions)?))
+            }
         }
         other => plan_err!(
-            "nutmeg: unknown verb {other}; registered verbs: stage, run, nodes, edges, diagnostics, drop, checkpointed"
+            "nutmeg: unknown verb {other}; registered verbs: stage, run, nodes, edges, diagnostics, drop, checkpoint, checkpointed"
         ),
     }
 }

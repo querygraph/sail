@@ -19,7 +19,7 @@
 //! per index in `0..partitions`, and a key that is not a column of the file.
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arrow::compute::SortOptions;
 use arrow::datatypes::SchemaRef;
@@ -32,8 +32,18 @@ use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::{Expr, TableType};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{LexOrdering, Partitioning, PhysicalExpr, PhysicalSortExpr};
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion_common::{Result, plan_err};
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::sorts::sort::SortExec;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+};
+use datafusion_common::tree_node::TreeNodeRecursion;
+use datafusion_common::{Result, exec_err, plan_err};
+use datafusion_execution::{SendableRecordBatchStream, TaskContext};
+use futures::{TryStreamExt, stream};
+use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 
 /// One bucketed, sorted checkpoint directory on the local filesystem.
@@ -188,13 +198,7 @@ impl TableProvider for CheckpointedTable {
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let key: Arc<dyn PhysicalExpr> = Arc::new(Column::new(&self.key, self.key_index));
-        let ordering = LexOrdering::new([PhysicalSortExpr::new(
-            Arc::clone(&key),
-            SortOptions {
-                descending: false,
-                nulls_first: false,
-            },
-        )])
+        let ordering = LexOrdering::new([PhysicalSortExpr::new(Arc::clone(&key), key_order())])
         .ok_or_else(|| datafusion_common::DataFusionError::Internal("empty ordering".into()))?;
         let groups = self
             .files
@@ -216,6 +220,294 @@ impl TableProvider for CheckpointedTable {
             .build();
         Ok(DataSourceExec::from_data_source(config))
     }
+}
+
+
+/// The sort order every checkpoint is written in and declared with.
+fn key_order() -> SortOptions {
+    SortOptions {
+        descending: false,
+        nulls_first: false,
+    }
+}
+
+/// `checkpoint`: write one input, hash-bucketed by `key` into `partitions`
+/// files with DataFusion's own repartition hash, each bucket sorted by `key`,
+/// so that [`CheckpointedTable`]'s declaration is true by construction.
+///
+/// The bucket is exactly what `RepartitionExec` computes for
+/// `Partitioning::Hash([key], partitions)`, so a checkpoint is co-partitioned
+/// not only with other checkpoints but with anything DataFusion itself hash
+/// partitions on the same key and count. Files are `part-{i}.parquet`. The
+/// write is attempted once; a retried or concurrent execution is refused,
+/// because a half-written directory is not a checkpoint.
+#[derive(Debug)]
+pub struct CheckpointWriteTable {
+    input: Arc<dyn ExecutionPlan>,
+    directory: PathBuf,
+    key: String,
+    partitions: usize,
+    schema: SchemaRef,
+    attempt: Mutex<Option<arrow::array::RecordBatch>>,
+}
+
+impl CheckpointWriteTable {
+    pub fn new(
+        input: Arc<dyn ExecutionPlan>,
+        path: &str,
+        key: &str,
+        partitions: usize,
+    ) -> Result<Self> {
+        if partitions == 0 || partitions > 65536 {
+            return plan_err!("nutmeg: checkpoint requires partitions in 1..=65536");
+        }
+        let directory = match path.strip_prefix("file://") {
+            Some(rest) => PathBuf::from(rest),
+            None => PathBuf::from(path),
+        };
+        if !directory.is_absolute() {
+            return plan_err!("nutmeg: checkpoint path must be a file:// URL or an absolute directory");
+        }
+        input.schema().index_of(key).map_err(|_| {
+            datafusion_common::DataFusionError::Plan(format!(
+                "nutmeg: checkpoint key `{key}` is not a column of the input"
+            ))
+        })?;
+        let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("path", arrow::datatypes::DataType::Utf8, false),
+            arrow::datatypes::Field::new("key", arrow::datatypes::DataType::Utf8, false),
+            arrow::datatypes::Field::new("partitions", arrow::datatypes::DataType::Int64, false),
+            arrow::datatypes::Field::new("rows", arrow::datatypes::DataType::Int64, false),
+            arrow::datatypes::Field::new("bytes", arrow::datatypes::DataType::Int64, false),
+        ]));
+        Ok(Self {
+            input,
+            directory,
+            key: key.to_string(),
+            partitions,
+            schema,
+            attempt: Mutex::new(None),
+        })
+    }
+}
+
+#[async_trait]
+impl TableProvider for CheckpointWriteTable {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+    fn table_type(&self) -> TableType {
+        TableType::Temporary
+    }
+    async fn scan(
+        &self,
+        _session: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        Ok(Arc::new(CheckpointWriteExec::new(
+            Arc::new(Self {
+                input: Arc::clone(&self.input),
+                directory: self.directory.clone(),
+                key: self.key.clone(),
+                partitions: self.partitions,
+                schema: Arc::clone(&self.schema),
+                attempt: Mutex::new(self.attempt.lock().map_err(|_| poisoned())?.clone()),
+            }),
+            Arc::clone(&self.input),
+            projection.cloned(),
+        )?))
+    }
+}
+
+fn poisoned() -> datafusion_common::DataFusionError {
+    datafusion_common::DataFusionError::Execution("nutmeg: checkpoint lock poisoned".into())
+}
+
+#[derive(Debug)]
+struct CheckpointWriteExec {
+    table: Arc<CheckpointWriteTable>,
+    input: Arc<dyn ExecutionPlan>,
+    projection: Option<Vec<usize>>,
+    properties: Arc<PlanProperties>,
+}
+
+impl CheckpointWriteExec {
+    fn new(
+        table: Arc<CheckpointWriteTable>,
+        input: Arc<dyn ExecutionPlan>,
+        projection: Option<Vec<usize>>,
+    ) -> Result<Self> {
+        let schema = match &projection {
+            Some(p) => Arc::new(table.schema.project(p)?),
+            None => Arc::clone(&table.schema),
+        };
+        let properties = Arc::new(PlanProperties::new(
+            datafusion::physical_expr::EquivalenceProperties::new(schema),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Final,
+            Boundedness::Bounded,
+        ));
+        Ok(Self {
+            table,
+            input,
+            projection,
+            properties,
+        })
+    }
+}
+
+impl DisplayAs for CheckpointWriteExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "NutmegCheckpointWriteExec: path={}, key={}, partitions={}, placement=driver, at_most_once=true",
+            self.table.directory.display(),
+            self.table.key,
+            self.table.partitions
+        )
+    }
+}
+
+impl ExecutionPlan for CheckpointWriteExec {
+    fn name(&self) -> &str {
+        "NutmegCheckpointWriteExec"
+    }
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return exec_err!("nutmeg: checkpoint takes one input");
+        }
+        Ok(Arc::new(Self::new(
+            Arc::clone(&self.table),
+            Arc::clone(&children[0]),
+            self.projection.clone(),
+        )?))
+    }
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        if partition != 0 {
+            return exec_err!("nutmeg: checkpoint has one output partition");
+        }
+        let (table, input, projection) = (
+            Arc::clone(&self.table),
+            Arc::clone(&self.input),
+            self.projection.clone(),
+        );
+        let future = async move {
+            let done = table.attempt.lock().map_err(|_| poisoned())?.clone();
+            let batch = match done {
+                Some(batch) => batch,
+                None => {
+                    let batch = write_checkpoint(&table, input, context).await?;
+                    *table.attempt.lock().map_err(|_| poisoned())? = Some(batch.clone());
+                    batch
+                }
+            };
+            match projection {
+                Some(p) => Ok(batch.project(&p)?),
+                None => Ok(batch),
+            }
+        };
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.schema(),
+            stream::once(future),
+        )))
+    }
+}
+
+/// Repartition by DataFusion's hash of the key, sort each bucket, write one
+/// file per bucket, all buckets consumed concurrently (a repartition's
+/// distributor blocks when any output partition is left unread).
+async fn write_checkpoint(
+    table: &CheckpointWriteTable,
+    input: Arc<dyn ExecutionPlan>,
+    context: Arc<TaskContext>,
+) -> Result<arrow::array::RecordBatch> {
+    let directory = &table.directory;
+    if directory.exists() {
+        let mut entries = std::fs::read_dir(directory)
+            .map_err(|e| datafusion_common::DataFusionError::Execution(format!("{}: {e}", directory.display())))?;
+        if entries.next().is_some() {
+            return exec_err!(
+                "nutmeg: checkpoint refuses the non-empty directory {}",
+                directory.display()
+            );
+        }
+    } else {
+        std::fs::create_dir_all(directory)
+            .map_err(|e| datafusion_common::DataFusionError::Execution(format!("{}: {e}", directory.display())))?;
+    }
+    let schema = input.schema();
+    let key_index = schema.index_of(&table.key)?;
+    let key: Arc<dyn PhysicalExpr> = Arc::new(Column::new(&table.key, key_index));
+    let repartitioned = Arc::new(RepartitionExec::try_new(
+        input,
+        Partitioning::Hash(vec![Arc::clone(&key)], table.partitions),
+    )?);
+    let ordering = LexOrdering::new([PhysicalSortExpr::new(key, key_order())])
+        .ok_or_else(|| datafusion_common::DataFusionError::Internal("empty ordering".into()))?;
+    let sorted: Arc<dyn ExecutionPlan> =
+        Arc::new(SortExec::new(ordering, repartitioned).with_preserve_partitioning(true));
+    if sorted.output_partitioning().partition_count() != table.partitions {
+        return exec_err!("nutmeg: checkpoint lost its partition count during planning");
+    }
+    let writers = (0..table.partitions).map(|bucket| {
+        let sorted = Arc::clone(&sorted);
+        let context = Arc::clone(&context);
+        let path = directory.join(format!("part-{bucket}.parquet"));
+        let schema = Arc::clone(&schema);
+        async move {
+            let mut stream = sorted.execute(bucket, context)?;
+            let file = File::create(&path)
+                .map_err(|e| datafusion_common::DataFusionError::Execution(format!("{}: {e}", path.display())))?;
+            let mut writer = ArrowWriter::try_new(file, schema, None)
+                .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?;
+            let mut rows = 0usize;
+            while let Some(batch) = stream.try_next().await? {
+                rows += batch.num_rows();
+                writer
+                    .write(&batch)
+                    .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?;
+            }
+            writer
+                .close()
+                .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?;
+            let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            Ok::<(usize, u64), datafusion_common::DataFusionError>((rows, bytes))
+        }
+    });
+    let written = futures::future::try_join_all(writers).await?;
+    let rows: usize = written.iter().map(|w| w.0).sum();
+    let bytes: u64 = written.iter().map(|w| w.1).sum();
+    Ok(arrow::array::RecordBatch::try_new(
+        Arc::clone(&table.schema),
+        vec![
+            Arc::new(arrow::array::StringArray::from(vec![directory.to_string_lossy().into_owned()])),
+            Arc::new(arrow::array::StringArray::from(vec![table.key.clone()])),
+            Arc::new(arrow::array::Int64Array::from(vec![table.partitions as i64])),
+            Arc::new(arrow::array::Int64Array::from(vec![rows as i64])),
+            Arc::new(arrow::array::Int64Array::from(vec![bytes as i64])),
+        ],
+    )?)
 }
 
 #[cfg(test)]
@@ -273,6 +565,106 @@ mod tests {
             writer.write(&batch).unwrap();
             writer.close().unwrap();
         }
+    }
+
+
+    #[tokio::test]
+    async fn written_checkpoint_is_bucketed_by_the_engine_hash_sorted_and_joinable() {
+        let n = 4;
+        let dir = scratch("write");
+        let ctx = SessionContext::new_with_config(SessionConfig::new().with_target_partitions(n));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("v", DataType::Float64, false),
+        ]));
+        let ids: Vec<i64> = (0..2000).map(|i| (i * 7919) % 613).collect();
+        let vals: Vec<f64> = ids.iter().map(|k| *k as f64).collect();
+        let batches: Vec<Vec<RecordBatch>> = (0..3)
+            .map(|p| {
+                let slice: Vec<usize> = (0..ids.len()).filter(|i| i % 3 == p).collect();
+                vec![RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::new(Int64Array::from(slice.iter().map(|i| ids[*i]).collect::<Vec<_>>())),
+                        Arc::new(Float64Array::from(slice.iter().map(|i| vals[*i]).collect::<Vec<_>>())),
+                    ],
+                )
+                .unwrap()]
+            })
+            .collect();
+        let input = datafusion::datasource::memory::MemorySourceConfig::try_new_exec(&batches, Arc::clone(&schema), None).unwrap();
+        let left = dir.join("left");
+        let receipt = ctx
+            .read_table(Arc::new(CheckpointWriteTable::new(input.clone(), left.to_str().unwrap(), "id", n).unwrap()))
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let rows = receipt[0].column_by_name("rows").unwrap().as_any().downcast_ref::<Int64Array>().unwrap().value(0);
+        assert_eq!(rows, 2000);
+        // Every bucket is what DataFusion's own hash says it is, and sorted.
+        let key_array: ArrayRef = Arc::new(Int64Array::from(ids.clone()));
+        let mut hashes = vec![0u64; ids.len()];
+        create_hashes(&[key_array], REPARTITION_RANDOM_STATE.random_state(), &mut hashes).unwrap();
+        for bucket in 0..n {
+            let expected: std::collections::BTreeMap<i64, usize> = ids
+                .iter()
+                .zip(&hashes)
+                .filter(|(_, h)| (**h % n as u64) as usize == bucket)
+                .fold(std::collections::BTreeMap::new(), |mut m, (k, _)| {
+                    *m.entry(*k).or_default() += 1;
+                    m
+                });
+            let file = File::open(left.join(format!("part-{bucket}.parquet"))).unwrap();
+            let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file).unwrap().build().unwrap();
+            let mut seen: Vec<i64> = Vec::new();
+            for batch in reader {
+                let batch = batch.unwrap();
+                seen.extend(batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values());
+            }
+            assert!(seen.windows(2).all(|w| w[0] <= w[1]), "bucket {bucket} not sorted");
+            let mut observed: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
+            for k in seen {
+                *observed.entry(k).or_default() += 1;
+            }
+            assert_eq!(observed, expected, "bucket {bucket} differs from the engine hash");
+        }
+        // A second checkpoint of the same keys co-partitions with the first.
+        let right = dir.join("right");
+        ctx.read_table(Arc::new(CheckpointWriteTable::new(input, right.to_str().unwrap(), "id", n).unwrap()))
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let l = ctx.read_table(Arc::new(CheckpointedTable::open(left.to_str().unwrap(), "id", n).unwrap())).unwrap();
+        let r = ctx
+            .read_table(Arc::new(CheckpointedTable::open(right.to_str().unwrap(), "id", n).unwrap()))
+            .unwrap()
+            .select(vec![col("id").alias("rid")])
+            .unwrap();
+        let joined = l.join(r, datafusion::common::JoinType::Inner, &["id"], &["rid"], None).unwrap();
+        let plan = joined.clone().create_physical_plan().await.unwrap();
+        let text = displayable(plan.as_ref()).indent(true).to_string();
+        assert!(!text.contains("RepartitionExec"), "{text}");
+        let joined_rows: usize = joined.collect().await.unwrap().iter().map(|b| b.num_rows()).sum();
+        let mut per_key: HashMap<i64, usize> = HashMap::new();
+        for k in &ids {
+            *per_key.entry(*k).or_default() += 1;
+        }
+        assert_eq!(joined_rows, per_key.values().map(|c| c * c).sum::<usize>());
+        // A non-empty directory is refused rather than overwritten.
+        let again = ctx
+            .read_table(Arc::new(CheckpointWriteTable::new(
+                datafusion::datasource::memory::MemorySourceConfig::try_new_exec(&batches, Arc::clone(&schema), None).unwrap(),
+                left.to_str().unwrap(),
+                "id",
+                n,
+            ).unwrap()))
+            .unwrap()
+            .collect()
+            .await;
+        assert!(again.unwrap_err().to_string().contains("non-empty"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

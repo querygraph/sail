@@ -97,14 +97,23 @@ class Nutmeg:
         """
         return self._relation("checkpointed", graph, options={"path": path, "key": key, "partitions": int(partitions)})
 
-    def checkpoint(self, frame, path, key, partitions):
-        """Write `frame` bucketed and sorted by `key`, then scan it declared.
+    def checkpoint(self, frame, path, key, partitions, *, graph="__checkpoint__"):
+        """Write `frame` as a checkpoint bucketed by `key`, then scan it declared.
 
-        Sail writes one file per partition with the partition index in its
-        name; the returned DataFrame reads them back through `checkpointed`.
+        The extension executes `frame` itself: it repartitions by DataFusion's
+        own hash of `key` into `partitions` buckets, sorts each bucket by `key`,
+        and writes one file per bucket, so the layout `checkpointed` declares is
+        true by construction. Sail's ordinary Parquet writer cannot be used for
+        this: it spreads batches over files round-robin, so its file index is
+        not a bucket. The write happens on the driver and is attempted once;
+        `path` must be absent or empty. Returns the declared scan; the receipt
+        (rows, bytes) is on `last_checkpoint`.
         """
-        frame.repartition(int(partitions), key).sortWithinPartitions(key).write.mode("error").parquet(path)
-        return self.checkpointed(path, key, partitions)
+        if frame.sparkSession is not self.spark:
+            raise ValueError("checkpoint input must belong to this Nutmeg Spark session")
+        self.last_checkpoint = self._relation("checkpoint", graph, inputs=(frame,),
+                                              options={"path": path, "key": key, "partitions": int(partitions)}).collect()[0]
+        return self.checkpointed(path, key, partitions, graph=graph)
 
     def status(self):
         """Read native admission, revision/cache counts and actual kernel states."""
