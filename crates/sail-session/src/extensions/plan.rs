@@ -7,11 +7,14 @@
 use std::fmt::{Formatter, Result as FmtResult};
 use std::sync::Arc;
 
-use arrow_schema::SchemaRef;
+use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::{
+    EquivalenceProperties, LexOrdering, Partitioning, PhysicalExpr, PhysicalSortExpr,
+};
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::{Result, Statistics, plan_err};
@@ -57,17 +60,76 @@ impl TableProvider for NativeTableProvider {
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let inner = self.inner.scan(session, projection, filters, limit).await?;
+        let properties = Arc::new(declared_properties(inner.properties()));
         Ok(Arc::new(NativeRelationExec {
             inner,
+            properties,
             // Keep provider-owned native resources alive with its execution.
             _provider: Arc::clone(&self.inner),
         }))
     }
 }
 
+/// A native plan's declared layout, restated with host column expressions.
+///
+/// A plan that crosses the FFI boundary keeps its output partitioning and
+/// ordering, but every expression in them arrives as a foreign expression
+/// the host can only evaluate: it compares equal to nothing and projects
+/// through nothing, so a scan that declares `Hash([key], N)` still gets a
+/// repartition under every join, and a declared order gets a sort. A column
+/// is the one expression whose identity its display gives away, `name@index`;
+/// when that display names a column of the plan's own schema at that index,
+/// the host column is the same expression. Anything else is kept as it came.
+fn declared_properties(inner: &PlanProperties) -> PlanProperties {
+    let schema = Arc::clone(inner.eq_properties.schema());
+    let partitioning = match inner.output_partitioning() {
+        Partitioning::Hash(exprs, count) => Partitioning::Hash(
+            exprs.iter().map(|expr| host_column(expr, &schema)).collect(),
+            *count,
+        ),
+        other => other.clone(),
+    };
+    let ordering = inner.output_ordering().and_then(|ordering| {
+        LexOrdering::new(ordering.iter().map(|sort| PhysicalSortExpr {
+            expr: host_column(&sort.expr, &schema),
+            options: sort.options,
+        }))
+    });
+    let eq_properties = match ordering {
+        Some(ordering) => EquivalenceProperties::new_with_orderings(schema, [ordering]),
+        None => EquivalenceProperties::new(schema),
+    };
+    PlanProperties::new(
+        eq_properties,
+        partitioning,
+        inner.emission_type,
+        inner.boundedness,
+    )
+}
+
+/// `expr` as a host [`Column`] when it is one column of `schema`, else itself.
+fn host_column(expr: &Arc<dyn PhysicalExpr>, schema: &Schema) -> Arc<dyn PhysicalExpr> {
+    if expr.is::<Column>() || !expr.children().is_empty() {
+        return Arc::clone(expr);
+    }
+    let display = expr.to_string();
+    let Some((name, index)) = display.rsplit_once('@') else {
+        return Arc::clone(expr);
+    };
+    let Ok(index) = index.parse::<usize>() else {
+        return Arc::clone(expr);
+    };
+    match schema.fields().get(index) {
+        Some(field) if field.name() == name => Arc::new(Column::new(name, index)),
+        _ => Arc::clone(expr),
+    }
+}
+
 #[derive(Debug)]
 struct NativeRelationExec {
     inner: Arc<dyn ExecutionPlan>,
+    /// [`declared_properties`] of `inner`, computed once.
+    properties: Arc<PlanProperties>,
     _provider: Arc<dyn TableProvider>,
 }
 
@@ -87,7 +149,7 @@ impl ExecutionPlan for NativeRelationExec {
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
-        self.inner.properties()
+        &self.properties
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
