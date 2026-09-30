@@ -37,12 +37,12 @@ def test_missing_memory_and_failed_only_groups_are_not_zero():
     assert '(n=2)' in display(group['metrics']['seconds'])
 
 
-def records():
+def records(algorithm='pagerank'):
     config = json.loads(Path(__file__).with_name('matrix.example.json').read_text())
     config.update(harness_source_sha='a' * 40, runtime_source_sha='b' * 40, native_source_sha='c' * 40)
     cells = [cell for cell in plan_cells(config) if cell['suite'] == 'distributed' and
              cell['dataset'] == 'sparse-10000' and cell['engine'] == 'nutmeg-native' and
-             cell['algorithm'] == 'pagerank' and cell['variant'] == 'optimized']
+             cell['algorithm'] == algorithm and cell['variant'] == 'optimized']
     entries = []
     for cell in cells:
         command = cell_command(config, cell)

@@ -20,6 +20,7 @@ from traversal_source import MAX_DEGREE
 import time
 
 from runtime import algorithm_method, validate_admission_settings
+from validation_outcome import effective_outcome, expected_validation_outcome, resumed_outcome
 
 
 ENGINES = ('pecan', 'nutmeg-native', 'nutmeg-datafusion')
@@ -184,12 +185,14 @@ def plan_cells(config):
                     for algorithm in suite['algorithms']:
                         for variant in suite.get('variants', config.get('variants', DEFAULT_VARIANTS)):
                             name = f"{suite['name']}-r{repeat}-{dataset}-{engine}-{algorithm}-{variant}"
-                            expected = suite.get('expected_outcomes', {}).get(variant, {}).get(engine, 'passed')
-                            group.append(dict(cell_id=name, suite=suite['name'], repeat=repeat,
+                            cell = dict(cell_id=name, suite=suite['name'], repeat=repeat,
                                 dataset=dataset, engine=engine, algorithm=algorithm, variant=variant,
                                 mode=suite['mode'], stage_order=suite.get('stage_order', 'canonical'),
                                 max_iterations=suite.get('max_iterations', config['defaults']['max_iterations']),
-                                expected_outcome=expected, diagnostic=bool(suite.get('diagnostic', False))))
+                                diagnostic=bool(suite.get('diagnostic', False)))
+                            expected = expected_validation_outcome(cell_command(config, cell))
+                            cell['expected_outcome'] = suite.get('expected_outcomes', {}).get(variant, {}).get(engine, expected)
+                            group.append(cell)
             rng.shuffle(group)
             result.extend(group)
     if len({cell['cell_id'] for cell in result}) != len(result):
@@ -370,7 +373,7 @@ def classify(record, receipt, expected_sha):
         return 'source_mismatch'
     if receipt.get('outcome') == 'passed' and record.get('attach_returncode') != 0:
         return 'exit_receipt_mismatch'
-    return receipt.get('outcome', 'invalid_receipt')
+    return effective_outcome(receipt)
 
 
 def preflight(config, output):
@@ -482,6 +485,9 @@ def main():
                 result = json.loads(completed.read_text())
                 if result['configuration_sha256'] != fingerprint:
                     raise RuntimeError('resume configuration differs from recorded cell')
+                receipt_path = cell_output / 'artifacts/receipt.json'
+                if result.get('outcome') == 'passed' and receipt_path.exists():
+                    result = resumed_outcome(result, json.loads(receipt_path.read_text()), cell['expected_outcome'])
                 results.append(result)
                 continue
             record = run_container(config, 'sail-' + config['run_id'] + '-' + str(cell['sequence']),

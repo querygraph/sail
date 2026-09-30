@@ -12,6 +12,7 @@ import re
 from statistics import median
 
 from run_matrix import configuration_fingerprint, plan_cells
+from validation_outcome import effective_outcome
 
 
 GROUP = ('suite', 'dataset', 'mode', 'algorithm', 'engine', 'variant')
@@ -29,6 +30,7 @@ def cell_row(cell, summary, receipt):
     row = {k: cell[k] for k in ('cell_id', 'sequence', 'repeat', *GROUP, 'expected_outcome')}
     outcome = summary['outcome'] if summary else ('incomplete_record' if receipt else 'not_run')
     row.update(outcome=outcome, original_outcome=outcome,
+               original_expected_outcome=summary.get('expected_outcome') if summary else None,
                receipt_outcome=receipt.get('outcome') if receipt else None,
                integrity_errors=[], expected_outcome_observed=outcome == cell['expected_outcome'])
     row.update({key: None for key in METRICS})
@@ -61,6 +63,9 @@ def cell_row(cell, summary, receipt):
         runtime_source_sha=receipt.get('runtime_source_sha'),
         harness_source_sha=receipt.get('harness_source_sha'),
         binary_sha256=receipt.get('binary_sha256'),
+        verification_policy=correctness.get('policy'),
+        verification_scope=correctness.get('verification_scope'),
+        component_count_verified=correctness.get('component_count_verified'),
     )
     frontier = [e['active_edges'] for e in events if e['kind'] == 'iteration_end' and 'active_edges' in e]
     contraction = [e for e in events if e['kind'] == 'iteration_end' and 'edges_after' in e]
@@ -84,7 +89,16 @@ def integrity_errors(cell, summary, receipt, config):
     errors = []
     if summary.get('configuration_sha256') != configuration_fingerprint(config):
         errors.append('configuration fingerprint differs')
+    suite = next((s for s in config['suites'] if s['name'] == cell['suite']), {})
+    overrides = suite.get('expected_outcomes', {}).get(cell['variant'], {})
+    legacy_partial_default = (cell['expected_outcome'] == 'partially_verified' and
+                              summary.get('expected_outcome') == 'passed' and
+                              cell['engine'] not in overrides and receipt is not None and
+                              receipt.get('outcome') == 'passed' and
+                              effective_outcome(receipt) == 'partially_verified')
     for key, value in cell.items():
+        if key == 'expected_outcome' and legacy_partial_default:
+            continue
         if summary.get(key) != value:
             errors.append(f'summary cell field differs: {key}')
     if not receipt:
@@ -170,6 +184,10 @@ def audited_rows(entries, config):
                 identities[('Sail binary', 'all cells')].append((row, receipt['binary_sha256']))
                 identities[('native installed files', 'all cells')].append((row, digest(native)))
                 identities[('dataset files', cell['dataset'])].append((row, digest(files)))
+                # Audit the original apparent pass before deriving its weaker
+                # scope. Keep the original labels and identities as evidence.
+                row['outcome'] = effective_outcome(receipt)
+                row['expected_outcome_observed'] = row['outcome'] == cell['expected_outcome']
         rows.append(row)
     for (kind, scope), observations in identities.items():
         if len({identity for _, identity in observations}) > 1:

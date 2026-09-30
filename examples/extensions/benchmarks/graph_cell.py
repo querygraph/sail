@@ -18,6 +18,7 @@ from traversal_source import MAX_DEGREE, parse_source
 from measurement import Sampler, cgroup_snapshot, cpu_ticks, read_text, steal_fraction
 from runtime import (algorithm_method, git, native_package_identity, package_versions, record_result_evidence,
                      server, sha256, validate_admission_settings)
+from validation_outcome import effective_outcome
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -242,12 +243,12 @@ def certify(spark, actual, dataset, algorithm, expected_rows, tolerance, damping
     PageRank: every vertex present once, finite nonnegative scores summing to
     one, convergence claimed by every row, and the true fixed-point L1 residual
     recomputed from the edges at or below the tolerance. WCC: every vertex
-    labeled, both endpoints of every edge share a label, and every label is the
-    ID of a vertex in the component it labels. Which member: Pecan and Grenada
-    take the numeric minimum, Banda's min-label kernel the minimum in canonical
-    Utf8 order ("10" before "9"), so numeric minimality is reported, not
-    required. The component count is reported, not verified: a partition can be
-    finer than the true one and still pass these checks.
+    labeled, both endpoints of every edge share a label, and every label names
+    an input vertex. The label's membership in its own group is not checked.
+    Numeric minimality is reported, not required, since native min-label uses
+    canonical Utf8 order ("10" before "9"). Component connectivity and count
+    are not verified: coarser partitions can merge disconnected components and
+    still pass these partial checks.
     """
     vertices = spark.read.parquet((dataset / 'vertices.parquet').as_uri()).select('id')
     assert not vertices.join(actual.select('id'), 'id', 'left_anti').limit(1).count(), 'a vertex is missing from the result'
@@ -260,13 +261,14 @@ def certify(spark, actual, dataset, algorithm, expected_rows, tolerance, damping
         assert crossing == 0, f'{crossing} edges cross component labels'
         minima = labels.groupBy('label').agg(F.min('id').alias('minimum'))
         foreign = minima.join(labels, minima.label.cast('long') == labels.id, 'left_anti').count()
-        assert foreign == 0, f'{foreign} labels are not the ID of a vertex they label'
+        assert foreign == 0, f'{foreign} labels do not name input vertices'
         non_minimal = minima.where(F.col('label').cast('long') != F.col('minimum')).count()
         return dict(**cardinality, policy='certificate', crossing_edges=crossing, foreign_labels=foreign,
                     non_minimal_labels=non_minimal,
-                    label_convention='numeric minimum' if non_minimal == 0 else 'a member that is not the numeric minimum (canonical Utf8 order for native min-label)',
+                    label_convention='numeric minimum' if non_minimal == 0 else 'not the numeric minimum; representative membership unverified',
                     components=minima.count(), component_count_verified=False,
-                    certificate='edge-consistent partition whose labels name members; count not independently verified')
+                    verification_scope='partial_wcc_partition',
+                    certificate='edge-consistent partition whose labels name input vertices; component connectivity and count unverified')
     invalid = actual.where(F.col('score').isNull() | F.isnan('score') |
                            (F.abs(F.col('score')) == F.lit(float('inf'))) | (F.col('score') < 0)).count()
     assert invalid == 0, f'{invalid} invalid PageRank scores'
@@ -400,7 +402,7 @@ def main():
                         help='native staging order: canonical sorts every staged row after admitting the sort working space; '
                              'asStaged keeps arrival order and skips the sort (sent to the server only when not canonical)')
     parser.add_argument('--ranking-validation', choices=['reference', 'certificate'], default='reference',
-                        help='PageRank/WCC: compare with reference.parquet, or certify without one')
+                        help='compare with reference.parquet, or check a PageRank residual / partial WCC partition without one')
     parser.add_argument('--certificate-max-rounds', type=int, default=10000)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--mode', choices=['local', 'process-cluster'], default='process-cluster')
@@ -516,7 +518,7 @@ def main():
                             manifest['counts']['vertices'], args.tolerance, args.damping,
                             args.max_iterations, args.engine == 'nutmeg-native', args.variant != 'reference',
                             policy=args.ranking_validation)
-                    receipt['outcome'] = 'passed'
+                    receipt['outcome'] = effective_outcome(receipt, outcome='passed')
                 finally:
                     active_error = sys.exc_info()[1]
                     signal.alarm(0)
