@@ -277,3 +277,95 @@ async fn late_missing_statistics_and_false_topology_totals_fail_before_publicati
         state.close().unwrap();
     }
 }
+
+#[tokio::test]
+async fn missing_candidates_with_rewritten_wire_completion_fail_before_publication() {
+    for algorithm in ["bfs_reference", "bfs_frontier"] {
+        for malformed in [false, true] {
+            let ctx = SessionContext::new();
+            let drops = Arc::new(AtomicUsize::new(0));
+            let state = BfsState::new(worker(1, 8 << 20, &drops)).unwrap();
+            let mut base = request(Verb::Init, 0, 1, 2, algorithm);
+            base.source = 0;
+            let init = stage(
+                &ctx,
+                base.clone(),
+                graph(&ctx, &[0, 1], &[(0, 1)], 1).await,
+                std::slice::from_ref(&state),
+            )
+            .await;
+            let mut batches = collect(init, ctx.task_ctx()).await.unwrap();
+            // Complete real topology validation, then materialize the first
+            // candidate stream through its local output EOF.
+            for (verb, phase) in [(Verb::Decide, 0), (Verb::Apply, 0), (Verb::Decide, 1)] {
+                let mut request = base.clone();
+                request.verb = verb;
+                request.phase = phase;
+                let plan = stage(
+                    &ctx,
+                    request,
+                    vec![memory(&ctx, vec![batches]).await],
+                    std::slice::from_ref(&state),
+                )
+                .await;
+                batches = collect(plan, ctx.task_ctx()).await.unwrap();
+            }
+            if malformed {
+                let mut removed = 0;
+                for batch in &mut batches {
+                    let keep = arrow::array::BooleanArray::from_iter(
+                        integer(batch, "kind")
+                            .values()
+                            .iter()
+                            .map(|kind| Some(*kind == wire::COMPLETE)),
+                    );
+                    let filtered = arrow::compute::filter_record_batch(batch, &keep).unwrap();
+                    removed += batch.num_rows() - filtered.num_rows();
+                    let mut columns = filtered.columns().to_vec();
+                    // Forge both counters to agree with the empty received
+                    // stream. The producer's earlier frontier statistic is 1.
+                    for name in ["sequence", "aux"] {
+                        columns[filtered.schema().index_of(name).unwrap()] =
+                            Arc::new(Int64Array::from(vec![0; filtered.num_rows()]));
+                    }
+                    *batch = RecordBatch::try_new(filtered.schema(), columns).unwrap();
+                }
+                assert_eq!(removed, 1);
+            }
+            let native = state.partition(0).unwrap().unwrap();
+            let before = lock(&native).unwrap().state_rows().collect::<Vec<_>>();
+            let mut request = base;
+            request.verb = Verb::Apply;
+            request.phase = 1;
+            let plan = stage(
+                &ctx,
+                request,
+                vec![memory(&ctx, vec![batches]).await],
+                std::slice::from_ref(&state),
+            )
+            .await;
+            let result = collect(plan, ctx.task_ctx()).await;
+            if malformed {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("BFS completion count does not match producer statistics")
+                );
+                assert_eq!(
+                    lock(&native).unwrap().state_rows().collect::<Vec<_>>(),
+                    before
+                );
+                assert_eq!(lock(&native).unwrap().next_phase(), 1);
+                assert_eq!(lock(&native).unwrap().levels(), 0);
+            } else {
+                result.unwrap();
+                assert_eq!(lock(&native).unwrap().next_phase(), 2);
+                assert_eq!(lock(&native).unwrap().reached_count(), 2);
+                assert_eq!(lock(&native).unwrap().levels(), 1);
+            }
+            state.base.close().unwrap();
+            state.close().unwrap();
+        }
+    }
+}

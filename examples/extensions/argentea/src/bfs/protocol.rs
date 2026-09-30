@@ -237,6 +237,10 @@ impl BfsPartition {
                     != Some(c.total_messages)))
             || (inbox.mode == BfsMode::Done && (c.sequence != 0 || c.total_messages != 0))
             || (inbox.mode == BfsMode::Topology && c.total_messages != inbox.expected[p].arcs)
+            // Reference and push each emit once per frontier arc, including
+            // parallel arcs and candidates whose destination is already reached.
+            || (matches!(inbox.mode, BfsMode::Reference | BfsMode::Push)
+                && c.total_messages != inbox.expected[p].frontier_edges)
         {
             return self.fail("BFS completion count does not match producer statistics");
         }
