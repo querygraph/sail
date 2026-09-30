@@ -1,3 +1,5 @@
+#[path = "sssp_done/mod.rs"]
+mod done;
 #[path = "delta_support/mod.rs"]
 mod support;
 use sail_argentea_core::*;

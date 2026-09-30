@@ -20,7 +20,10 @@ impl Inbox {
         n: usize,
         r: &Resources,
     ) -> Result<Self> {
-        let bytes = n
+        // A converged phase accepts completions only. Keep producer validation,
+        // but do not allocate a vertex-sized candidate array for an empty relay.
+        let candidates = if mode == SsspMode::Done { 0 } else { n };
+        let bytes = candidates
             .checked_mul(size_of::<Option<SsspLabel>>())
             .and_then(|x| {
                 x.checked_add(reports.len() * (size_of::<SsspStatisticsValues>() + 16) + 512)
@@ -37,7 +40,7 @@ impl Inbox {
             expected,
             sequences: filled(reports.len(), 0)?,
             finished: filled(reports.len(), false)?,
-            candidates: filled(n, None)?,
+            candidates: filled(candidates, None)?,
             emitted: Arc::new(OnceLock::new()),
             received: 0,
             _admission: admission,
@@ -182,6 +185,25 @@ impl SsspPartition {
             .get()
             .ok_or("local SSSP emission not complete")?;
         work.received_messages = inbox.received;
+        if inbox.mode == SsspMode::Done {
+            // All producer markers and local emission EOF were checked above.
+            // Preserve the immutable labels and round count, admitting the next
+            // barrier before publishing any phase change, just as active rounds do.
+            let state = State::Statistics(StatisticsInbox::new(
+                self.operation.partitions,
+                &self.resources,
+            )?);
+            let next_phase = add(self.next_phase, 1)?;
+            self.resources
+                .execution
+                .checkpoint()
+                .map_err(|e| e.to_string())?;
+            self.completed = SsspMode::Done;
+            self.work = work;
+            self.next_phase = next_phase;
+            self.state = state;
+            return Ok(());
+        }
         // Charge replacement labels and a pending mask before copying/mutation.
         let n = self.values.labels.len();
         let pending_admission = self

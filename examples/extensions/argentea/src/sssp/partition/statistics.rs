@@ -78,11 +78,19 @@ impl SsspPartition {
             rounds: self.rounds,
             vertices: self.adjacency.vertices().len() as u64,
             arcs: self.adjacency.arc_count() as u64,
-            source_count: u64::from(
-                self.adjacency
-                    .vertices()
-                    .binary_search(&self.options.source)
-                    .is_ok(),
+            // Source membership is immutable and checked against local storage
+            // before the first own report pins this shape. Later barriers,
+            // including Done relays, need not search the graph again.
+            source_count: self.shapes[self.partition].map_or_else(
+                || {
+                    u64::from(
+                        self.adjacency
+                            .vertices()
+                            .binary_search(&self.options.source)
+                            .is_ok(),
+                    )
+                },
+                |(_, _, sources)| sources,
             ),
             reached: self.values.reached,
             reachable_edges: self.values.reachable_edges,
