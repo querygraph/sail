@@ -1,5 +1,5 @@
 //! Immutable admitted adjacency shared by Argentea's reference and residual PR.
-use crate::{Operation, Resources, Result, reserve_vec};
+use crate::{Operation, Resources, Result, reserve_vec, source_index::SourceIndex};
 use grust_procedures::MemoryReservation;
 use std::sync::{
     Arc,
@@ -29,7 +29,7 @@ impl Adjacency {
         }
         let n = vertices.len();
         let bytes = n
-            .checked_mul(64)
+            .checked_mul(64 - size_of::<usize>())
             .and_then(|v| edges.len().checked_mul(16).and_then(|e| v.checked_add(e)))
             .and_then(|v| v.checked_add(4096 + size_of::<usize>()))
             .ok_or("partition admission overflow")?;
@@ -47,32 +47,29 @@ impl Adjacency {
                 return Err("vertices are duplicated or belong to another partition".into());
             }
         }
+        let sources = SourceIndex::new(&ids, operation.partitions);
         let mut offsets = reserve_vec(n + 1)?;
         offsets.resize(n + 1, 0usize);
         for &(source, _) in edges {
             meter.charge(1).map_err(|e| e.to_string())?;
-            let local = ids
-                .binary_search(&source)
-                .map_err(|_| "source is not owned")?;
+            let local = sources.lookup(source).ok_or("source is not owned")?;
             offsets[local + 1] += 1;
         }
         for i in 0..n {
             meter.charge(1).map_err(|e| e.to_string())?;
             offsets[i + 1] += offsets[i];
         }
-        let mut cursor = reserve_vec(n)?;
-        cursor.extend_from_slice(&offsets[..n]);
+        // Reuse starts as fill cursors; restore them from the resulting ends.
         let mut targets = reserve_vec(edges.len())?;
         targets.resize(edges.len(), 0i64);
         for &(source, target) in edges {
             meter.charge(1).map_err(|e| e.to_string())?;
-            let local = ids
-                .binary_search(&source)
-                .map_err(|_| "source is not owned")?;
-            targets[cursor[local]] = target;
-            cursor[local] += 1;
+            let local = sources.lookup(source).ok_or("source is not owned")?;
+            targets[offsets[local]] = target;
+            offsets[local] += 1;
         }
-        drop(cursor);
+        offsets.copy_within(..n, 1);
+        offsets[0] = 0;
         // Retain conservative metadata and all CSR bytes, release build scratch.
         admission
             .shrink(n * 8 + (n + 1) * size_of::<usize>() + edges.len() * 8 + 4096)

@@ -4,6 +4,9 @@
 //! must establish placement, input completeness, operation cleanup and a real
 //! host memory lease before these primitives can execute remotely.
 mod adjacency;
+#[cfg(test)]
+mod adjacency_tests;
+mod source_index;
 mod sssp;
 pub use sssp::*;
 mod wcc;
