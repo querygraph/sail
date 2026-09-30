@@ -64,10 +64,10 @@ class Session:
         return self.stored
 
 
-def controller(monkeypatch, frame):
-    graph = GraphAlgorithms.__new__(GraphAlgorithms)
-    graph.spark = Session(frame)
-    graph.utils = ReceiptStore()
+def controller(monkeypatch, frame, repartition_checkpoints):
+    store = ReceiptStore()
+    monkeypatch.setattr(algorithms, "GraphUtils", lambda _: store)
+    graph = GraphAlgorithms(Session(frame), repartition_checkpoints=repartition_checkpoints)
     monkeypatch.setattr(algorithms, "_check_input_schema", lambda *_: None)
 
     def snapshot(run, *_):
@@ -79,7 +79,8 @@ def controller(monkeypatch, frame):
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
-def test_failed_write_retains_owned_run_and_preserves_cause(monkeypatch, cancelled):
+@pytest.mark.parametrize("repartition_checkpoints", [True, False])
+def test_failed_write_retains_owned_run_and_preserves_cause(monkeypatch, cancelled, repartition_checkpoints):
     token = CancellationToken()
     failure = RuntimeError("write RPC did not complete")
 
@@ -88,7 +89,7 @@ def test_failed_write_retains_owned_run_and_preserves_cause(monkeypatch, cancell
             token.cancel()
         raise failure
 
-    graph = controller(monkeypatch, Frame(write))
+    graph = controller(monkeypatch, Frame(write), repartition_checkpoints)
     with pytest.raises(GraphCancelledError if cancelled else RuntimeError) as raised:
         graph._run(None, None, 1, token, lambda *_: None)
     assert graph.utils.removed == []
@@ -101,8 +102,9 @@ def test_failed_write_retains_owned_run_and_preserves_cause(monkeypatch, cancell
         assert raised.value is failure
 
 
-def test_validation_after_completed_write_can_remove_run(monkeypatch):
-    graph = controller(monkeypatch, Frame(lambda _: None))
+@pytest.mark.parametrize("repartition_checkpoints", [True, False])
+def test_validation_after_completed_write_can_remove_run(monkeypatch, repartition_checkpoints):
+    graph = controller(monkeypatch, Frame(lambda _: None), repartition_checkpoints)
     failure = ValueError("invalid graph after snapshot")
 
     def validate(*_):
@@ -115,19 +117,21 @@ def test_validation_after_completed_write_can_remove_run(monkeypatch):
     assert graph.utils.removed == [("file:///staging/owned-run", "run-token")]
 
 
-def test_cancellation_after_successful_write_can_remove_run(monkeypatch):
+@pytest.mark.parametrize("repartition_checkpoints", [True, False])
+def test_cancellation_after_successful_write_can_remove_run(monkeypatch, repartition_checkpoints):
     token = CancellationToken()
-    graph = controller(monkeypatch, Frame(lambda _: token.cancel()))
+    graph = controller(monkeypatch, Frame(lambda _: token.cancel()), repartition_checkpoints)
     with pytest.raises(GraphCancelledError) as raised:
         graph._run(None, None, 1, token, lambda *_: None)
     assert raised.value.cleanup_deferred is False
     assert graph.utils.removed == [("file:///staging/owned-run", "run-token")]
 
 
-def test_cancellation_during_heartbeat_prevents_following_write(monkeypatch):
+@pytest.mark.parametrize("repartition_checkpoints", [True, False])
+def test_cancellation_during_heartbeat_prevents_following_write(monkeypatch, repartition_checkpoints):
     token = CancellationToken()
     submitted = []
-    graph = controller(monkeypatch, Frame(submitted.append))
+    graph = controller(monkeypatch, Frame(submitted.append), repartition_checkpoints)
 
     def heartbeat(*_):
         token.cancel()

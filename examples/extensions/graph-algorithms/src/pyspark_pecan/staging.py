@@ -4,11 +4,12 @@ from .lifecycle import GraphResult
 
 
 class StagingRun:
-    def __init__(self, spark, utils, cancellation, partitions):
+    def __init__(self, spark, utils, cancellation, partitions, *, repartition_checkpoints=True):
         self.spark = spark
         self.utils = utils
         self.cancellation = cancellation
         self.partitions = partitions
+        self.repartition_checkpoints = repartition_checkpoints
         self.path, self.token = utils.allocate()
         self.closed = False
         self.write_uncertain = False
@@ -33,7 +34,8 @@ class StagingRun:
         # A failed/interrupted write RPC is not a distributed writer-drain
         # barrier. Keep ownership for session teardown if its outcome is unknown.
         self.write_uncertain = True
-        frame.repartition(self.partitions).write.mode("error").parquet(path)
+        writing = frame.repartition(self.partitions) if self.repartition_checkpoints else frame
+        writing.write.mode("error").parquet(path)
         self.write_uncertain = False
         self.cancellation.check()
         stored = self.spark.read.parquet(path)

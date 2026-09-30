@@ -64,12 +64,20 @@ class GraphAlgorithms:
     Input tables are separately materialized once before validation. This is
     stable during an algorithm, but is not an atomic snapshot across mutable
     sources. Results contain structural columns, not input properties.
+
+    repartition_checkpoints=True keeps the keyless repartition before every
+    staging write, including input snapshots and final results. Set it to False
+    to omit that repartition as an explicit experiment. This does not declare
+    keyed partitioning on later reads or fix the number of output files.
     """
 
-    def __init__(self, spark, *, observer=None, record_plans=False):
+    def __init__(self, spark, *, observer=None, record_plans=False, repartition_checkpoints=True):
+        if not isinstance(repartition_checkpoints, bool):
+            raise ValueError("repartition_checkpoints must be a boolean")
         self.spark = spark
         self.utils = GraphUtils(spark)
         self.observer = observer
+        self.repartition_checkpoints = repartition_checkpoints
         # With record_plans, an iteration's observer event carries the physical
         # plan of the frame the iteration materializes (one extra planning round
         # trip per iteration; the plan is text, not executed twice).
@@ -90,7 +98,8 @@ class GraphAlgorithms:
         cancellation.attach(self.spark)
         run = None
         try:
-            run = StagingRun(self.spark, self.utils, cancellation, partitions)
+            run = StagingRun(self.spark, self.utils, cancellation, partitions,
+                             repartition_checkpoints=self.repartition_checkpoints)
             vertices, edges, size = _snapshot(run, vertices, edges, edge_columns)
             return body(run, vertices, edges, size)
         except BaseException as error:
