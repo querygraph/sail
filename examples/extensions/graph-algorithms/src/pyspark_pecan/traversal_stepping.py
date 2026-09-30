@@ -9,6 +9,7 @@ import math
 from pyspark.sql.connect import functions as F
 
 from .algorithms import ConvergenceError
+from .traversal_relaxation import weighted_relaxation, materialize_weighted_relaxation
 
 
 def execute(graph, run, vertices, adjacency, size, source, delta, limit):
@@ -30,14 +31,9 @@ def execute(graph, run, vertices, adjacency, size, source, delta, limit):
         candidates = active.join(adjacency, active.id == adjacency.src).select(
             adjacency.dst.alias('id'), (active.distance + adjacency.weight).alias('distance'),
             (active.hops + 1).alias('hops'), active.id.alias('parent'))
-        relaxed = state.unionByName(candidates).groupBy('id').agg(
-            F.min(F.struct('distance', 'hops', 'parent')).alias('best')).select('id', 'best.*')
+        relaxed = weighted_relaxation(state, candidates)
         graph._observe(run, 'sssp-delta-star', step, 'iteration_start', bucket=bucket, plan_of=relaxed)
-        if candidates.where(F.col('distance') == float('inf')).limit(1).count():
-            raise OverflowError('shortest-path distance overflow')
-        next_path, updated = run.materialize(relaxed)
-        if updated.where(F.col('distance') == float('inf')).limit(1).count():
-            raise OverflowError('shortest-path distance overflow')
+        next_path, updated = materialize_weighted_relaxation(run, relaxed)
         before = state.select('id', F.struct('distance', 'hops', 'parent').alias('before'))
         changed = updated.join(before, 'id', 'left').where(
             F.col('before').isNull() | (F.struct('distance','hops','parent') != F.col('before'))

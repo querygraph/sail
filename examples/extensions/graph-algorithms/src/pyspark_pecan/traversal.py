@@ -3,6 +3,7 @@ from pyspark.sql.connect import functions as F
 from pyspark.sql.types import DoubleType
 
 from .algorithms import ConvergenceError, _positive_integer
+from .traversal_relaxation import weighted_relaxation, materialize_weighted_relaxation
 
 
 def execute(graph, vertices, edges, *, source, weighted, method, directed,
@@ -54,18 +55,16 @@ def execute(graph, vertices, edges, *, source, weighted, method, directed,
                 adjacency.dst.alias("id"),
                 (active.distance + adjacency.weight).alias("distance"),
                 (active.hops + 1).alias("hops"), active.id.alias("parent"))
-            if weighted and candidates.where(F.col("distance") == float("inf")).limit(1).count():
-                # Match the native contract, including a dominated overflowing
-                # relaxation: input weights being finite does not bound sums.
-                raise OverflowError("shortest-path distance overflow")
             # Lexicographic minimization makes parent choice deterministic and
             # gives every parent a strictly smaller hop count, even at weight 0.
-            updated = reached.unionByName(candidates).groupBy("id").agg(
-                F.min(F.struct("distance", "hops", "parent")).alias("best")
-            ).select("id", "best.*")
+            updated = (weighted_relaxation(reached, candidates) if weighted else
+                       reached.unionByName(candidates).groupBy("id").agg(
+                           F.min(F.struct("distance", "hops", "parent")).alias("best")
+                       ).select("id", "best.*"))
             graph._observe(run, algorithm, step, "iteration_start", plan_of=updated)
-            next_path, next_reached = run.materialize(updated)
-            if next_reached.where(F.col("distance") == float("inf")).limit(1).count():
+            next_path, next_reached = (materialize_weighted_relaxation(run, updated)
+                                       if weighted else run.materialize(updated))
+            if not weighted and next_reached.where(F.col("distance") == float("inf")).limit(1).count():
                 raise OverflowError("shortest-path distance overflow")
             before = reached.select("id", F.struct("distance", "hops", "parent").alias("before"))
             changed = next_reached.join(before, "id", "left").where(

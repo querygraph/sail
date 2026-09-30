@@ -69,19 +69,98 @@ def test_delta_star_bucket_closure(spark, delta):
 def test_push_pull_distances_and_trace(spark):
     v,e=frames(spark)
     events=[]
-    with GraphAlgorithms(spark,observer=events.append).bfs(v,e,source=0,method='push_pull',partitions=2) as r:
+    def observe(event):
+        # Work metrics describe the completed iteration; start events only
+        # announce its direction and optional plan.
+        if event['kind'] == 'iteration_end':
+            events.append(event)
+    with GraphAlgorithms(spark,observer=observe).bfs(v,e,source=0,method='push_pull',partitions=2) as r:
         assert {x.id:x.distance for x in r.frame.collect()} == {0:0.,1:1.,2:1.,3:2.,4:3.,-7:None,5:None}
+        assert len(events) == r.iterations
         assert any(x.get('direction')=='pull' for x in events)
         assert all(x['pull_early_exit'] is False for x in events)
 
 
 @pytest.mark.parametrize('method', ['reference', 'frontier', 'delta_star'])
-def test_overflowing_relaxation_is_rejected_even_when_dominated(spark, method):
+@pytest.mark.parametrize('dominated', [False, True])
+def test_overflowing_relaxation_is_rejected_even_when_dominated(spark, monkeypatch, method, dominated):
     v=spark.createDataFrame([(0,),(1,),(2,)],'id long')
-    e=spark.createDataFrame([(0,1,1e308),(1,2,1e308),(0,2,1.)],
+    edges = [(0,1,1e308),(1,2,1e308)] + ([(0,2,1.)] if dominated else [])
+    e=spark.createDataFrame(edges,
                             'src long,dst long,weight double')
+    graph = GraphAlgorithms(spark)
+    allocated = []
+    allocate = graph.utils.allocate
+    def track(**kwargs):
+        owned = allocate(**kwargs)
+        allocated.append(owned)
+        return owned
+    monkeypatch.setattr(graph.utils, 'allocate', track)
     with pytest.raises(OverflowError,match='distance overflow'):
-        GraphAlgorithms(spark).sssp(v,e,source=0,method=method,delta=1e308,partitions=2)
+        graph.sssp(v,e,source=0,method=method,delta=1e308,partitions=2)
+    assert len(allocated) == 1 and graph.utils.remove(*allocated[0]) == 0
+
+
+@pytest.mark.parametrize('method', ['reference', 'frontier', 'delta_star'])
+def test_weighted_relaxation_preserves_hop_then_signed_parent_ties(spark, method):
+    vertices = spark.createDataFrame([(i,) for i in [-5, 0, 1, 2, 3, 4, 9]], 'id long')
+    edges = spark.createDataFrame([
+        (0, -5, 1.), (0, 1, 1.), (0, 2, 1.), (0, 3, 2.),
+        (-5, 3, 1.), (1, 3, 1.), (2, 3, 1.),
+        (-5, 4, 1.), (1, 4, 1.), (2, 4, 1.), (-5, -5, 0.),
+    ], 'src long, dst long, weight double')
+    with GraphAlgorithms(spark).sssp(vertices, edges, source=0, method=method,
+                                    delta=1., partitions=2) as result:
+        rows = {row.id: row for row in result.frame.collect()}
+        assert (rows[3].distance, rows[3].hops, rows[3].parent) == (2., 1, 0)
+        assert (rows[4].distance, rows[4].hops, rows[4].parent) == (2., 2, -5)
+        assert rows[9].distance is None and rows[9].parent is None and rows[9].hops is None
+
+
+@pytest.mark.parametrize('method', ['reference', 'frontier', 'delta_star'])
+def test_weighted_round_executes_only_one_expansion_action(spark, monkeypatch, method):
+    from pyspark.sql.connect.dataframe import DataFrame
+    from pyspark.sql.types import BooleanType
+    from pyspark_pecan.staging import StagingRun
+
+    materialize, count = StagingRun.materialize, DataFrame.count
+    adjacency_path = None
+    edge_stages = 0
+    expansion_actions = []
+
+    def reads_adjacency(frame):
+        return adjacency_path is not None and adjacency_path in str(frame._plan.to_proto(spark.client))
+
+    def trace_materialize(run, frame, **kwargs):
+        nonlocal adjacency_path, edge_stages
+        if reads_adjacency(frame):
+            expansion_actions.append('materialize')
+            assert isinstance(frame.schema['__pecan_distance_overflow'].dataType, BooleanType)
+        result = materialize(run, frame, **kwargs)
+        if frame.columns == ['src', 'dst', 'weight']:
+            edge_stages += 1
+            # The first edge write snapshots input; the second commits the
+            # traversal adjacency after validation. Count only expansion jobs.
+            if edge_stages == 2:
+                adjacency_path = result[0]
+        return result
+
+    def trace_count(frame):
+        if reads_adjacency(frame):
+            expansion_actions.append('count')
+        return count(frame)
+
+    monkeypatch.setattr(StagingRun, 'materialize', trace_materialize)
+    monkeypatch.setattr(DataFrame, 'count', trace_count)
+    with GraphAlgorithms(spark).sssp(*frames(spark), source=0, method=method,
+                                    delta=1., partitions=2) as result:
+        assert result.frame.columns == ['id', 'distance', 'hops', 'parent']
+        rows = {row.id: row for row in result.frame.collect()}
+        assert {key: row.distance for key, row in rows.items()} == {
+            0: 0., 1: 2., 2: 1., 3: 2., 4: 4., -7: None, 5: None}
+        assert (rows[1].parent, rows[3].parent, rows[4].parent) == (2, 1, 3)
+        assert adjacency_path is not None
+        assert expansion_actions == ['materialize'] * result.iterations
 
 
 @pytest.mark.parametrize('algorithm,method', [('bfs','reference'),('bfs','frontier'),
