@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 from graph_fixtures import prepare
-from validation_outcome import effective_outcome, PARTIALLY_VERIFIED
+from validation_outcome import completed_exit_status, effective_outcome, partial_certificate_errors, PARTIALLY_VERIFIED
 
 
 ENGINES = ("pecan", "nutmeg-native", "nutmeg-datafusion")
@@ -63,6 +63,8 @@ def run_case(command, log_path, receipt_path, private_container):
             row['original_receipt_outcome'] = receipt.get('outcome')
             if receipt.get('outcome') not in ('passed', PARTIALLY_VERIFIED, 'error', 'mismatch', 'nonconverged', 'timeout'):
                 raise ValueError('receipt has no completed outcome')
+            if completed_exit_status(receipt.get('outcome')) is not None:
+                errors.extend(partial_certificate_errors(receipt))
             memory = receipt.get('memory', {})
             if not isinstance(memory, dict):
                 raise ValueError('receipt memory must be a JSON object')
@@ -82,8 +84,9 @@ def run_case(command, log_path, receipt_path, private_container):
             row.update(metrics, outcome=effective_outcome(receipt))
     except (OSError, UnicodeError, ValueError, TypeError, AttributeError) as error:
         errors.append(f'receipt unavailable or invalid: {error!r}')
-    if row['original_receipt_outcome'] == 'passed' and row['returncode'] != 0:
-        errors.append('passed receipt disagrees with nonzero or unavailable child exit status')
+    expected_exit = completed_exit_status(row['original_receipt_outcome'])
+    if expected_exit is not None and row['returncode'] != expected_exit:
+        errors.append(f'{row["original_receipt_outcome"]} receipt disagrees with expected child exit status {expected_exit}')
     if errors:
         row.update(outcome='orchestration_error', error='; '.join(errors))
     elif receipt.get('error'):

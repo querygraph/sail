@@ -20,7 +20,8 @@ from traversal_source import MAX_DEGREE
 import time
 
 from runtime import algorithm_method, validate_admission_settings
-from validation_outcome import effective_outcome, expected_validation_outcome, resumed_outcome
+from validation_outcome import (completed_exit_status, effective_outcome, expected_validation_outcome,
+                                partial_certificate_errors, resumed_evidence, resumed_outcome)
 
 
 ENGINES = ('pecan', 'nutmeg-native', 'nutmeg-datafusion')
@@ -371,8 +372,11 @@ def classify(record, receipt, expected_sha):
         return 'missing_receipt'
     if receipt.get('harness_source_sha') != expected_sha:
         return 'source_mismatch'
-    if receipt.get('outcome') == 'passed' and record.get('attach_returncode') != 0:
+    expected_exit = completed_exit_status(receipt.get('outcome'))
+    if expected_exit is not None and record.get('attach_returncode') != expected_exit:
         return 'exit_receipt_mismatch'
+    if expected_exit is not None and partial_certificate_errors(receipt):
+        return 'invalid_receipt'
     return effective_outcome(receipt)
 
 
@@ -485,9 +489,9 @@ def main():
                 result = json.loads(completed.read_text())
                 if result['configuration_sha256'] != fingerprint:
                     raise RuntimeError('resume configuration differs from recorded cell')
-                receipt_path = cell_output / 'artifacts/receipt.json'
-                if result.get('outcome') == 'passed' and receipt_path.exists():
-                    result = resumed_outcome(result, json.loads(receipt_path.read_text()), cell['expected_outcome'])
+                if result.get('outcome') in ('passed', 'partially_verified'):
+                    record, receipt = resumed_evidence(cell_output)
+                    result = resumed_outcome(result, classify(record, receipt, config['harness_source_sha']), cell['expected_outcome'])
                 results.append(result)
                 continue
             record = run_container(config, 'sail-' + config['run_id'] + '-' + str(cell['sequence']),
@@ -496,18 +500,22 @@ def main():
             path = cell_output / 'artifacts/receipt.json'
             try:
                 receipt = json.loads(path.read_text()) if path.exists() else None
-            except (OSError, json.JSONDecodeError) as error:
+                if receipt is not None and not isinstance(receipt, dict):
+                    raise ValueError('receipt must be a JSON object')
+            except (OSError, ValueError) as error:
                 receipt = None
                 record['receipt_read_error'] = repr(error)
                 write_json(cell_output / 'orchestration.json', record)
             outcome = classify(record, receipt, config['harness_source_sha'])
+            arguments = receipt.get('arguments') if receipt else None
+            correctness = receipt.get('correctness') if receipt else None
             result = dict(**cell, outcome=outcome, configuration_sha256=fingerprint,
                           expected_outcome_observed=outcome == cell['expected_outcome'],
                           receipt_path=str(path) if path.exists() else None,
                           end_to_end_seconds=receipt.get('end_to_end_seconds') if receipt else None,
-                          source=receipt.get('arguments', {}).get('source') if receipt else None,
+                          source=arguments.get('source') if isinstance(arguments, dict) else None,
                           source_degree=receipt.get('source_degree') if receipt else None,
-                          reached=(receipt.get('correctness') or {}).get('reached') if receipt else None)
+                          reached=correctness.get('reached') if isinstance(correctness, dict) else None)
             write_json(completed, result)
             results.append(result)
             write_json(output / 'matrix-results.json', dict(recorded_utc=utc(), results=results,

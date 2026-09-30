@@ -42,7 +42,8 @@ def test_edge_consistency_only_is_partial_even_for_a_correct_partition(spark, tm
     assert correctness['component_count_verified'] is False
     assert correctness['verification_scope'] == 'partial_wcc_partition'
     assert correctness['crossing_edges'] == correctness['foreign_labels'] == 0
-    assert effective_outcome({'arguments': {'algorithm': 'wcc'}, 'correctness': correctness}, outcome='passed') == 'partially_verified'
+    assert effective_outcome({'arguments': {'algorithm': 'wcc', 'ranking_validation': 'certificate'},
+                              'correctness': correctness}, outcome='passed') == 'partially_verified'
 
 
 def test_reference_rejects_merged_components(spark, tmp_path):

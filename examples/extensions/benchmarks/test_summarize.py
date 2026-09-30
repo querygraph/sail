@@ -54,6 +54,7 @@ def records(algorithm='pagerank'):
                 pass
             arguments[key.removeprefix('--').replace('-', '_')] = value
         arguments.update(allow_dirty=False, allow_unisolated=False)
+        arguments.setdefault('ranking_validation', 'reference')
         summary = dict(cell, outcome='passed', expected_outcome_observed=True,
                        configuration_sha256=configuration_fingerprint(config))
         receipt = dict(outcome='passed', end_to_end_seconds=5, arguments=arguments,
