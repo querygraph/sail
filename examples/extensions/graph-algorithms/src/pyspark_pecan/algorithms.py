@@ -242,23 +242,27 @@ class GraphAlgorithms:
 
     def wcc(self, vertices: DataFrame, edges: DataFrame, *, max_iterations: int = 100, partitions: int = 4,
             cancellation: CancellationToken | None = None, method: WccMethod = "min_label",
-            seed: int = 42) -> GraphResult:
+            seed: int = 42, canonical_labels: bool = True) -> GraphResult:
         """Exact weak components by propagation or seeded randomized contraction.
 
         Treat every edge as undirected. The default method="min_label"
         starts each vertex with its own ID and repeatedly takes the minimum of each
         vertex's own and its neighbors' labels, stopping at a fixed point.
-        method="randomized" contracts using GF64 affine priorities and expands
-        representative maps in reverse. method="randomized_fused" uses the same
-        contraction choices with fused edge projections and min_by, omitting
-        the initial canonical edge write and per-round priority tables/joins.
-        Both contraction plans require axpb and an unsigned 64-bit seed
-        (default 42). max_iterations limits propagation or contraction rounds,
-        respectively. All methods label a component by its minimum ID;
-        isolates label themselves. Reaching the cap raises ConvergenceError.
+        method="randomized" contracts the graph with fresh affine maps over
+        GF(2^64) each round (Bögeholz, Brand and Todor, ICDE 2020): every vertex
+        takes the minimum hashed id of its closed neighbourhood as its
+        representative, edges are relabelled until none remain, and the rounds
+        are unwound by composing the later maps. It requires the axpb capability
+        and an unsigned 64-bit seed (default 42). "randomized_fused" is an alias
+        kept for older configurations. max_iterations limits propagation or
+        contraction rounds. With canonical_labels (the default) a component is
+        labelled by its minimum ID; canonical_labels=False keeps the hashed
+        labels, which name the same partition, and skips one aggregate and one
+        join. Isolates label themselves. Reaching the cap raises ConvergenceError.
         Output: id BIGINT, component BIGINT.
         """
-        options = WccOptions(max_iterations=max_iterations, partitions=partitions, method=method, seed=seed)
+        options = WccOptions(max_iterations=max_iterations, partitions=partitions, method=method, seed=seed,
+                             canonical_labels=canonical_labels)
         if options.method in ("randomized", "randomized_fused"):
             return wcc_randomized.execute(self, vertices, edges, options=options, cancellation=cancellation)
 

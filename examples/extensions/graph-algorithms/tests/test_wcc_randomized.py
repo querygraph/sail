@@ -1,10 +1,10 @@
-"""Contraction invariants, full-width priorities, and real distributed results."""
+"""Contraction invariants, field arithmetic shared with the server, and real distributed results."""
 import pytest
 from pyspark.errors import PySparkException
 
 from pyspark_pecan import CancellationToken, ConvergenceError, GraphAlgorithms, GraphCancelledError
 from pyspark_pecan.types import WccOptions
-from pyspark_pecan.wcc_randomized import MASK, SplitMix64, signed
+from pyspark_pecan.wcc_randomized import MASK, SplitMix64, gf_axpb, gf_multiply, signed, unsigned
 
 
 def test_splitmix64_shared_native_vectors():
@@ -48,6 +48,42 @@ def test_priority_polynomial_is_a_field_not_a_hash_with_zero_divisors():
     assert a == 1
 
 
+def test_client_field_arithmetic_matches_vectors():
+    # The multiplication the server's gf_axpb uses: x^64 reduces to 0x1b.
+    assert gf_multiply(1 << 63, 2) == 0x1B
+    assert gf_multiply(1, 0xDEADBEEF) == 0xDEADBEEF
+    assert gf_axpb(1, 5, 3) == 6
+    # Affine maps compose: (a2 (a1 x + b1) + b2) == (a2 a1) x + (a2 b1 + b2).
+    a1, b1, a2, b2, x = 0x9E3779B97F4A7C15, 0x1234, 0xBF58476D1CE4E5B9, 0x5678, 0xCAFEBABE
+    inner = gf_axpb(a1, x, b1)
+    assert gf_axpb(a2, inner, b2) == gf_axpb(gf_multiply(a2, a1), x, gf_axpb(a2, b1, b2))
+    assert signed(unsigned(-1)) == -1 and unsigned(-1) == MASK
+
+
+@pytest.mark.integration
+def test_client_field_arithmetic_matches_server(spark):
+    from pyspark.sql.connect import functions as F
+    a, b = SplitMix64(7).coefficients()
+    xs = [-(1 << 63), -1, 0, 1, 42, (1 << 63) - 1]
+    frame = spark.createDataFrame([(x,) for x in xs], 'x long')
+    rows = frame.select('x', F.call_function('gf_axpb', F.lit(a).cast('long'), F.col('x'), F.lit(b).cast('long'))
+                        .alias('y')).collect()
+    assert {r.x: r.y for r in rows} == {x: signed(gf_axpb(a, x, b)) for x in xs}
+
+
+@pytest.mark.integration
+def test_hashed_labels_name_the_same_partition(spark):
+    ids = list(range(40))
+    links = [(i, i + 1) for i in range(0, 19)] + [(i, i + 1) for i in range(20, 39)] + [(5, 5)]
+    graph = GraphAlgorithms(spark)
+    with graph.wcc(*frames(spark, ids, links), method='randomized', canonical_labels=False, partitions=2) as raw:
+        labels = {r.id: r.component for r in raw.frame.collect()}
+    assert len(set(labels.values())) == 2
+    assert len({labels[i] for i in range(20)}) == 1 and len({labels[i] for i in range(20, 40)}) == 1
+    with graph.wcc(*frames(spark, ids, links), method='randomized', partitions=2) as canonical:
+        assert {r.id: r.component for r in canonical.frame.collect()} == {i: 0 if i < 20 else 20 for i in ids}
+
+
 def frames(spark, ids, links):
     return spark.createDataFrame([(i,) for i in ids], 'id long'), spark.createDataFrame(links, 'src long,dst long')
 
@@ -64,8 +100,7 @@ def test_signed_extreme_ids_isolates_duplicates_and_components(spark, seed, meth
     with graph.wcc(*frames(spark, ids, links), method=method, seed=seed, partitions=3) as result:
         assert {r.id: r.component for r in result.frame.collect()} == expected
         assert result.method == method
-        assert result.algorithm == ('wcc-randomized-fused-contraction' if method == 'randomized_fused'
-                                    else 'wcc-randomized-contraction')
+        assert result.algorithm == 'wcc-randomized-contraction'
         assert result.seed == seed
         assert result.converged
 

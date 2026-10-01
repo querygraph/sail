@@ -64,7 +64,7 @@ class ContractionStep(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    active_vertices: int = Field(ge=0)
+    active_vertices: int | None = Field(default=None, ge=0)
     edges_before: int = Field(ge=0)
     edges_after: int = Field(ge=0)
     coefficient_a: int
@@ -97,6 +97,7 @@ class WccOptions(BaseModel):
     partitions: int = Field(default=4, ge=1)
     method: WccMethod = "min_label"
     seed: int = Field(default=42, ge=0, le=MASK)
+    canonical_labels: bool = True
 
 
 class TraversalOptions(BaseModel):
