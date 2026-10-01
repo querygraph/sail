@@ -164,8 +164,9 @@ class GraphAlgorithms:
 
     def pagerank(self, vertices: DataFrame, edges: DataFrame, *, reset_probability: float = 0.15,
                  max_iterations: int = 20, tolerance: float | None = None, partitions: int = 4,
-                 cancellation: CancellationToken | None = None, method: PageRankMethod = "power") -> GraphResult:
-        """Probability-normalized directed PageRank with uniform restart.
+                 cancellation: CancellationToken | None = None, method: PageRankMethod = "power",
+                 normalize: bool = False) -> GraphResult:
+        """Directed PageRank with uniform restart, in three forms.
 
         Initialize rank=1/N. At each step, redistribute dangling rank uniformly,
         then set rank(v)=reset/N+(1-reset)*(incoming(v)+dangling/N). Parallel edges
@@ -181,13 +182,22 @@ class GraphAlgorithms:
         Frontier joins can still scan the edge table. Both tolerance-controlled
         methods raise ConvergenceError at the limit. Output: id BIGINT,
         pagerank DOUBLE. Fixed-step power behavior remains unchanged.
+
+        method="pregel" is the form of the Pregel paper and of GraphX's static
+        PageRank: rank(v)=reset/N+(1-reset)*incoming(v) for exactly
+        max_iterations, no dangling redistribution and no convergence test, so
+        a step is one job. The ranks then sum to less than one when dangling
+        vertices exist; normalize=True divides by the total at the end. The
+        LDBC Graphalytics contract is "power" (it redistributes dangling rank).
         """
         options = PageRankOptions(reset_probability=reset_probability, max_iterations=max_iterations,
-                                  tolerance=tolerance, partitions=partitions, method=method)
+                                  tolerance=tolerance, partitions=partitions, method=method, normalize=normalize)
         if options.method == "delta":
             if options.tolerance is None:
                 raise ValueError("delta PageRank requires a positive tolerance")
             return pagerank_delta.execute(self, vertices, edges, options=options, cancellation=cancellation)
+        if options.method == "pregel":
+            return self._pagerank_pregel(vertices, edges, options, cancellation)
 
         reset = options.reset_probability
         damping = 1.0 - reset
@@ -237,6 +247,44 @@ class GraphAlgorithms:
             if converged is False:
                 raise ConvergenceError(f"PageRank did not reach tolerance in {options.max_iterations} iterations")
             return run.finish(path, rank, algorithm="pagerank", iterations=step, converged=converged)
+
+        return self._run(vertices, edges, options.partitions, cancellation, execute)
+
+    def _pagerank_pregel(self, vertices: DataFrame, edges: DataFrame, options: PageRankOptions,
+                         cancellation: CancellationToken | None) -> GraphResult:
+        reset = options.reset_probability
+        damping = 1.0 - reset
+
+        def execute(run: StagingRun, vertices: DataFrame, edges: DataFrame, size: int | None) -> GraphResult:
+            assert size is not None  # the restart term is reset/N.
+            if not size:
+                path, result = run.materialize(vertices.withColumn("pagerank", F.lit(0.0)))
+                return run.finish(path, result, algorithm="pagerank-pregel", iterations=0, converged=None)
+            _, weighted = run.materialize(
+                edges.join(edges.groupBy("src").count().withColumnRenamed("count", "degree"), "src")
+            )
+            path, rank = run.materialize(vertices.withColumn("pagerank", F.lit(1.0 / size)))
+            step = 0
+            for step in range(1, options.max_iterations + 1):
+                run.cancellation.check()
+                self._observe(run, "pagerank-pregel", step, "iteration_start")
+                message = weighted.join(rank, weighted.src == rank.id).select(
+                    weighted.dst.alias("id"), (rank.pagerank / weighted.degree).alias("message")
+                ).groupBy("id").agg(F.sum("message").alias("incoming"))
+                updated = vertices.join(message, "id", "left").select(
+                    "id", (F.lit(reset / size) + F.lit(damping) * F.coalesce(F.col("incoming"), F.lit(0.0)))
+                    .alias("pagerank"))
+                next_path, next_rank = run.materialize(updated)
+                run.remove(path)
+                path, rank = next_path, next_rank
+                self._observe(run, "pagerank-pregel", step, "iteration_end")
+            if options.normalize:
+                total: float = first_row(rank.agg(F.sum("pagerank")))[0]
+                normalized = rank.select("id", (F.col("pagerank") / F.lit(total)).alias("pagerank"))
+                next_path, rank = run.materialize(normalized)
+                run.remove(path)
+                path = next_path
+            return run.finish(path, rank, algorithm="pagerank-pregel", iterations=step, converged=None)
 
         return self._run(vertices, edges, options.partitions, cancellation, execute)
 

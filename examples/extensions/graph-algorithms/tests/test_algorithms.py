@@ -106,3 +106,32 @@ def test_foreign_session_frames_are_rejected_before_staging(spark):
         sparkSession = object()
     with pytest.raises(ValueError, match="same|this Spark session"):
         GraphAlgorithms(spark).wcc(ForeignFrame(), ForeignFrame())
+
+
+@pytest.mark.integration
+def test_pregel_pagerank_matches_power_without_dangling_vertices(spark):
+    graph = GraphAlgorithms(spark)
+    cycle = frames(spark, [0, 1, 2, 3], [(0, 1), (1, 2), (2, 3), (3, 0), (0, 2)])
+    with graph.pagerank(*cycle, max_iterations=6) as power, \
+            graph.pagerank(*cycle, max_iterations=6, method="pregel") as pregel:
+        assert pregel.algorithm == "pagerank-pregel" and pregel.iterations == 6 and pregel.converged is None
+        a = {r.id: r.pagerank for r in power.frame.collect()}
+        b = {r.id: r.pagerank for r in pregel.frame.collect()}
+        assert all(abs(a[i] - b[i]) < 1e-12 for i in a)
+
+
+@pytest.mark.integration
+def test_pregel_pagerank_keeps_order_and_normalizes_with_dangling_vertices(spark):
+    graph = GraphAlgorithms(spark)
+    dangling = frames(spark, [0, 1, 2, 3], [(0, 1), (1, 2), (2, 1), (3, 1)])
+    with graph.pagerank(*dangling, max_iterations=10, method="pregel") as raw, \
+            graph.pagerank(*dangling, max_iterations=10, method="pregel", normalize=True) as normalized, \
+            graph.pagerank(*dangling, max_iterations=10) as power:
+        r = {x.id: x.pagerank for x in raw.frame.collect()}
+        n = {x.id: x.pagerank for x in normalized.frame.collect()}
+        p = {x.id: x.pagerank for x in power.frame.collect()}
+        assert sum(r.values()) < 1.0 and abs(sum(n.values()) - 1.0) < 1e-12
+        # Vertices 0 and 3 are structurally identical, so order ties by id.
+        order = lambda ranks: sorted(ranks, key=lambda i: (round(ranks[i], 12), i))  # noqa: E731
+        assert order(r) == order(n) == order(p)
+

@@ -17,7 +17,7 @@ INT64_MAX: int = (1 << 63) - 1
 
 EventKind = Literal["iteration_start", "iteration_end", "certificate"]
 Direction = Literal["push", "pull"]
-PageRankMethod = Literal["power", "delta"]
+PageRankMethod = Literal["power", "delta", "pregel"]
 WccMethod = Literal["min_label", "randomized", "randomized_fused"]
 TraversalMethod = Literal["reference", "frontier", "push_pull", "delta_star"]
 
@@ -88,6 +88,7 @@ class PageRankOptions(BaseModel):
     tolerance: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
     partitions: int = Field(default=4, ge=1)
     method: PageRankMethod = "power"
+    normalize: bool = False
 
 
 class WccOptions(BaseModel):
