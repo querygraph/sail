@@ -172,6 +172,7 @@ shape), and contraction rounds are `ContractionStep` models. Package gates run
 | `pagerank(method="delta")` | Normalize output and certify full fixed-point L1 residual <= tolerance | Requires a positive tolerance; set `max_iterations=1000` for strict convergence runs |
 | `pagerank(method="pregel")` | Exactly `max_iterations` steps | The Pregel paper's and GraphX's static form: no dangling term, one job per step; `normalize=True` divides by the total |
 | `pagerank(method="pregel_delta")` | Exactly `max_iterations` steps; with `vote_to_halt=True`, no vertex's delta exceeds the tolerance | GraphX's dynamic form as in graphframes-rs: only vertices whose last gain exceeds the tolerance send, one job per step, no dangling term and no certificate. Requires a tolerance on GraphX's scale (a vertex starts at the reset probability); `normalize=True` divides by the total |
+| `pregel()` | Exactly `max_iterations` steps, or a vote to halt | A Pregel program in the form of graphframes-rs's builder: vertex columns, messages, an aggregate, optional participation and vote. `pagerank(method="pregel_delta")` is such a program |
 | `wcc(method="min_label")` | No label changes | Default method; at most 100 propagation rounds |
 | `wcc(method="randomized")` | No edges remain after contraction, then reverse expansion | Seed 42; at most 100 contraction rounds |
 | `wcc(method="randomized_fused")` | Same as `randomized` | An alias kept for older configurations |

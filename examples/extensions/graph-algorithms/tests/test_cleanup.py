@@ -70,7 +70,7 @@ def controller(monkeypatch, frame, repartition_checkpoints):
     graph = GraphAlgorithms(Session(frame), repartition_checkpoints=repartition_checkpoints)
     monkeypatch.setattr(algorithms, "_check_input_schema", lambda *_: None)
 
-    def snapshot(run, *_, count_vertices=True, snapshot=True):
+    def snapshot(run, *_, count_vertices=True, snapshot=True, vertex_columns=("id",)):
         run.materialize(frame)
         return None, None, 1
 

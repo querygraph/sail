@@ -11,8 +11,9 @@ its out-edges, and every vertex then sets
     pagerank = pagerank + delta
 
 In the first step all vertices send. There is no dangling term, no residual
-and no certificate; the state is the only relation a step writes, so a step
-is one job. Ranks are on GraphX's scale, where a vertex starts at `reset` and
+and no certificate. The program below is his, column for column, on the
+Pregel loop of `pregel.py`; the state is the only relation a step writes,
+so a step is one job. Ranks are on GraphX's scale, where a vertex starts at `reset` and
 the tolerance compares to a single vertex's gain; `normalize=True` divides by
 the total at the end, as graphframes-rs always does.
 
@@ -30,6 +31,7 @@ from typing import TYPE_CHECKING
 from pyspark.sql.connect import functions as F
 
 from ._contracts import ConvergenceError, first_row
+from .pregel import Pregel, msg, src
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame
@@ -42,50 +44,40 @@ if TYPE_CHECKING:
 ALGORITHM = "pagerank-pregel-delta"
 
 
-def step(state: DataFrame, edges: DataFrame, damping: float, tolerance: float | None) -> DataFrame:
-    """The state after one superstep; `tolerance=None` lets every vertex send (the first step)."""
-    senders = state if tolerance is None else state.where(F.col("delta") > F.lit(tolerance))
-    incoming = edges.join(senders, edges.src == senders.id).select(
-        edges.dst.alias("id"), (senders.delta / senders.degree).alias("message"),
-    ).groupBy("id").agg(F.sum("message").alias("incoming"))
-    gained = F.lit(damping) * F.coalesce(F.col("incoming"), F.lit(0.0))
-    return state.join(incoming, "id", "left").select(
-        "id", "degree", (F.col("pagerank") + gained).alias("pagerank"), gained.alias("delta"))
+def program(graph: GraphAlgorithms, options: PageRankOptions, tolerance: float) -> Pregel:
+    """graphframes-rs's PageRank as a Pregel program over vertices that carry `degree`."""
+    reset = options.reset_probability
+    gained = F.lit(1.0 - reset) * F.coalesce(msg(), F.lit(0.0))
+    pregel = (Pregel(graph, algorithm=ALGORITHM)
+              .vertex_column("pagerank", F.lit(reset), F.col("pagerank") + gained)
+              .vertex_column("delta", F.lit(reset), gained)
+              .vertex_column("degree", F.col("degree"), F.col("degree"))
+              .message(src("delta") / src("degree"), "src_to_dst")
+              .aggregate(F.sum(msg()))
+              # Participation prunes the senders every step; the vote only decides when to stop.
+              .participation("participates", F.lit(True), gained > F.lit(tolerance))
+              .skip_destination_state()
+              .max_iterations(options.max_iterations))
+    if options.vote_to_halt:
+        pregel.vote_to_halt("active", gained > F.lit(tolerance))
+    return pregel
 
 
 def execute(graph: GraphAlgorithms, vertices: DataFrame, edges: DataFrame, *, options: PageRankOptions,
             cancellation: CancellationToken | None) -> GraphResult:
     if options.tolerance is None:
         raise ValueError("pregel_delta PageRank requires a positive tolerance")
-    tolerance: float = options.tolerance
-    reset = options.reset_probability
-    damping = 1.0 - reset
+    pregel = program(graph, options, options.tolerance)
 
     def body(run: StagingRun, vertices: DataFrame, edges: DataFrame, size: int | None) -> GraphResult:
         degrees = edges.groupBy("src").count().select(F.col("src").alias("id"), F.col("count").alias("degree"))
-        path, state = run.materialize(vertices.join(degrees, "id", "left").select(
-            "id", F.coalesce(F.col("degree"), F.lit(0)).alias("degree"),
-            F.lit(reset).alias("pagerank"), F.lit(reset).alias("delta"),
-        ))
-        steps = 0
-        converged: bool | None = False if options.vote_to_halt else None
-        while steps < options.max_iterations and not converged:
-            steps += 1
-            run.cancellation.check()
-            graph._observe(run, ALGORITHM, steps, "iteration_start")
-            next_path, next_state = run.materialize(step(state, edges, damping, None if steps == 1 else tolerance))
-            run.remove(path)
-            path, state = next_path, next_state
-            if options.vote_to_halt:
-                run.cancellation.check()
-                active: int = state.where(F.col("delta") > F.lit(tolerance)).count()
-                converged = active == 0
-                graph._observe(run, ALGORITHM, steps, "iteration_end", frontier_size=active)
-            else:
-                graph._observe(run, ALGORITHM, steps, "iteration_end")
-        if converged is False:
+        with_degree = vertices.join(degrees, "id", "left").select(
+            "id", F.coalesce(F.col("degree"), F.lit(0)).alias("degree"))
+        outcome = pregel.loop(run, with_degree, edges)
+        if outcome.converged is False:
             raise ConvergenceError(
                 f"pregel_delta PageRank still had active vertices after {options.max_iterations} iterations")
+        state = outcome.state
         ranks = state.select("id", "pagerank")
         if options.normalize:
             run.cancellation.check()
@@ -94,7 +86,8 @@ def execute(graph: GraphAlgorithms, vertices: DataFrame, edges: DataFrame, *, op
             if total:
                 ranks = state.select("id", (F.col("pagerank") / F.lit(total)).alias("pagerank"))
         result_path, result = run.materialize(ranks)
-        handle = run.finish(result_path, result, algorithm=ALGORITHM, iterations=steps, converged=converged)
+        handle = run.finish(result_path, result, algorithm=ALGORITHM, iterations=outcome.iterations,
+                            converged=outcome.converged)
         handle.method = options.method
         return handle
 

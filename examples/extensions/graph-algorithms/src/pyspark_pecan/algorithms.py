@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from pyspark.sql.connect import functions as F
 from pyspark.sql.types import LongType
 
-from . import _contracts, pagerank_delta, pagerank_pregel_delta, traversal, wcc_randomized
+from . import _contracts, pagerank_delta, pagerank_pregel_delta, pregel, traversal, wcc_randomized
 from .lifecycle import CancellationToken, GraphCancelledError, GraphResult
 from .staging import StagingRun
 from .types import (
@@ -61,7 +61,7 @@ def _check_input_schema(spark: SparkSession, vertices: DataFrame, edges: DataFra
 
 
 def _snapshot(run: StagingRun, vertices: DataFrame, edges: DataFrame,
-              edge_columns: tuple[str, ...] = ("src", "dst"), *,
+              edge_columns: tuple[str, ...] = ("src", "dst"), *, vertex_columns: tuple[str, ...] = ("id",),
               count_vertices: bool = True, snapshot: bool = True) -> tuple[DataFrame, DataFrame, int | None]:
     """Project the inputs, and by default materialize them once as a stable copy.
 
@@ -72,7 +72,7 @@ def _snapshot(run: StagingRun, vertices: DataFrame, edges: DataFrame,
     uniqueness or membership job runs. Count vertices only when the algorithm
     requests N (for example, 1/N terms).
     """
-    vertices = vertices.select("id")
+    vertices = vertices.select(*vertex_columns)
     edges = edges.select(*edge_columns)
     if snapshot:
         _, vertices = run.materialize(vertices)
@@ -128,7 +128,7 @@ class GraphAlgorithms:
 
     def _run(self, vertices: DataFrame, edges: DataFrame, partitions: int,
              cancellation: CancellationToken | None, body: Body, *,
-             edge_columns: tuple[str, ...] = ("src", "dst"),
+             edge_columns: tuple[str, ...] = ("src", "dst"), vertex_columns: tuple[str, ...] = ("id",),
              count_vertices: bool = True) -> GraphResult:
         cancellation = cancellation or CancellationToken()
         cancellation.check()
@@ -138,7 +138,7 @@ class GraphAlgorithms:
         try:
             run = StagingRun(self.spark, self.utils, cancellation, partitions,
                              repartition_checkpoints=self.repartition_checkpoints)
-            vertices, edges, size = _snapshot(run, vertices, edges, edge_columns,
+            vertices, edges, size = _snapshot(run, vertices, edges, edge_columns, vertex_columns=vertex_columns,
                                              count_vertices=count_vertices, snapshot=self.snapshot_inputs)
             return body(run, vertices, edges, size)
         except BaseException as error:
@@ -317,6 +317,14 @@ class GraphAlgorithms:
             return run.finish(path, rank, algorithm="pagerank-pregel", iterations=step, converged=None)
 
         return self._run(vertices, edges, options.partitions, cancellation, execute)
+
+    def pregel(self, *, algorithm: str = "pregel") -> pregel.Pregel:
+        """A Pregel program over this session, in the form of graphframes-rs's builder.
+
+        Declare vertex columns, messages and an aggregate on the returned
+        program, then call its run(vertices, edges). See the pregel module.
+        """
+        return pregel.Pregel(self, algorithm=algorithm)
 
     def wcc(self, vertices: DataFrame, edges: DataFrame, *, max_iterations: int = 100, partitions: int = 4,
             cancellation: CancellationToken | None = None, method: WccMethod = "min_label",

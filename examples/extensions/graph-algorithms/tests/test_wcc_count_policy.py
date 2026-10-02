@@ -53,7 +53,7 @@ def test_public_wcc_snapshots_without_counting_vertices(monkeypatch: Any, method
     snapshot = algorithms._snapshot
 
     def inspect_snapshot(*args: Any, **options: Any) -> Any:
-        assert options == dict(count_vertices=False, snapshot=True)
+        assert options == dict(count_vertices=False, snapshot=True, vertex_columns=("id",))
         _, _, size = snapshot(*args, **options)
         assert size is None
         raise SnapshotComplete
