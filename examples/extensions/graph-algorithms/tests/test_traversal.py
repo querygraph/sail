@@ -108,10 +108,11 @@ def test_weighted_round_executes_only_one_expansion_action(spark, monkeypatch, m
         result = materialize(run, frame, **kwargs)
         if frame.columns == ['src', 'dst', 'weight']:
             edge_stages += 1
-            # The first edge write snapshots input; the second commits the
-            # owned traversal adjacency. Count only expansion jobs.
-            if edge_stages == 2:
-                adjacency_path = result[0]
+            # The edge write that snapshots the input is the traversal's
+            # adjacency for a directed graph; no second copy is written.
+            # Count only expansion jobs.
+            assert edge_stages == 1
+            adjacency_path = result[0]
         return result
 
     def trace_count(frame):

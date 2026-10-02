@@ -35,12 +35,15 @@ def execute(graph: GraphAlgorithms, vertices: DataFrame, edges: DataFrame, *, op
     method = options.method
 
     def body(run: StagingRun, vertices: DataFrame, edges: DataFrame, size: int | None) -> GraphResult:
-        if not weighted:
-            edges = edges.withColumn("weight", F.lit(1.0))
-        if not options.directed:
-            edges = edges.unionByName(edges.select(
-                F.col("dst").alias("src"), F.col("src").alias("dst"), "weight"))
-        _, adjacency = run.materialize(edges)
+        if options.directed:
+            # The input (its snapshot, or the caller's stable frame) already is
+            # the adjacency; writing it again would only copy every edge.
+            adjacency = edges
+        else:
+            _, adjacency = run.materialize(edges.unionByName(edges.select(
+                F.col("dst").alias("src"), F.col("src").alias("dst"), *edges.columns[2:])))
+        # An unweighted edge costs one hop; no weight column is stored for it.
+        weight = adjacency.weight if weighted else F.lit(1.0)
         if method == "push_pull":
             assert size is not None
             return traversal_bfs.execute(graph, run, vertices, adjacency, size, source, options.max_iterations)
@@ -58,7 +61,7 @@ def execute(graph: GraphAlgorithms, vertices: DataFrame, edges: DataFrame, *, op
             # the adjacency (the recorded plans of the 2026-09-29 capacity cells).
             candidates = active.join(adjacency, active.id == adjacency.src).select(
                 adjacency.dst.alias("id"),
-                (active.distance + adjacency.weight).alias("distance"),
+                (active.distance + weight).alias("distance"),
                 (active.hops + 1).alias("hops"), active.id.alias("parent"))
             # Lexicographic minimization makes parent choice deterministic and
             # gives every parent a strictly smaller hop count, even at weight 0.
