@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 [workspace]
 
 [dependencies]
-grust-procedures = "=0.23.0"
+grust-procedures = "=0.24.0"
 sail-native-resource-ffi = { path = "../../../crates/sail-native-resource-ffi" }
 
 [dev-dependencies]

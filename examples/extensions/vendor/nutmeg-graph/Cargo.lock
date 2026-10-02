@@ -1310,9 +1310,9 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "grust-algorithm-procedures"
-version = "0.23.0"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03a18567bd09e30ced2ae2316b9a07fc0a092758a34e9ec2699971c99e259af7"
+checksum = "abf52e9b8f3049e01d68ae354a89582768845b3185fedadbf682b17e0ef57706"
 dependencies = [
  "grust-algorithms",
  "grust-core",
@@ -1322,9 +1322,9 @@ dependencies = [
 
 [[package]]
 name = "grust-algorithms"
-version = "0.23.0"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a81e8aae0c01384e8061dae52ac75cedaa06f343281b597662fa894bd87f9239"
+checksum = "4bdf6d43c9799327f225ed165b85b174b25afbd3efea7cbae900bbb1b9a5d919"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1336,9 +1336,9 @@ dependencies = [
 
 [[package]]
 name = "grust-arrow"
-version = "0.23.0"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18c142e7eef5f2d85eacf62bba03fe4059fb0565ebc0a6e738d82973b54e80c0"
+checksum = "835414985499399d76dbe0d74ae7d8bd15b9e443746bb4e8255404c9b92925ee"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -1353,9 +1353,9 @@ dependencies = [
 
 [[package]]
 name = "grust-core"
-version = "0.23.0"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52b731a341958672ec3474f7dc4b39190e5b54be155604ea4b7da8f03d3632e6"
+checksum = "11a9de10ddfa399183a974122fa7bfcf75f10d3837af8bd8a48d402226530e9c"
 dependencies = [
  "async-trait",
  "quick-xml",
@@ -1367,9 +1367,9 @@ dependencies = [
 
 [[package]]
 name = "grust-procedures"
-version = "0.23.0"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81b22f57b59eca1ad700398e1490860781d59c467799e9169ec3093d47b92add"
+checksum = "c7c07f3432aa37090a02b3d3a7e2ca17dea80ce33674f445e0ea3d7cb153de81"
 dependencies = [
  "grust-core",
  "serde_json",

@@ -28,10 +28,14 @@ def execute(spark,args,receipt,sampler):
     try:
         if args.engine == 'nutmeg-native':
             nm=Nutmeg(spark)
-            nodes=vertices.select(F.col('id').cast('string').alias('node_id'))
-            links=edges.select(F.col('src').cast('string').alias('source'),
-                               F.col('dst').cast('string').alias('target'),'weight')
-            receipt['stage_receipt']=nm.stage('benchmark',nodes,links,order=stage_order(args)).asDict()
+            kind='long' if getattr(args,'native_ids','string')=='int64' else 'string'
+            receipt['native_ids']=getattr(args,'native_ids','string')
+            nodes=vertices.select(F.col('id').cast(kind).alias('node_id'))
+            links=edges.select(F.col('src').cast(kind).alias('source'),
+                               F.col('dst').cast(kind).alias('target'),'weight')
+            mapping={'ids':'int64'} if kind=='long' else None
+            receipt['stage_receipt']=nm.stage('benchmark',nodes,links,node_mapping=mapping,edge_mapping=mapping,
+                                              order=stage_order(args)).asDict()
             receipt['stage_seconds']=time.perf_counter()-started
             options=dict(source=str(args.source), concurrency=args.threads,
                          orientation='outgoing' if args.directed else 'undirected')

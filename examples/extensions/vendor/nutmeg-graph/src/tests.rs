@@ -1448,6 +1448,138 @@ fn canonical_order_covers_the_whole_part_across_appends() {
     }
 }
 
+/// `ids` = `int64` keeps integer ids as Int64 through staging, so canonical
+/// order is numeric, derived nodes are Int64, and the projection takes Grust's
+/// integer path. Kernels answer what they answer for the same graph staged as
+/// text, because a node's external id is its decimal text either way.
+#[test]
+fn integer_identity_is_opt_in_and_answers_what_text_identity_answers() {
+    let mut integer = ColumnMapping::default();
+    assert!(integer.set("ids", "int64".into()));
+    assert!(integer.integer_ids);
+    assert!(!integer.clone().set("ids", "float".into()));
+    let text = ColumnMapping::default();
+
+    let node_ids = [9, 10, 2, -3, 40];
+    let (sources, targets) = ([9, 9, 10, 9, -3], [2, 2, 9, 10, 9]);
+    let weights = [3.0, 1.0, 5.0, 2.0, 4.0];
+    let nodes = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+        vec![Arc::new(Int32Array::from(node_ids.to_vec()))],
+    )
+    .unwrap();
+    let links = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int32, false),
+            Field::new("w", DataType::Float64, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(sources.to_vec())),
+            Arc::new(Int32Array::from(targets.to_vec())),
+            Arc::new(Float64Array::from(weights.to_vec())),
+        ],
+    )
+    .unwrap();
+    let integers_of = |batches: &[RecordBatch], column: &str| -> Vec<i64> {
+        batches
+            .iter()
+            .flat_map(|b| {
+                let c = b
+                    .column_by_name(column)
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .expect("an Int64 column")
+                    .clone();
+                (0..c.len()).map(move |i| c.value(i))
+            })
+            .collect()
+    };
+
+    // Canonical order of integer ids is numeric: 2 before 9 before 10.
+    let name = "integer-identity";
+    for (part, batch) in [(Part::Nodes, &nodes), (Part::Edges, &links)] {
+        Registry::stage(
+            name,
+            part,
+            std::slice::from_ref(batch),
+            &integer,
+            true,
+            StageOrder::Canonical,
+        )
+        .unwrap();
+    }
+    assert_eq!(integers_of(&staged(name, Part::Nodes), "node_id"), [-3, 2, 9, 10, 40]);
+    assert_eq!(integers_of(&staged(name, Part::Edges), "source"), [-3, 9, 9, 9, 10]);
+    assert_eq!(integers_of(&staged(name, Part::Edges), "target"), [9, 2, 2, 10, 9]);
+    // Nodes derived from Int64 edges are Int64, in the same order rule.
+    Registry::stage(name, Part::Nodes, &[], &integer, true, StageOrder::Canonical).unwrap();
+    assert_eq!(
+        integers_of(&Registry::node_batches(name).unwrap().0, "node_id"),
+        [-3, 2, 9, 10]
+    );
+    assert!(Registry::drop(name).unwrap());
+
+    // The same graph as staged, once with each identity: every kernel's rows
+    // agree, ids included, because they are the same text.
+    let source = |id: &str| {
+        let mut options = no_options();
+        options.insert("source".into(), id.into());
+        options
+    };
+    let weighted = {
+        let mut options = source("9");
+        options.insert("weightProperty".into(), "w".into());
+        options
+    };
+    let calls = [
+        ("wcc", no_options()),
+        ("degree", no_options()),
+        ("pagerank", no_options()),
+        ("bfs", source("-3")),
+        ("dijkstra", weighted),
+    ];
+    let mut answers = Vec::new();
+    for (label, mapping) in [("text", &text), ("int64", &integer)] {
+        let name = format!("identity-{label}");
+        for (part, batch) in [(Part::Nodes, &nodes), (Part::Edges, &links)] {
+            Registry::stage(
+                &name,
+                part,
+                std::slice::from_ref(batch),
+                mapping,
+                true,
+                StageOrder::AsStaged,
+            )
+            .unwrap();
+        }
+        answers.push(
+            calls
+                .iter()
+                .map(|(algorithm, options)| {
+                    rendered(run(algorithm, &name, &validate(algorithm, options).unwrap()))
+                })
+                .collect::<Vec<_>>(),
+        );
+        assert!(Registry::drop(&name).unwrap());
+    }
+    for (index, (algorithm, _)) in calls.iter().enumerate() {
+        assert!(!answers[0][index][0].starts_with("error"), "{algorithm}: {:?}", answers[0][index]);
+        assert_eq!(answers[0][index], answers[1][index], "{algorithm}");
+    }
+
+    // Integer nodes with text edges still build: the integer side is read as text.
+    let name = "identity-mixed";
+    Registry::stage(name, Part::Nodes, std::slice::from_ref(&nodes), &integer, true, StageOrder::AsStaged)
+        .unwrap();
+    Registry::stage(name, Part::Edges, std::slice::from_ref(&links), &text, true, StageOrder::AsStaged)
+        .unwrap();
+    let mixed = rendered(run("wcc", name, &validate("wcc", &no_options()).unwrap()));
+    assert_eq!(mixed, answers[0][0]);
+    assert!(Registry::drop(name).unwrap());
+}
+
 fn staged(name: &str, part: Part) -> Vec<RecordBatch> {
     let entry = Registry::entry(name).unwrap().unwrap();
     let e = entry.read().unwrap();

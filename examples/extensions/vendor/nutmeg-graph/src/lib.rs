@@ -313,6 +313,23 @@ pub fn set_memory_bytes(bytes: usize) -> Result<()> {
     Ok(())
 }
 
+/// The environment variable that gives the store's own execution a worker
+/// count. Projections are built on that execution, so this is how many threads
+/// a projection build may use; unset, a build runs on one thread, as before.
+/// A read that names no `concurrency` of its own inherits it.
+pub const WORKERS_VARIABLE: &str = "NUTMEG_WORKERS";
+
+fn workers() -> Option<usize> {
+    static ENV: Lazy<Option<usize>> = Lazy::new(|| {
+        std::env::var(WORKERS_VARIABLE)
+            .ok()?
+            .parse()
+            .ok()
+            .filter(|&workers| workers > 0)
+    });
+    *ENV
+}
+
 fn memory_bytes() -> usize {
     static ENV: Lazy<Option<usize>> =
         Lazy::new(|| std::env::var(MEMORY_BYTES_VARIABLE).ok()?.parse().ok());
@@ -329,11 +346,23 @@ pub struct ColumnMapping {
     pub target: Option<String>,
     pub edge_type: Option<String>,
     pub edge_id: Option<String>,
+    /// Keep integer node ids and edge endpoints as Int64 instead of casting
+    /// them to text: `ids` = `int64`. Off by default, because it changes the
+    /// canonical order of integer ids from text order to numeric order.
+    pub integer_ids: bool,
 }
 
 impl ColumnMapping {
     /// Set one field from a lowercase option key; false when not a mapping key.
     pub fn set(&mut self, key: &str, value: String) -> bool {
+        if key == "ids" {
+            self.integer_ids = match value.as_str() {
+                "int64" => true,
+                "text" => false,
+                _ => return false,
+            };
+            return true;
+        }
         let slot = match key {
             "idcolumn" => &mut self.id,
             "labelcolumn" => &mut self.label,
@@ -384,6 +413,32 @@ fn utf8(column: &ArrayRef) -> Result<ArrayRef> {
     Ok(cast(column, &DataType::Utf8)?)
 }
 
+/// A node id or an edge endpoint as staged. Text unless the mapping asks for
+/// integer identity (`ids` = `int64`); then Int64 when the column is an integer
+/// that fits one, and text otherwise.
+///
+/// Cast to text, the projection hashes two strings for every edge. Kept as
+/// Int64 they reach Grust's integer path (`GraphProjection::from_arrow_batches`),
+/// which resolves an endpoint through a direct table or a sorted lookup. A
+/// node's external id is still its decimal text, so results and kernel sources
+/// read as before; what changes is the canonical order of the staged rows,
+/// numeric instead of text. UInt64 can exceed Int64, so it stays text.
+fn id_column(column: &ArrayRef, mapping: &ColumnMapping) -> Result<ArrayRef> {
+    if !mapping.integer_ids {
+        return utf8(column);
+    }
+    Ok(match column.data_type() {
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32 => cast(column, &DataType::Int64)?,
+        _ => cast(column, &DataType::Utf8)?,
+    })
+}
+
 fn constant(value: &str, rows: usize) -> ArrayRef {
     let mut builder = StringBuilder::with_capacity(rows, value.len().saturating_mul(rows));
     for _ in 0..rows {
@@ -413,13 +468,13 @@ pub fn normalize_nodes(batch: &RecordBatch, mapping: &ColumnMapping) -> Result<R
     let (id, id_name) =
         pick(batch, &mapping.id, &["node_id", "id"], "node id", true)?.expect("required");
     let label = pick(batch, &mapping.label, &["label"], "node label", false)?;
-    let mut fields: Vec<Field> = node_schema()
-        .fields()
-        .iter()
-        .map(|field| field.as_ref().clone())
-        .collect();
+    let id = id_column(id, mapping)?;
+    let mut fields = vec![
+        Field::new("node_id", id.data_type().clone(), true),
+        Field::new("label", DataType::Utf8, true),
+    ];
     let mut columns: Vec<ArrayRef> = vec![
-        utf8(id)?,
+        id,
         match &label {
             Some((column, _)) => utf8(column)?,
             None => constant("", rows),
@@ -526,15 +581,20 @@ pub fn normalize_edges(batch: &RecordBatch, mapping: &ColumnMapping) -> Result<R
         "edge id",
         false,
     )?;
+    // Both endpoints take one type: Int64 when both are integers, text otherwise.
+    let (mut source, mut target) = (id_column(source, mapping)?, id_column(target, mapping)?);
+    if source.data_type() != target.data_type() {
+        (source, target) = (utf8(&source)?, utf8(&target)?);
+    }
     let mut fields = vec![
-        Field::new("source", DataType::Utf8, true),
-        Field::new("target", DataType::Utf8, true),
+        Field::new("source", source.data_type().clone(), true),
+        Field::new("target", target.data_type().clone(), true),
         Field::new("label", DataType::Utf8, true),
         Field::new("edge_id", DataType::Utf8, true),
     ];
     let mut columns = vec![
-        utf8(source)?,
-        utf8(target)?,
+        source,
+        target,
         match &label {
             Some((column, _)) => utf8(column)?,
             None => constant("", rows),
@@ -1184,6 +1244,13 @@ impl Store {
             deadline: None,
         })
         .expect("a positive batch size is a valid execution");
+        // Set before the execution is shared, which is the only time it can be.
+        let pool = match workers() {
+            Some(workers) => pool
+                .with_concurrency(workers)
+                .expect("a new execution takes a positive worker count"),
+            None => pool,
+        };
         Self {
             graphs: Default::default(),
             pool,
@@ -1376,10 +1443,11 @@ impl Store {
         // built once, charged to the pool, and kept with the projection; the
         // read that builds it is charged the work and can be stopped during
         // it, which keeps nothing.
+        let (nodes, edges) = one_identity(nodes, &e.edges)?;
         let graph = GraphProjection::from_arrow_batches(
             identity,
-            nodes,
-            &e.edges,
+            &nodes,
+            &edges,
             projection_options(args)?,
             &self.pool,
         )
@@ -1422,8 +1490,8 @@ impl Store {
                 deadline,
                 // A child is shared with its parent from birth, so its worker
                 // count is set here rather than with `with_concurrency`. The
-                // pool never asks for threads, so a read that does not either
-                // inherits none.
+                // pool asks for threads only when `NUTMEG_WORKERS` says so, and
+                // a read that names none inherits whatever the pool has.
                 concurrency: limits.concurrency,
                 ..ChildLimits::default()
             })
@@ -2186,6 +2254,14 @@ fn derive_nodes_bound(edges: &[RecordBatch]) -> usize {
 /// is known before it starts ([`derive_nodes_bound`]): one vector sized to the
 /// endpoints, and the id column built to its exact size.
 fn derive_nodes(edges: &[RecordBatch], sorted: bool) -> Result<RecordBatch> {
+    let integer = edges.first().is_some_and(|batch| {
+        batch
+            .column_by_name("source")
+            .is_some_and(|column| column.data_type() == &DataType::Int64)
+    });
+    if integer {
+        return derive_integer_nodes(edges, sorted);
+    }
     let endpoints: usize = edges.iter().map(|b| 2 * b.num_rows()).sum();
     // (id, position of its first appearance)
     let mut seen: Vec<(&str, usize)> = Vec::with_capacity(endpoints);
@@ -2219,15 +2295,108 @@ fn derive_nodes(edges: &[RecordBatch], sorted: bool) -> Result<RecordBatch> {
         ids.append_value(id);
     }
     drop(seen);
-    let labels = StringArray::new(
+    Ok(RecordBatch::try_new(
+        node_schema(),
+        vec![Arc::new(ids.finish()), empty_labels(rows)],
+    )?)
+}
+
+/// [`derive_nodes`] for Int64 endpoints: the same order rules, ids compared
+/// as integers. Its entries are smaller than the text form's, so
+/// [`derive_nodes_bound`] covers it.
+fn derive_integer_nodes(edges: &[RecordBatch], sorted: bool) -> Result<RecordBatch> {
+    let endpoints: usize = edges.iter().map(|b| 2 * b.num_rows()).sum();
+    let mut seen: Vec<(i64, usize)> = Vec::with_capacity(endpoints);
+    for batch in edges {
+        let column = |name: &str| {
+            batch
+                .column_by_name(name)
+                .and_then(|c| c.as_any().downcast_ref::<Int64Array>())
+                .ok_or_else(|| err(format!("staged edges lack an Int64 `{name}`")))
+        };
+        let (sources, targets) = (column("source")?, column("target")?);
+        for row in 0..batch.num_rows() {
+            for endpoint in [sources, targets] {
+                if endpoint.is_null(row) {
+                    return exec_err!("nutmeg: null edge endpoint at row {row}");
+                }
+                seen.push((endpoint.value(row), seen.len()));
+            }
+        }
+    }
+    seen.sort_unstable();
+    seen.dedup_by(|later, first| later.0 == first.0);
+    if !sorted {
+        seen.sort_unstable_by_key(|(_, position)| *position);
+    }
+    let rows = seen.len();
+    let ids = Int64Array::from_iter_values(seen.iter().map(|(id, _)| *id));
+    drop(seen);
+    Ok(RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("node_id", DataType::Int64, true),
+            Field::new("label", DataType::Utf8, true),
+        ])),
+        vec![Arc::new(ids), empty_labels(rows)],
+    )?)
+}
+
+/// `rows` empty labels, without a pass over them.
+fn empty_labels(rows: usize) -> ArrayRef {
+    Arc::new(StringArray::new(
         OffsetBuffer::new_zeroed(rows),
         Buffer::from(Vec::<u8>::new()),
         None,
-    );
-    Ok(RecordBatch::try_new(
-        node_schema(),
-        vec![Arc::new(ids.finish()), Arc::new(labels)],
-    )?)
+    ))
+}
+
+/// Staged batches as they are, or a copy with an id column recast.
+type Batches<'a> = std::borrow::Cow<'a, [RecordBatch]>;
+
+/// Node and edge batches with one identity type for the projection build.
+///
+/// Grust takes `node_id`, `source` and `target` all as Utf8 or all as Int64. A
+/// graph staged with integer ids on one side and text on the other used to
+/// work, because everything was cast to text; here the integer side is cast to
+/// text for the build, which is what it would have been.
+fn one_identity<'a>(
+    nodes: &'a [RecordBatch],
+    edges: &'a [RecordBatch],
+) -> Result<(Batches<'a>, Batches<'a>)> {
+    use std::borrow::Cow;
+    let kind = |batches: &[RecordBatch], name: &str| {
+        batches
+            .first()
+            .and_then(|batch| batch.column_by_name(name))
+            .map(|column| column.data_type().clone())
+    };
+    let text = |batches: &[RecordBatch], names: &[&str]| -> Result<Vec<RecordBatch>> {
+        batches
+            .iter()
+            .map(|batch| {
+                let schema = batch.schema();
+                let mut fields: Vec<Field> =
+                    schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+                let mut columns = batch.columns().to_vec();
+                for name in names {
+                    let index = schema.index_of(name)?;
+                    columns[index] = utf8(&columns[index])?;
+                    fields[index] = Field::new(*name, DataType::Utf8, true);
+                }
+                Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?)
+            })
+            .collect()
+    };
+    match (kind(nodes, "node_id"), kind(edges, "source")) {
+        (Some(DataType::Int64), Some(DataType::Utf8)) => {
+            Ok((Cow::Owned(text(nodes, &["node_id"])?), Cow::Borrowed(edges)))
+        }
+        (Some(DataType::Utf8), Some(DataType::Int64)) => Ok((
+            Cow::Borrowed(nodes),
+            Cow::Owned(text(edges, &["source", "target"])?),
+        )),
+        _ => Ok((Cow::Borrowed(nodes), Cow::Borrowed(edges))),
+    }
 }
 
 const PROJECTION_KEYS: [&str; 5] = [

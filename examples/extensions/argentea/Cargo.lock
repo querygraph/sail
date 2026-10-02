@@ -21,9 +21,9 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "grust-core"
-version = "0.23.0"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52b731a341958672ec3474f7dc4b39190e5b54be155604ea4b7da8f03d3632e6"
+checksum = "11a9de10ddfa399183a974122fa7bfcf75f10d3837af8bd8a48d402226530e9c"
 dependencies = [
  "async-trait",
  "quick-xml",
@@ -35,9 +35,9 @@ dependencies = [
 
 [[package]]
 name = "grust-procedures"
-version = "0.23.0"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81b22f57b59eca1ad700398e1490860781d59c467799e9169ec3093d47b92add"
+checksum = "c7c07f3432aa37090a02b3d3a7e2ca17dea80ce33674f445e0ea3d7cb153de81"
 dependencies = [
  "grust-core",
  "serde_json",

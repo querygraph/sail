@@ -15,8 +15,8 @@ crate-type = ["cdylib", "rlib"]
 nutmeg-graph = { path = "../vendor/nutmeg-graph" }
 sail-native-resource-ffi = { path = "../../../crates/sail-native-resource-ffi" }
 sail-argentea-core = { path = "../argentea" }
-grust-procedures = "=0.23.0"
-grust-arrow = "=0.23.0"
+grust-procedures = "=0.24.0"
+grust-arrow = "=0.24.0"
 datafusion = { version = "=55.1.0", default-features = false, features = ["recursive_protection"] }
 datafusion-common = { version = "=55.1.0", default-features = false }
 datafusion-execution = { version = "=55.1.0", default-features = false }

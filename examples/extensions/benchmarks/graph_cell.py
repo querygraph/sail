@@ -128,9 +128,13 @@ def execute(spark, args, manifest, receipt, sampler):
         method = algorithm_method(args.engine, args.algorithm, args.variant)
         if args.engine == 'nutmeg-native':
             nm = Nutmeg(spark)
-            nodes = vertices.select(F.col('id').cast('string').alias('node_id'))
-            links = edges.select(F.col('src').cast('string').alias('source'),
-                                 F.col('dst').cast('string').alias('target'))
+            # Ids are staged as text unless --native-ids int64 keeps them BIGINT,
+            # which the extension then hands to Grust's integer identity path.
+            kind = 'long' if getattr(args, 'native_ids', 'string') == 'int64' else 'string'
+            receipt['native_ids'] = getattr(args, 'native_ids', 'string')
+            nodes = vertices.select(F.col('id').cast(kind).alias('node_id'))
+            links = edges.select(F.col('src').cast(kind).alias('source'),
+                                 F.col('dst').cast(kind).alias('target'))
             # Staging, projection and kernel are timed and sampled as separate
             # steps of the one 'execute' phase. The stage receipt carries the
             # admitted sort tiers; the status after each step carries the
@@ -139,7 +143,9 @@ def execute(spark, args, manifest, receipt, sampler):
             # kernel then reused that projection is checked after the run.
             sampler.mark_step('stage')
             from traversal_cell import stage_order
-            staged = nm.stage('benchmark', nodes, links, order=stage_order(args))
+            mapping = {'ids': 'int64'} if kind == 'long' else None
+            staged = nm.stage('benchmark', nodes, links, node_mapping=mapping, edge_mapping=mapping,
+                              order=stage_order(args))
             receipt['stage_seconds'] = time.perf_counter() - started
             receipt['stage_receipt'] = staged.asDict()
             receipt['native_status_after_stage'] = nm.status()
@@ -403,6 +409,9 @@ def main():
     parser.add_argument('--stage-order', choices=['canonical', 'asStaged'], default='canonical',
                         help='native staging order: canonical sorts every staged row after admitting the sort working space; '
                              'asStaged keeps arrival order and skips the sort (sent to the server only when not canonical)')
+    parser.add_argument('--native-ids', choices=['string', 'int64'], default='string',
+                        help='how vertex ids are staged for the native engine: as text (every earlier measurement) '
+                             'or as BIGINT, which needs an extension built on Grust 0.24 or later')
     parser.add_argument('--ranking-validation', choices=['reference', 'certificate'], default='reference',
                         help='compare with reference.parquet, or check a PageRank residual / partial WCC partition without one')
     parser.add_argument('--certificate-max-rounds', type=int, default=10000)
