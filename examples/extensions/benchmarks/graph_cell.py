@@ -174,8 +174,10 @@ def execute(spark, args, manifest, receipt, sampler):
             # Pecan emits typed IterationEvent models; receipts keep the flat dict shape.
             graph = GraphAlgorithms(spark, observer=lambda event: events.append(
                 dict({key: value for key, value in event.as_dict().items() if key != 'run_path'},
-                     elapsed_seconds=time.perf_counter() - started)))
+                     elapsed_seconds=time.perf_counter() - started)),
+                snapshot_inputs=getattr(args, 'snapshot_inputs', True))
             receipt['pecan_input_policy'] = 'assume_valid_finite_path_sums'
+            receipt['pecan_snapshot_inputs'] = getattr(args, 'snapshot_inputs', True)
             options = dict(max_iterations=args.max_iterations, partitions=args.partitions)
             if args.algorithm == 'pagerank':
                 options.update(reset_probability=1 - args.damping, tolerance=args.tolerance,
@@ -391,6 +393,9 @@ def main():
     parser.add_argument('--traversal-validation', choices=['reference', 'certificate'], default='reference')
     parser.add_argument('--http2-keepalive-timeout', type=int, default=120,
                         help='seconds a Sail server waits for a keepalive ping answer before dropping the connection (host default 10)')
+    parser.add_argument('--no-snapshot-inputs', dest='snapshot_inputs', action='store_false',
+                        help='Pecan/Grenada: read the dataset Parquet in place instead of rewriting it into the run '
+                             '(the default keeps the snapshot, as every earlier measurement did)')
     parser.add_argument('--record-plans', action='store_true',
                         help='Pecan/Grenada traversal cells: record the physical plan of each iteration in its iteration_start event')
     parser.add_argument('--argentea-max-rounds', type=int, default=62,

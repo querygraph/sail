@@ -135,3 +135,45 @@ def test_pregel_pagerank_keeps_order_and_normalizes_with_dangling_vertices(spark
         order = lambda ranks: sorted(ranks, key=lambda i: (round(ranks[i], 12), i))  # noqa: E731
         assert order(r) == order(n) == order(p)
 
+
+def test_snapshot_false_reads_inputs_in_place_without_writing():
+    from pyspark_pecan import algorithms
+
+    class Frame:
+        def __init__(self, columns):
+            self.columns = columns
+
+        def select(self, *columns):
+            return Frame(list(columns))
+
+        def count(self):
+            return 7
+
+    class Run:
+        materialized = 0
+
+        class cancellation:
+            @staticmethod
+            def check():
+                return None
+
+        def materialize(self, frame):
+            self.materialized += 1
+            return "path", frame
+
+    run = Run()
+    vertices, edges, size = algorithms._snapshot(run, Frame(["id", "name"]), Frame(["src", "dst", "w"]),
+                                                 ("src", "dst"), snapshot=False)
+    assert run.materialized == 0 and vertices.columns == ["id"] and edges.columns == ["src", "dst"] and size == 7
+    algorithms._snapshot(run, Frame(["id"]), Frame(["src", "dst"]), ("src", "dst"), count_vertices=False)
+    assert run.materialized == 2
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("method", ["min_label", "randomized"])
+def test_in_place_inputs_give_the_same_components(spark, method):
+    with GraphAlgorithms(spark).wcc(*frames(spark), method=method) as snapshotted, \
+            GraphAlgorithms(spark, snapshot_inputs=False).wcc(*frames(spark), method=method) as in_place:
+        assert ({r.id: r.component for r in snapshotted.frame.collect()}
+                == {r.id: r.component for r in in_place.frame.collect()})
+

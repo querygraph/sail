@@ -78,6 +78,7 @@ class GraphOptions(BaseModel):
 
     record_plans: bool = False
     repartition_checkpoints: bool = True
+    snapshot_inputs: bool = True
 
 
 class PageRankOptions(BaseModel):

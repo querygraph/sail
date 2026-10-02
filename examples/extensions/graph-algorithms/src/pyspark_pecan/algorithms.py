@@ -62,14 +62,21 @@ def _check_input_schema(spark: SparkSession, vertices: DataFrame, edges: DataFra
 
 def _snapshot(run: StagingRun, vertices: DataFrame, edges: DataFrame,
               edge_columns: tuple[str, ...] = ("src", "dst"), *,
-              count_vertices: bool = True) -> tuple[DataFrame, DataFrame, int | None]:
-    """Materialize the projected inputs once so every round reads a stable copy.
+              count_vertices: bool = True, snapshot: bool = True) -> tuple[DataFrame, DataFrame, int | None]:
+    """Project the inputs, and by default materialize them once as a stable copy.
 
-    The graph is assumed valid; no null, uniqueness or membership job runs.
-    Count vertices only when the algorithm requests N (for example, 1/N terms).
+    With snapshot=False the projected inputs are read where they are, every
+    round: the caller vouches that they are stable and cheap to scan, which
+    Parquet files and tables are and an expensive query is not. Nothing is
+    written, so nothing is rewritten. The graph is assumed valid; no null,
+    uniqueness or membership job runs. Count vertices only when the algorithm
+    requests N (for example, 1/N terms).
     """
-    _, vertices = run.materialize(vertices.select("id"))
-    _, edges = run.materialize(edges.select(*edge_columns))
+    vertices = vertices.select("id")
+    edges = edges.select(*edge_columns)
+    if snapshot:
+        _, vertices = run.materialize(vertices)
+        _, edges = run.materialize(edges)
     run.cancellation.check()
     return vertices, edges, vertices.count() if count_vertices else None
 
@@ -95,12 +102,18 @@ class GraphAlgorithms:
     """
 
     def __init__(self, spark: SparkSession, *, observer: Observer | None = None,
-                 record_plans: bool = False, repartition_checkpoints: bool = True) -> None:
-        options = GraphOptions(record_plans=record_plans, repartition_checkpoints=repartition_checkpoints)
+                 record_plans: bool = False, repartition_checkpoints: bool = True,
+                 snapshot_inputs: bool = True) -> None:
+        options = GraphOptions(record_plans=record_plans, repartition_checkpoints=repartition_checkpoints,
+                               snapshot_inputs=snapshot_inputs)
         self.spark = spark
         self.utils = GraphUtils(spark)
         self.observer: Observer | None = observer
         self.repartition_checkpoints: bool = options.repartition_checkpoints
+        # snapshot_inputs=False reads the given vertices and edges in place
+        # instead of first rewriting them to Parquet in the run's staging area;
+        # use it when the inputs already are stable files or tables.
+        self.snapshot_inputs: bool = options.snapshot_inputs
         # With record_plans, an iteration's observer event carries the physical
         # plan of the frame the iteration materializes (one extra planning round
         # trip per iteration; the plan is text, not executed twice).
@@ -126,7 +139,7 @@ class GraphAlgorithms:
             run = StagingRun(self.spark, self.utils, cancellation, partitions,
                              repartition_checkpoints=self.repartition_checkpoints)
             vertices, edges, size = _snapshot(run, vertices, edges, edge_columns,
-                                             count_vertices=count_vertices)
+                                             count_vertices=count_vertices, snapshot=self.snapshot_inputs)
             return body(run, vertices, edges, size)
         except BaseException as error:
             # Remove the query tag before issuing cleanup, so cancellation of

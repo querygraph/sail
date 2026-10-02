@@ -163,3 +163,19 @@ def test_cancellation_and_cap_retain_cleanup_contract(spark, method, monkeypatch
     with pytest.raises(PySparkException, match='graph run has been released'):
         graph.utils.exists(*allocations[-1])
     assert graph.utils.remove(*allocations[-1]) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('canonical', [True, False])
+def test_isolated_id_equal_to_a_hashed_label_stays_its_own_component(spark, canonical):
+    # Found on the gate: with seed 42 the hashed label of component {1, 2} equals
+    # this isolated vertex's original id. Isolates are labelled in the hashed
+    # space, so the two components can never share a label.
+    isolate = -7694170072594669674
+    graph = GraphAlgorithms(spark)
+    with graph.wcc(*frames(spark, [1, 2, isolate], [(1, 2)]), method='randomized', seed=42,
+                   canonical_labels=canonical) as result:
+        labels = {r.id: r.component for r in result.frame.collect()}
+    assert labels[1] == labels[2] and labels[isolate] != labels[1]
+    if canonical:
+        assert labels == {1: 1, 2: 1, isolate: isolate}

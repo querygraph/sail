@@ -12,8 +12,11 @@ priority table, no `min_by`, no join to recover an original id.
 The back pass unwinds the rounds: a representative that was forwarded takes
 the later round's label; one that dropped out (its id had no edge in later
 rounds) is pushed into the final id space by the composition of the later
-affine maps, computed on the client in the same field. The final labels are
-hashed ids; the default then relabels each component by the minimum original
+affine maps, computed on the client in the same field. Every final label is
+the image, under the composition of all rounds' maps, of some original vertex
+of its component; a vertex with no edge takes its own image under that same
+composition, so all labels live in one id space and distinct components never
+share one. The default then relabels each component by the minimum original
 id of its members (one aggregate and one join), which `canonical_labels=False`
 skips, because any label set names the same partition.
 """
@@ -193,8 +196,19 @@ def execute(graph: GraphAlgorithms, vertices: DataFrame, edges: DataFrame, *, op
                 run.remove(frontier_path)
                 run.remove(older_path)
                 frontier_path, frontier = unwound_path, unwound
+            # Every component label in the final space is F(u) for an original
+            # vertex u of that component, F being the composition of all rounds'
+            # maps and a bijection. A vertex with no edge therefore takes F(v):
+            # the same id space, and distinct from every other label. Labelling
+            # it with its own original id instead would mix two id spaces, and a
+            # hashed label could then equal an isolated vertex's id.
+            first_a, first_b = coefficients[0]
+            full_a, full_b = (signed(gf_multiply(acc_a, first_a)),
+                              signed(gf_axpb(acc_a, first_b, acc_b)))
+            own_image = F.call_function("gf_axpb", F.lit(full_a).cast("long"), F.col("id"),
+                                        F.lit(full_b).cast("long"))
             labelled = vertices.join(frontier, "id", "left").select(
-                "id", F.coalesce("representative", "id").alias("component"))
+                "id", F.coalesce(F.col("representative"), own_image).alias("component"))
         else:
             labelled = vertices.select("id", F.col("id").alias("component"))
 

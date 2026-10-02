@@ -90,7 +90,7 @@ def test_public_controller_propagates_setting_to_snapshot_and_body_writes(monkey
     monkeypatch.setattr(algorithms, "GraphUtils", lambda _: utils)
     monkeypatch.setattr(algorithms, "_check_input_schema", lambda *_: None)
 
-    def snapshot(run, *_, count_vertices=True):
+    def snapshot(run, *_, count_vertices=True, snapshot=True):
         run.materialize(Frame(calls))
         run.materialize(Frame(calls))
         return None, None, 3
