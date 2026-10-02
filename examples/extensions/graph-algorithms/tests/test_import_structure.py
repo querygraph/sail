@@ -66,7 +66,8 @@ def test_exception_aliases_qualified_name_and_pickle_are_compatible() -> None:
     assert pyspark_pecan.ConvergenceError is exception
     assert algorithms.ConvergenceError is exception
     assert str(exception) == "<class 'pyspark_pecan.algorithms.ConvergenceError'>"
-    for name in ("pagerank_delta", "wcc_randomized", "traversal", "traversal_bfs", "traversal_stepping"):
+    for name in ("pagerank_delta", "pagerank_pregel_delta", "wcc_randomized", "traversal", "traversal_bfs",
+                 "traversal_stepping"):
         assert importlib.import_module("pyspark_pecan." + name).ConvergenceError is exception
     error = exception("cap reached")
     error.cleanup_deferred = True
@@ -80,6 +81,7 @@ def test_exception_aliases_qualified_name_and_pickle_are_compatible() -> None:
 
 @pytest.mark.parametrize("method,module,options", [
     ("pagerank", "pagerank_delta", {"method": "delta", "tolerance": 0.1}),
+    ("pagerank", "pagerank_pregel_delta", {"method": "pregel_delta", "tolerance": 0.01}),
     ("wcc", "wcc_randomized", {"method": "randomized"}),
     ("wcc", "wcc_randomized", {"method": "randomized_fused"}),
     ("bfs", "traversal", {"source": 0}),

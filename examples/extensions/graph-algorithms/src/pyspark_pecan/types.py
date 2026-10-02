@@ -17,7 +17,7 @@ INT64_MAX: int = (1 << 63) - 1
 
 EventKind = Literal["iteration_start", "iteration_end", "certificate"]
 Direction = Literal["push", "pull"]
-PageRankMethod = Literal["power", "delta", "pregel"]
+PageRankMethod = Literal["power", "delta", "pregel", "pregel_delta"]
 WccMethod = Literal["min_label", "randomized", "randomized_fused"]
 TraversalMethod = Literal["reference", "frontier", "push_pull", "delta_star"]
 
@@ -44,7 +44,7 @@ class IterationEvent(BaseModel):
     edges_after: int | None = None
     coefficient_a: int | None = None
     coefficient_b: int | None = None
-    # delta PageRank
+    # delta PageRank (frontier_size also reports pregel_delta's active vertices)
     residual: float | None = None
     error_bound: float | None = None
     frontier_size: int | None = None
@@ -90,6 +90,7 @@ class PageRankOptions(BaseModel):
     partitions: int = Field(default=4, ge=1)
     method: PageRankMethod = "power"
     normalize: bool = False
+    vote_to_halt: bool = False
 
 
 class WccOptions(BaseModel):

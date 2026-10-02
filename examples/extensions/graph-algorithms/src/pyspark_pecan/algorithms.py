@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from pyspark.sql.connect import functions as F
 from pyspark.sql.types import LongType
 
-from . import _contracts, pagerank_delta, traversal, wcc_randomized
+from . import _contracts, pagerank_delta, pagerank_pregel_delta, traversal, wcc_randomized
 from .lifecycle import CancellationToken, GraphCancelledError, GraphResult
 from .staging import StagingRun
 from .types import (
@@ -178,8 +178,8 @@ class GraphAlgorithms:
     def pagerank(self, vertices: DataFrame, edges: DataFrame, *, reset_probability: float = 0.15,
                  max_iterations: int = 20, tolerance: float | None = None, partitions: int = 4,
                  cancellation: CancellationToken | None = None, method: PageRankMethod = "power",
-                 normalize: bool = False) -> GraphResult:
-        """Directed PageRank with uniform restart, in three forms.
+                 normalize: bool = False, vote_to_halt: bool = False) -> GraphResult:
+        """Directed PageRank with uniform restart, in four forms.
 
         Initialize rank=1/N. At each step, redistribute dangling rank uniformly,
         then set rank(v)=reset/N+(1-reset)*(incoming(v)+dangling/N). Parallel edges
@@ -202,9 +202,26 @@ class GraphAlgorithms:
         a step is one job. The ranks then sum to less than one when dangling
         vertices exist; normalize=True divides by the total at the end. The
         LDBC Graphalytics contract is "power" (it redistributes dangling rank).
+
+        method="pregel_delta" is GraphX's dynamic PageRank in the form of
+        graphframes-rs: rank and delta start at reset, a vertex whose delta
+        exceeds tolerance sends delta/out_degree, and a vertex adds
+        (1-reset)*received to its rank and takes that gain as its new delta.
+        The frontier shrinks as vertices settle. There is no dangling term and
+        no certificate, and a step is one job. Ranks are on GraphX's scale (a
+        vertex starts at reset, not reset/N) and tolerance, which is required,
+        compares to one vertex's gain on that scale; normalize=True divides by
+        the total. It runs exactly max_iterations steps (converged=None), or,
+        with vote_to_halt=True, stops when no delta exceeds tolerance and
+        raises ConvergenceError at the limit.
         """
         options = PageRankOptions(reset_probability=reset_probability, max_iterations=max_iterations,
-                                  tolerance=tolerance, partitions=partitions, method=method, normalize=normalize)
+                                  tolerance=tolerance, partitions=partitions, method=method, normalize=normalize,
+                                  vote_to_halt=vote_to_halt)
+        if options.vote_to_halt and options.method != "pregel_delta":
+            raise ValueError("vote_to_halt applies only to method='pregel_delta'")
+        if options.method == "pregel_delta":
+            return pagerank_pregel_delta.execute(self, vertices, edges, options=options, cancellation=cancellation)
         if options.method == "delta":
             if options.tolerance is None:
                 raise ValueError("delta PageRank requires a positive tolerance")
