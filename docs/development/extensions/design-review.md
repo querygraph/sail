@@ -1,5 +1,12 @@
 # Sail extensions: design, implementation, and validation
 
+Start with the [Sail Extensions review request](SAIL-EXTENSIONS-REVIEW-REQUEST.md)
+for the current review routes, checkout choices and feedback scope. This document
+retains the combined prototype's architecture and historical qualification.
+The separate static-preflight candidate checks declarations before entry-point
+loading; it has its own source pin and test results in the review request. That
+candidate does not change the runtime on the `sail-extensions` review branch.
+
 ## Purpose and review structure
 
 This document describes an experimental contract for trusted native extensions in Sail, its
@@ -13,6 +20,11 @@ registration, distributed identity, field metadata, execution placement, retry p
 ownership and teardown. Each responsibility has a concrete consumer, a stated invariant and
 focused acceptance tests. This separation makes failures attributable to a specific boundary
 and allows changes to be reviewed without reading the domain implementations at the same time.
+
+The responsibilities are not all required by every extension. Distributed scalars
+need registration, compatibility, identity, metadata and lifetime contracts.
+Bounded relation dispatch and driver-native placement/retry rules serve the
+additional stateful relation path demonstrated by Nutmeg.
 
 The document proceeds from delivered behavior and execution paths to host contracts, review
 units and their dependencies, then exact-revision test results, reproduction procedures and

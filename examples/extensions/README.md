@@ -1,5 +1,10 @@
 # Two native extensions on Sail
 
+For a design review, start at the shared
+[Sail Extensions review request](../../docs/development/extensions/SAIL-EXTENSIONS-REVIEW-REQUEST.md).
+It distinguishes the published prototype from the separately adoptable static
+compatibility preflight and gives routes for scalars and stateful relations.
+
 To write your own extension, start with
 [Writing a Sail extension](WRITING-AN-EXTENSION.md): the protocol, a minimal
 client, a minimal handler, and how to build and run.
@@ -48,7 +53,7 @@ acceptance keys. Installed native packages are trusted code.
 
 The [maintainer design review](../../docs/development/extensions/design-review.md)
 consolidates the delivered architecture, necessary host changes, evidence,
-limitations and proposed upstream PR sequence. The
+limitations and possible review units. The
 [implemented follow-up](../../docs/development/extensions/review-follow-up.md)
 records explicit resource-domain ownership, unchanged-wheel qualification and
 the downloadable review evidence bundle. The [expanded ABI review](../../docs/development/extensions/abi-review.md)
@@ -97,8 +102,9 @@ different content is rejected during task decoding, including changes under an
 unchanged package version. `SAIL_EXPERIMENTAL_WORKER_PYTHONPATH` can select a
 different installed worker environment for compatibility testing.
 
-Sedona scalar expressions run on workers. Their geometry field metadata survives
-expression serialization, constant folding and shuffles. Nutmeg retains graph
+Sedona scalar expressions run on workers. Selected compositions preserve geometry
+field metadata through expression serialization, constant folding and shuffles.
+Nutmeg retains graph
 state on the driver: distributed node/edge inputs are gathered into a driver-only
 native stage, and its output can feed worker stages. Regions containing a Nutmeg
 operation have one attempt, even when ordinary tasks allow retries. An error

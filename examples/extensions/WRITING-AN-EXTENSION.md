@@ -2,7 +2,15 @@
 
 Build a native extension, install its Python wheel beside Sail, and call it from
 Spark Connect. No JVM or JAR is required. This page describes the experimental
-`work/extensions-datafusion-graphs` branch, including its current limitations.
+prototype on `sail-extensions`, whose runtime source is
+`bd8ce9ae8839477e2c08a0475ab7900b115c5366`, including its limitations.
+Start a review with the shared
+[Sail Extensions review request](../../docs/development/extensions/SAIL-EXTENSIONS-REVIEW-REQUEST.md),
+which also identifies the separately adoptable static-preflight candidate.
+
+If already in the candidate checkout, skip the clone and `cd` commands below and
+build there. Follow that branch's static-metadata migration guide when packaging
+an extension; do not switch back to the prototype while reviewing the candidate.
 
 ## Build and start Sail
 
@@ -11,7 +19,7 @@ headers), a C/C++ toolchain and GEOS development libraries (3.12 or later).
 On macOS, `brew install geos protobuf` supplies the latter dependencies.
 
 ```bash
-git clone --branch work/extensions-datafusion-graphs https://github.com/querygraph/sail.git
+git clone --branch sail-extensions https://github.com/querygraph/sail.git
 cd sail
 bash examples/extensions/scripts/build.sh
 
