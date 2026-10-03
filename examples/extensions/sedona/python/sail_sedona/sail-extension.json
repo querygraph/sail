@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "extensions": [
+    {
+      "entry_point": "sedona",
+      "name": "sedona",
+      "version": "0.1.0",
+      "api_version": 1,
+      "datafusion_version": "55.1.0",
+      "arrow_version": "59.3.0"
+    }
+  ]
+}

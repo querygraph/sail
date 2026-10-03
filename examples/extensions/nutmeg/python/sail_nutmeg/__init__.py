@@ -1,6 +1,7 @@
 """Native Nutmeg extension metadata and a small Spark Connect client.
 
-The host reads manifest() before importing any native FFI object.
+The host checks the adjacent sail-extension.json before importing this module.
+manifest() supplies the runtime contract, including the configured memory quota.
 """
 TYPE_URL = "type.googleapis.com/nutmeg.v1.NutmegApi"
 

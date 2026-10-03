@@ -1,9 +1,12 @@
-"""Apache SedonaDB functions exported through the DataFusion 55.1 capsule API."""
+"""Apache SedonaDB functions exported through the DataFusion 55.1 capsule API.
+
+Sail checks the adjacent sail-extension.json before importing this module.
+"""
 
 
 class SedonaExtension:
     def manifest(self):
-        # Keep validation possible before importing any native capsule provider.
+        # Runtime declarations must agree with the static compatibility header.
         return {
             "name": "sedona",
             "version": "0.1.0",

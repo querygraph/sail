@@ -30,21 +30,13 @@ pub(super) struct RelationType {
 
 impl Manifest {
     pub fn validate(&self) -> Result<()> {
-        if self.name.is_empty() || self.version.is_empty() {
-            return plan_err!("extension name and version must not be empty");
-        }
-        if self.api_version != 1
-            || self.datafusion_version != "55.1.0"
-            || self.arrow_version != "59.3.0"
-        {
-            return plan_err!(
-                "extension {} build mismatch: host api=1 DataFusion=55.1.0 Arrow=59.3.0; package api={} DataFusion={} Arrow={}",
-                self.name,
-                self.api_version,
-                self.datafusion_version,
-                self.arrow_version
-            );
-        }
+        validate_build(
+            &self.name,
+            &self.version,
+            self.api_version,
+            &self.datafusion_version,
+            &self.arrow_version,
+        )?;
         if !matches!(self.placement.as_str(), "driver" | "any") {
             return plan_err!(
                 "extension {} has unsupported placement {}",
@@ -76,6 +68,25 @@ impl Manifest {
         }
         Ok(())
     }
+}
+
+/// The same admission rule applies before import and to the runtime manifest.
+pub(super) fn validate_build(
+    name: &str,
+    version: &str,
+    api_version: u32,
+    datafusion_version: &str,
+    arrow_version: &str,
+) -> Result<()> {
+    if name.is_empty() || version.is_empty() {
+        return plan_err!("extension name and version must not be empty");
+    }
+    if api_version != 1 || datafusion_version != "55.1.0" || arrow_version != "59.3.0" {
+        return plan_err!(
+            "extension {name} build mismatch: host api=1 DataFusion=55.1.0 Arrow=59.3.0; package api={api_version} DataFusion={datafusion_version} Arrow={arrow_version}"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

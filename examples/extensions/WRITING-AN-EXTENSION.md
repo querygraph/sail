@@ -2,7 +2,15 @@
 
 Build a native extension, install its Python wheel beside Sail, and call it from
 Spark Connect. No JVM or JAR is required. This page describes the experimental
-`work/extensions-datafusion-graphs` branch, including its current limitations.
+`work/extensions-datafusion-graphs` prototype, including its historical limitations.
+
+The local `work/extensions-static-preflight` branch additionally requires static
+compatibility metadata recorded in the installed wheel before an entry point can
+load. Existing wheels without it must be rebuilt and reinstalled. Follow
+[the static-preflight schema and migration guide](../../docs/development/extensions/static-compatibility-preflight.md)
+alongside the package instructions below. The clone command retained here selects
+the historical prototype. The preflight branch is local and unpublished; test it
+from this checkout.
 
 ## Build and start Sail
 

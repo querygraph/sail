@@ -1,11 +1,12 @@
 //! Experimental, exact-build native packages for local Sail sessions.
 //!
-//! Python metadata is the bootstrap protocol; native objects use DataFusion's
-//! named capsules. This is deliberately not a promise of a stable Sail C ABI.
+//! Static distribution files gate package import; Python supplies runtime
+//! options and DataFusion's named capsules. This is not a stable Sail C ABI.
 mod driver;
 pub(crate) mod graph_utils;
 mod manifest;
 mod plan;
+mod preflight;
 mod python_owner;
 #[cfg(test)]
 mod resource_tests;
@@ -23,7 +24,7 @@ use datafusion_ffi::execution_plan::FFI_ExecutionPlan;
 use datafusion_ffi::table_provider::FFI_TableProvider;
 use datafusion_ffi::udf::FFI_ScalarUDF;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyCapsule, PyCapsuleMethods, PyDict, PyList};
+use pyo3::types::{PyBytes, PyCapsule, PyCapsuleMethods, PyList};
 use sail_catalog::manager::CatalogManager;
 use sail_common::config::ExecutionMode;
 use sail_common_datafusion::connect_extension::{
@@ -174,32 +175,15 @@ pub(crate) fn register_extensions(
         .get_extension::<CatalogManager>()
         .ok_or_else(|| py_error("session catalog is missing"))?;
     let scalars = Python::attach(|py| -> Result<Vec<ScalarUDF>> {
-        let kwargs = PyDict::new(py);
-        kwargs
-            .set_item("group", "pysail.extensions")
-            .map_err(py_error)?;
-        let entries = py
-            .import("importlib.metadata")
-            .and_then(|m| m.getattr("entry_points"))
-            .and_then(|f| f.call((), Some(&kwargs)))
-            .map_err(py_error)?;
-        let mut entries = entries
-            .try_iter()
-            .map_err(py_error)?
-            .map(|item| {
-                let item = item?;
-                let name = item.getattr("name")?.extract::<String>()?;
-                Ok((name, item))
-            })
-            .collect::<PyResult<Vec<_>>>()
-            .map_err(py_error)?;
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let entries = preflight::discover(py)?;
         let mut identities = HashSet::new();
         let mut names = HashSet::new();
         let mut scalars = Vec::new();
         // A fresh host-issued incarnation, not a client-selected graph namespace.
         let incarnation = uuid::Uuid::new_v4().to_string();
-        for (entry_name, entry) in entries {
+        for prepared in entries {
+            let entry_name = prepared.name;
+            let entry = prepared.entry;
             let loaded = entry.call_method0("load").map_err(py_error)?;
             let factory = if loaded.is_callable() {
                 loaded.call0().map_err(py_error)?
@@ -213,6 +197,7 @@ pub(crate) fn register_extensions(
                 .and_then(|s| s.extract::<String>())
                 .map_err(py_error)?;
             let manifest: Manifest = serde_json::from_str(&json).map_err(py_error)?;
+            prepared.build.check_manifest(&manifest)?;
             manifest.validate()?;
             if distributed && manifest.placement != "driver" && !manifest.relation_types.is_empty()
             {
@@ -339,17 +324,9 @@ pub(crate) fn register_extensions(
 pub(crate) fn load_worker_extensions() -> Result<()> {
     graph_utils::register_worker_functions()?;
     Python::attach(|py| {
-        let kwargs = PyDict::new(py);
-        kwargs
-            .set_item("group", "pysail.extensions")
-            .map_err(py_error)?;
-        let entries = py
-            .import("importlib.metadata")
-            .and_then(|m| m.getattr("entry_points"))
-            .and_then(|f| f.call((), Some(&kwargs)))
-            .map_err(py_error)?;
-        for entry in entries.try_iter().map_err(py_error)? {
-            let entry = entry.map_err(py_error)?;
+        let entries = preflight::discover(py)?;
+        for prepared in entries {
+            let entry = prepared.entry;
             let loaded = entry.call_method0("load").map_err(py_error)?;
             let factory = if loaded.is_callable() {
                 loaded.call0().map_err(py_error)?
@@ -363,6 +340,7 @@ pub(crate) fn load_worker_extensions() -> Result<()> {
                 .and_then(|s| s.extract::<String>())
                 .map_err(py_error)?;
             let manifest: Manifest = serde_json::from_str(&json).map_err(py_error)?;
+            prepared.build.check_manifest(&manifest)?;
             manifest.validate()?;
             if manifest.placement == "driver" {
                 continue;

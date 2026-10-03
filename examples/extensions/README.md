@@ -7,6 +7,14 @@ client, a minimal handler, and how to build and run.
 For a fresh install, local and distributed deployment, and executable review
 examples, use the [source-distribution tutorial](TUTORIAL.md).
 
+The local `work/extensions-static-preflight` branch additionally requires a
+recorded static compatibility file in every extension wheel. Existing wheels
+without that file must be rebuilt and reinstalled. Read
+[Static compatibility checks before extension import](../../docs/development/extensions/static-compatibility-preflight.md)
+for the schema, migration and validation boundary. The linked tutorials' clone
+commands describe the historical prototype; this preflight branch is local and
+unpublished, so exercise the change from this checkout.
+
 The [Pecan graph algorithm plan](../../docs/development/extensions/portable-graph-plan.md)
 adds client-controlled PageRank and WCC through ordinary distributed Sail queries.
 The Python distribution is `pyspark-pecan`, imported as `pyspark_pecan`.
