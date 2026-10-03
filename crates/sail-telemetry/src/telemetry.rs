@@ -18,6 +18,7 @@ use opentelemetry_sdk::logs::{BatchConfigBuilder, BatchLogProcessor, SdkLoggerPr
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider, Temporality};
 use sail_common::actor::ActorSystem;
 use sail_common::config::{OtlpProtocol, SystemCatalogConfig, SystemCatalogStore, TelemetryConfig};
+use sail_common::telemetry::c2;
 use sail_system_store::{SystemStoreHandle, SystemStoreReader};
 
 use crate::error::{TelemetryError, TelemetryResult};
@@ -62,6 +63,13 @@ pub fn init_telemetry(
 
     match *status {
         TelemetryStatus::Uninitialized => {
+            if config.c2_observer
+                && (!config.export_traces || config.exporter.otlp.endpoint.is_none())
+            {
+                return Err(TelemetryError::invalid(
+                    "telemetry.c2_observer requires trace export and an OTLP endpoint",
+                ));
+            }
             let mut state = TelemetryState::default();
             match init_traces(config, &mut state, &resource)
                 .and_then(|()| init_system_store(system_config, &mut state, &resource))
@@ -70,6 +78,7 @@ pub fn init_telemetry(
                 .and_then(|()| init_datafusion_telemetry())
             {
                 Ok(()) => {
+                    c2::configure(config.c2_observer);
                     debug!("OpenTelemetry initialized");
                     *status = TelemetryStatus::Initialized(Box::new(state));
                     Ok(())
@@ -272,6 +281,11 @@ fn init_datafusion_telemetry() -> TelemetryResult<()> {
 
 pub fn shutdown_telemetry() {
     debug!("Shutting down OpenTelemetry...");
+    if let Some(summary) = c2::summary()
+        && let Ok(summary) = serde_json::to_string(&summary)
+    {
+        log::info!("c2_observer_summary={summary}");
+    }
     fastrace::flush();
     let state = TELEMETRY_STATUS.lock().ok().and_then(|mut status| {
         let previous = std::mem::replace(&mut *status, TelemetryStatus::Finalized);

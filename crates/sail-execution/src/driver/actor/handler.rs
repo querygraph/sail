@@ -8,6 +8,7 @@ use futures::TryStreamExt;
 use log::{debug, error, info, warn};
 use sail_celeborn::lifecycle::{LifecycleManagerActor, LocalLifecycleManager};
 use sail_common::actor::{ActorAction, ActorContext, ActorHandle};
+use sail_common::telemetry::c2::{self, Guard, Identity, Outcome, Phase, Placement};
 use sail_common_datafusion::error::CommonErrorCause;
 use sail_python_udf::error::PyErrExtractor;
 use tokio::sync::oneshot;
@@ -215,6 +216,10 @@ impl DriverActor {
     ) -> ActorAction {
         let out = self.job_scheduler.accept_job(ctx, plan, context);
         if let Ok((job_id, _)) = &out {
+            c2::event(Phase::JobAccepted, || Identity::Job {
+                session: &self.options.session_id,
+                job: (*job_id).into(),
+            });
             self.refresh_job(ctx, *job_id);
             self.run_tasks(ctx);
             self.reconcile_worker_demands(ctx);
@@ -605,7 +610,12 @@ impl DriverActor {
     /// Reserve complete regions before resolving any routing. Definitions are scoped to this
     /// scheduling snapshot; batches additionally preserve region and worker boundaries.
     fn run_tasks(&mut self, ctx: &mut ActorContext<Self>) {
+        let observation = Guard::start(Phase::Schedule, || {
+            Identity::Session(&self.options.session_id)
+        });
         let assignments = self.task_assigner.assign_tasks();
+        observation.detail("c2.assignment_sets", || assignments.len().to_string());
+        observation.finish(Outcome::Succeeded);
         self.task_assigner.track_streams(&assignments);
         let mut batches = indexmap::IndexMap::<_, Vec<TaskKey>>::new();
         for assignment in assignments {
@@ -633,7 +643,20 @@ impl DriverActor {
         let mut definitions = std::collections::HashMap::new();
         for ((job_id, _, stage, worker_id), keys) in batches {
             let Some(first) = keys.first() else { continue };
+            if c2::enabled() && definitions.contains_key(&(job_id, stage)) {
+                c2::event(Phase::DefinitionCacheHit, || Identity::Stage {
+                    session: &self.options.session_id,
+                    job: job_id.into(),
+                    stage,
+                });
+            }
             let definition = definitions.entry((job_id, stage)).or_insert_with(|| {
+                let observation = Guard::start(Phase::Definition, || Identity::Stage {
+                    session: &self.options.session_id,
+                    job: job_id.into(),
+                    stage,
+                });
+                observation.detail("c2.cache", || "miss_in_scheduling_invocation".into());
                 let started = Instant::now();
                 let result = self
                     .job_scheduler
@@ -645,6 +668,7 @@ impl DriverActor {
                             CommonErrorCause::new::<PyErrExtractor>(&error),
                         )
                     });
+                observation.finish_result(&result);
                 debug!(
                     "job {job_id} stage {stage} definition construction {:?}",
                     started.elapsed()
@@ -667,6 +691,17 @@ impl DriverActor {
                 }
             };
             for key in &keys {
+                c2::event(Phase::TaskAssigned, || Identity::Task {
+                    session: &self.options.session_id,
+                    job: key.job_id.into(),
+                    stage: key.stage,
+                    partition: key.partition,
+                    attempt: key.attempt,
+                    placement: match worker_id {
+                        Some(worker_id) => Placement::Worker(worker_id.into()),
+                        None => Placement::Driver,
+                    },
+                });
                 self.job_scheduler
                     .update_task(key, TaskState::Scheduled, None, None);
             }

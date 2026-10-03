@@ -15,4 +15,5 @@ mod worker;
 pub mod worker_manager;
 
 pub use id::{DriverId, IdGenerator};
+pub use stream::observation::operation_stream;
 pub use worker::entrypoint::run_worker;

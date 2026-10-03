@@ -11,6 +11,7 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use futures::stream::SelectAll;
 use futures::{Stream, StreamExt};
 use sail_common::actor::ActorContext;
+use sail_common::telemetry::c2::{Guard, Identity, Outcome, Phase};
 use sail_common_datafusion::error::CommonErrorCause;
 use tokio::sync::mpsc;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
@@ -94,12 +95,22 @@ pub fn build_job_output(
     ctx: &mut ActorContext<DriverActor>,
     job_id: JobId,
     schema: SchemaRef,
+    session_id: &str,
 ) -> (JobOutputManager, SendableRecordBatchStream) {
     let (sender, receiver) = mpsc::channel(JobOutputItem::CHANNEL_SIZE);
     let (tx, rx) = mpsc::channel(1);
     let handle = ctx.handle().clone();
+    let forward = Guard::start(Phase::OutputForward, || Identity::Job {
+        session: session_id,
+        job: job_id.into(),
+    });
     ctx.spawn(async move {
         let outcome = forward_job_output(JobOutputStream::new(receiver), &tx).await;
+        forward.finish(match outcome {
+            JobOutputOutcome::Completed => Outcome::Succeeded,
+            JobOutputOutcome::Failed => Outcome::Failed,
+            JobOutputOutcome::Canceled => Outcome::Cancelled,
+        });
         // Output errors and consumer cancellation can precede terminal task updates.
         // Tell the scheduler why output ended so cleanup records the correct job status.
         // Keep `tx` alive until cleanup has been sent, before signaling EOF to the client.
@@ -109,10 +120,14 @@ pub fn build_job_output(
     });
     (
         JobOutputManager { sender },
-        Box::pin(RecordBatchStreamAdapter::new(
-            schema,
-            ReceiverStream::new(rx),
-        )),
+        crate::stream::observation::job_stream(
+            Box::pin(RecordBatchStreamAdapter::new(
+                schema,
+                ReceiverStream::new(rx),
+            )),
+            session_id,
+            job_id.into(),
+        ),
     )
 }
 

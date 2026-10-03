@@ -10,6 +10,7 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use indexmap::{IndexMap, IndexSet};
 use log::{debug, warn};
 use sail_common::actor::ActorContext;
+use sail_common::telemetry::c2::{Guard, Identity, Phase};
 use sail_common_datafusion::driver_extension::{
     contains_driver_extension, release_driver_extensions,
 };
@@ -67,17 +68,34 @@ impl JobScheduler {
             "job {job_id} execution plan\n{}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent(true)
         );
+        let observation = Guard::start(Phase::JobGraph, || Identity::Job {
+            session: &self.options.session_id,
+            job: job_id.into(),
+        });
         let graph = JobGraph::try_new(
             plan,
             crate::job_graph::JobGraphOptions {
                 shuffle_backend: self.options.shuffle_backend.clone(),
             },
-        )?;
+        );
+        observation.finish_result(&graph);
+        let graph = graph?;
         debug!("job {job_id} job graph \n{graph}");
 
-        let topology = JobTopology::try_new(&graph)?;
+        let observation = Guard::start(Phase::JobTopology, || Identity::Job {
+            session: &self.options.session_id,
+            job: job_id.into(),
+        });
+        let topology = JobTopology::try_new(&graph);
+        observation.finish_result(&topology);
+        let topology = topology?;
         worker_topology::validate(&graph, &topology)?;
-        let (output, stream) = build_job_output(ctx, job_id, graph.schema().clone());
+        let (output, stream) = build_job_output(
+            ctx,
+            job_id,
+            graph.schema().clone(),
+            &self.options.session_id,
+        );
         let descriptor = JobDescriptor::new(graph, topology, JobState::Running { output }, context);
         self.jobs.insert(job_id, descriptor);
 
@@ -721,7 +739,17 @@ impl JobScheduler {
             )));
         };
 
-        let plan = encode_remote_physical_plan(self.codec.as_ref(), stage.plan.clone())?;
+        let observation = Guard::start(Phase::PhysicalEncode, || Identity::Stage {
+            session: &self.options.session_id,
+            job: key.job_id.into(),
+            stage: key.stage,
+        });
+        let plan = encode_remote_physical_plan(self.codec.as_ref(), stage.plan.clone());
+        if let Ok(plan) = &plan {
+            observation.detail("c2.encoded_plan_bytes", || plan.len().to_string());
+        }
+        observation.finish_result(&plan);
+        let plan = plan?;
         let inputs = stage
             .inputs
             .iter()

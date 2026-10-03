@@ -7,6 +7,7 @@ use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::{debug, error, warn};
 use prost::Message;
 use sail_common::actor::{ActorAction, ActorContext};
+use sail_common::telemetry::c2::{self, Guard, Identity, Outcome, Phase, Placement};
 use sail_common_datafusion::error::CommonErrorCause;
 use tokio::sync::oneshot;
 
@@ -23,6 +24,13 @@ use crate::task_runner::{TaskRunnerActor, TaskRunnerPlacement};
 use crate::worker::{WorkerLocation, WorkerMessage};
 
 impl TaskRunnerActor {
+    fn observation_placement(&self) -> Placement {
+        match &self.placement {
+            TaskRunnerPlacement::Driver { .. } => Placement::Driver,
+            TaskRunnerPlacement::Worker { worker_id, .. } => Placement::Worker((*worker_id).into()),
+        }
+    }
+
     pub(super) fn handle_run_task_batch(
         &mut self,
         ctx: &mut ActorContext<Self>,
@@ -60,13 +68,31 @@ impl TaskRunnerActor {
         }
         // Validate shared descriptions before admitting any task. Only descriptions are shared;
         // every task gets a fresh converter, executable plan, and shuffle reader/writer.
-        let proto = Arc::new(PhysicalPlanNode::decode(definition.plan.as_ref()).map_err(
-            |error| ExecutionError::InvalidArgument(format!("invalid physical plan: {error}")),
-        )?);
+        let decode = Guard::start(Phase::BatchPhysicalDecode, || Identity::Stage {
+            session: &self.session_id,
+            job: job_id.into(),
+            stage,
+        });
+        decode.detail("c2.encoded_physical_bytes", || {
+            definition.plan.len().to_string()
+        });
+        let decoded = PhysicalPlanNode::decode(definition.plan.as_ref()).map_err(|error| {
+            ExecutionError::InvalidArgument(format!("invalid physical plan: {error}"))
+        });
+        decode.finish_result(&decoded);
+        let proto = Arc::new(decoded?);
         self.extension_jobs.admit(job_id, &context)?;
         self.tasks.record_batch(job_id, stage, &tasks);
         for task in tasks {
             let key = task.task_key(job_id, stage);
+            c2::event(Phase::TaskAdmitted, || Identity::Task {
+                session: &self.session_id,
+                job: key.job_id.into(),
+                stage: key.stage,
+                partition: key.partition,
+                attempt: key.attempt,
+                placement: self.observation_placement(),
+            });
             let stream = TaskPreparation {
                 session_id: self.session_id.clone(),
                 handle: ctx.handle().clone(),
@@ -98,10 +124,19 @@ impl TaskRunnerActor {
     }
 
     pub(super) fn handle_close_job(&mut self, job_id: JobId) -> ActorAction {
+        let closed = Guard::start(Phase::CloseJobExecuted, || Identity::PlacementJob {
+            session: &self.session_id,
+            job: job_id.into(),
+            placement: self.observation_placement(),
+        });
         self.tasks.close_job(job_id);
         self.extension_jobs.close_job(&self.session_id, job_id);
         self.extensions.local_streams.remove_streams(job_id, None);
         self.signals.retain(|key, _| key.job_id != job_id);
+        closed.detail("c2.scope", || {
+            "actor_close_job_returned_named_owners_only".into()
+        });
+        closed.finish(Outcome::Succeeded);
         ActorAction::Continue
     }
 
@@ -129,7 +164,22 @@ impl TaskRunnerActor {
                     .unwrap_or_else(|| "<none>".into())
             );
         }
-        if !matches!(status, TaskStatus::Running) {
+        let terminal_outcome = match status {
+            TaskStatus::Running => None,
+            TaskStatus::Succeeded => Some(Outcome::Succeeded),
+            TaskStatus::Failed => Some(Outcome::Failed),
+            TaskStatus::Canceled => Some(Outcome::Cancelled),
+        };
+        if let Some(outcome) = terminal_outcome {
+            let terminal = Guard::point(Phase::TaskTerminal, || Identity::Task {
+                session: &self.session_id,
+                job: key.job_id.into(),
+                stage: key.stage,
+                partition: key.partition,
+                attempt: key.attempt,
+                placement: self.observation_placement(),
+            });
+            terminal.finish(outcome);
             self.signals.remove(&key);
         }
         match &mut self.placement {
@@ -422,7 +472,16 @@ impl TaskRunnerActor {
         job_id: JobId,
         stage: Option<usize>,
     ) -> ActorAction {
+        let removed = Guard::start(Phase::LocalStreamsRemoved, || Identity::PlacementJob {
+            session: &self.session_id,
+            job: job_id.into(),
+            placement: self.observation_placement(),
+        });
         self.extensions.local_streams.remove_streams(job_id, stage);
+        removed.detail("c2.scope", || {
+            "local_registry_remove_returned_not_allocator_reclamation".into()
+        });
+        removed.finish(Outcome::Succeeded);
         ActorAction::Continue
     }
 

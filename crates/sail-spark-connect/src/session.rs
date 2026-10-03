@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::logical_expr::StringifiedPlan;
+use sail_common::telemetry::c2::{Guard, Identity, Phase};
 use sail_common::utils::datetime::get_system_timezone;
 use sail_common_datafusion::extension::SessionExtension;
 use sail_common_datafusion::session::lifecycle::SessionResource;
@@ -214,11 +215,25 @@ impl SparkSession {
     }
 
     pub(crate) fn remove_executor(&self, id: &str) -> SparkResult<Option<Arc<Executor>>> {
-        let mut state = self.state.lock()?;
-        Ok(state
-            .executors
-            .remove_entry(id)
-            .map(|(_, executor)| executor))
+        let released = Guard::start(Phase::ReleaseOperation, || Identity::Operation {
+            session: self.session_id(),
+            operation: id,
+        });
+        released.detail("c2.scope", || {
+            "detach_session_map_entry_not_final_arc_owner_or_allocator_reclaim".into()
+        });
+        let result = self
+            .state
+            .lock()
+            .map(|mut state| {
+                state
+                    .executors
+                    .remove_entry(id)
+                    .map(|(_, executor)| executor)
+            })
+            .map_err(SparkError::from);
+        released.finish_result(&result);
+        result
     }
 
     pub(crate) fn all_executors(&self) -> SparkResult<Vec<Arc<Executor>>> {

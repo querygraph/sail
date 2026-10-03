@@ -33,6 +33,7 @@ impl Drop for PendingStream {
 fn executor() -> (Executor, Arc<AtomicUsize>) {
     let dropped = Arc::new(AtomicUsize::new(0));
     let executor = Executor::new(
+        "test-session",
         ExecutorMetadata {
             operation_id: "interrupted-operation".into(),
             tags: vec![],
@@ -54,6 +55,23 @@ fn assert_terminal(executor: &Executor, dropped: &AtomicUsize) {
             Err(SparkError::OperationInterrupted(id)) if id == "interrupted-operation"
         ));
     }
+}
+
+#[test]
+fn response_release_preserves_the_unreleased_buffer_suffix_and_unknown_ids() {
+    let mut buffer = ExecutorBuffer::new(3);
+    let first = ExecutorOutput::new(ExecutorBatch::Heartbeat);
+    let second = ExecutorOutput::new(ExecutorBatch::Heartbeat);
+    let last = ExecutorOutput::complete();
+    for output in [&first, &second, &last] {
+        buffer.add(output.clone());
+    }
+    buffer.remove_until("not-a-response");
+    assert_eq!(buffer.iter().count(), 3);
+    buffer.remove_until(&second.id);
+    let remaining = buffer.iter().collect::<Vec<_>>();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, last.id);
 }
 
 #[tokio::test]

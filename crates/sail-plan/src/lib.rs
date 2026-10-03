@@ -7,6 +7,7 @@ use datafusion_common::Result;
 use datafusion_common::display::{PlanType, StringifiedPlan, ToStringifiedPlan};
 use datafusion_expr::LogicalPlan;
 use sail_common::spec;
+use sail_common::telemetry::c2::{Guard, Identity, Phase};
 use sail_common_datafusion::rename::physical_plan::rename_physical_plan;
 
 use crate::config::PlanConfig;
@@ -38,21 +39,33 @@ pub async fn resolve_and_execute_plan(
 ) -> PlanResult<(Arc<dyn ExecutionPlan>, Vec<StringifiedPlan>)> {
     let mut info = vec![];
     let resolver = PlanResolver::new(ctx, config);
-    let NamedPlan { plan, fields } = resolver.resolve_named_plan(plan).await?;
+    let observation = Guard::start(Phase::Resolve, || Identity::CausalContext);
+    let resolved = resolver.resolve_named_plan(plan).await;
+    observation.finish_result(&resolved);
+    let NamedPlan { plan, fields } = resolved?;
     info.push(plan.to_stringified(PlanType::InitialLogicalPlan));
-    let df = execute_logical_plan(ctx, plan).await?;
+    let observation = Guard::start(Phase::LogicalExecute, || Identity::CausalContext);
+    let executed = execute_logical_plan(ctx, plan).await;
+    observation.finish_result(&executed);
+    let df = executed?;
     let (session_state, plan) = df.into_parts();
-    let plan = session_state.optimize(&plan)?;
+    let observation = Guard::start(Phase::Optimize, || Identity::CausalContext);
+    let optimized = session_state.optimize(&plan);
+    observation.finish_result(&optimized);
+    let plan = optimized?;
     let plan = if is_streaming_plan(&plan)? {
         rewrite_streaming_plan(plan)?
     } else {
         plan
     };
     info.push(plan.to_stringified(PlanType::FinalLogicalPlan));
-    let plan = session_state
+    let observation = Guard::start(Phase::PhysicalPlan, || Identity::CausalContext);
+    let planned = session_state
         .query_planner()
         .create_physical_plan(&plan, &session_state)
-        .await?;
+        .await;
+    observation.finish_result(&planned);
+    let plan = planned?;
     let plan = if let Some(fields) = fields {
         rename_physical_plan(plan, &fields)?
     } else {
