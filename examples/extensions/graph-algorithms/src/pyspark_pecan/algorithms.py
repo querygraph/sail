@@ -9,13 +9,13 @@ argument domains are validated once by the Pydantic option models.
 from __future__ import annotations
 
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from pyspark.sql.connect import functions as F
 from pyspark.sql.types import LongType
 
-from . import _contracts, pagerank_delta, pagerank_pregel_delta, pregel, traversal, wcc_randomized
+from . import _contracts, pagerank_delta, pagerank_pregel_delta, pregel, shortest_pregel, traversal, wcc_randomized
 from .lifecycle import CancellationToken, GraphCancelledError, GraphResult
 from .staging import StagingRun
 from .types import (
@@ -24,6 +24,8 @@ from .types import (
     IterationEvent,
     PageRankMethod,
     PageRankOptions,
+    PregelSsspOptions,
+    ShortestPathsOptions,
     TraversalMethod,
     TraversalOptions,
     WccMethod,
@@ -393,13 +395,14 @@ class GraphAlgorithms:
         """
         options = TraversalOptions(source=source, method=method, directed=directed,
                                    max_iterations=max_iterations, partitions=partitions)
-        if options.method == "delta_star":
+        if options.method in ("delta_star", "pregel"):
             raise ValueError("unsupported traversal method")
         return traversal.execute(self, vertices, edges, options=options, weighted=False, cancellation=cancellation)
 
     def sssp(self, vertices: DataFrame, edges: DataFrame, *, source: int, method: TraversalMethod = "frontier",
              directed: bool = True, max_iterations: int = 1000, partitions: int = 4,
-             cancellation: CancellationToken | None = None, delta: float = 1.0) -> GraphResult:
+             cancellation: CancellationToken | None = None, delta: float = 1.0,
+             vote_to_halt: bool = True) -> GraphResult:
         """Single-source shortest distances for finite nonnegative DOUBLE weights.
 
         Edges require a `weight` column. Reference is synchronous Bellman–Ford;
@@ -411,9 +414,41 @@ class GraphAlgorithms:
         Weights are assumed finite and non-negative and distance sums are
         assumed finite (the valid graph contract); nothing checks them.
         Both methods require an explicit convergence certificate.
+
+        method="pregel" runs a distance-only active-source Pregel program with
+        one DOUBLE message, MIN, and one state write per superstep. Its output
+        is id BIGINT, distance DOUBLE? (no parent/hops). vote_to_halt=True counts
+        active vertices after each step and raises if the cap precedes a halt.
+        False runs exactly max_iterations supersteps and returns that possibly
+        incomplete state with converged=None; it runs no activity count.
         """
+        if method == "pregel":
+            pregel_options = PregelSsspOptions(source=source, directed=directed, max_iterations=max_iterations,
+                                              partitions=partitions, vote_to_halt=vote_to_halt)
+            return shortest_pregel.execute_sssp(self, vertices, edges, options=pregel_options,
+                                                cancellation=cancellation)
+        if not vote_to_halt:
+            raise ValueError("vote_to_halt=False applies only to method='pregel'")
         options = TraversalOptions(source=source, method=method, directed=directed,
                                    max_iterations=max_iterations, partitions=partitions, delta=delta)
         if options.method == "push_pull":
             raise ValueError("unsupported traversal method")
         return traversal.execute(self, vertices, edges, options=options, weighted=True, cancellation=cancellation)
+
+    def shortest_paths(self, vertices: DataFrame, edges: DataFrame, *, landmarks: Sequence[int],
+                       to_landmarks: bool = False, max_iterations: int = 1000, partitions: int = 4,
+                       vote_to_halt: bool = True, cancellation: CancellationToken | None = None) -> GraphResult:
+        """Unweighted per-landmark hops, as graphframes-rs's shortest_paths.
+
+        Edges are directed: default distances run from each landmark to the
+        vertex; to_landmarks=True reverses edges. Output is id BIGINT and one
+        INT32 dist_<landmark> column per unique landmark, in sorted landmark
+        order. Unreachable is 2^31-1. Landmarks must be graph vertices, assumed
+        by contract without a membership job. With vote_to_halt, the cap
+        includes the final no-change step and raises if still active. False
+        returns the fixed-budget state and converged=None, counting nothing.
+        """
+        options = ShortestPathsOptions(landmarks=tuple(landmarks), to_landmarks=to_landmarks,
+                                       max_iterations=max_iterations, partitions=partitions,
+                                       vote_to_halt=vote_to_halt)
+        return shortest_pregel.execute_landmarks(self, vertices, edges, options=options, cancellation=cancellation)

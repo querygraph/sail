@@ -172,7 +172,6 @@ class Pregel:
         while (self.limit is None or iteration < self.limit) and not converged:
             iteration += 1
             run.cancellation.check()
-            self.graph._observe(run, self.algorithm, iteration, "iteration_start")
             sources = state
             if not self.destination_state and participation is not None:
                 sources = sources.where(F.col(participation.name))
@@ -189,6 +188,7 @@ class Pregel:
             aggregated = messages.groupBy("id").agg(*self.aggregates) if self.aggregates else messages
             received = aggregated.withColumnRenamed("id", "__pregel_to")
             updated = state.join(received, F.col("id") == F.col("__pregel_to"), "left").select(*updates)
+            self.graph._observe(run, self.algorithm, iteration, "iteration_start", plan_of=updated)
             next_path, next_state = run.materialize(updated)
             run.remove(path)
             path, state = next_path, next_state

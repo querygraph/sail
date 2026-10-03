@@ -7,7 +7,7 @@ call boundary. Graph *inputs* are not validated: Pecan assumes a valid graph
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,7 +19,8 @@ EventKind = Literal["iteration_start", "iteration_end", "certificate"]
 Direction = Literal["push", "pull"]
 PageRankMethod = Literal["power", "delta", "pregel", "pregel_delta"]
 WccMethod = Literal["min_label", "randomized", "randomized_fused"]
-TraversalMethod = Literal["reference", "frontier", "push_pull", "delta_star"]
+TraversalMethod = Literal["reference", "frontier", "push_pull", "delta_star", "pregel"]
+Int64Id = Annotated[int, Field(ge=INT64_MIN, le=INT64_MAX)]
 
 
 class IterationEvent(BaseModel):
@@ -112,6 +113,30 @@ class TraversalOptions(BaseModel):
     max_iterations: int = Field(default=1000, ge=1)
     partitions: int = Field(default=4, ge=1)
     delta: float = Field(default=1.0, gt=0.0, allow_inf_nan=False)
+
+
+class PregelSsspOptions(BaseModel):
+    """Distance-only weighted Pregel, with an optional fixed superstep budget."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    source: Int64Id
+    directed: bool = True
+    max_iterations: int = Field(default=1000, ge=1)
+    partitions: int = Field(default=4, ge=1)
+    vote_to_halt: bool = True
+
+
+class ShortestPathsOptions(BaseModel):
+    """Per-landmark unweighted hops; landmark membership is a caller contract."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    landmarks: tuple[Int64Id, ...] = Field(min_length=1)
+    to_landmarks: bool = False
+    max_iterations: int = Field(default=1000, ge=0)
+    partitions: int = Field(default=4, ge=1)
+    vote_to_halt: bool = True
 
 
 class MassResidual(BaseModel):
