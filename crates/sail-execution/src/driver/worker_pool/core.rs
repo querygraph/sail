@@ -9,6 +9,7 @@ use futures::TryStreamExt;
 use log::{debug, error, info, warn};
 use sail_common::actor::ActorContext;
 use sail_common::telemetry::SpanAttribute;
+use sail_common::telemetry::c2::{self, Guard, Identity, Phase, Placement};
 use sail_common_datafusion::error::CommonErrorCause;
 use sail_python_udf::error::PyErrExtractor;
 use sail_system_store::SystemEvent;
@@ -359,11 +360,28 @@ impl WorkerPool {
             }
         };
         let handle = ctx.handle().clone();
+        let observation_session = c2::enabled().then(|| self.options.session_id.clone());
         ctx.spawn(async move {
-            if let Err(error) = client
+            let dispatched = client
                 .run_task_batch(job_id, stage, tasks.clone(), definition, peers)
-                .await
-            {
+                .await;
+            if let Some(session) = observation_session {
+                for task in &tasks {
+                    let guard = Guard::point(Phase::TaskDispatched, || Identity::Task {
+                        session: &session,
+                        job: job_id.into(),
+                        stage,
+                        partition: task.partition,
+                        attempt: task.attempt,
+                        placement: Placement::Worker(worker_id.into()),
+                    });
+                    guard.detail("c2.scope", || {
+                        "remote_admission_response_not_execution_completion".into()
+                    });
+                    guard.finish_result(&dispatched);
+                }
+            }
+            if let Err(error) = dispatched {
                 for task in tasks {
                     let _ = handle
                         .send(DriverMessage::UpdateTask {
@@ -503,8 +521,18 @@ impl WorkerPool {
                 return;
             }
         };
+        let cleanup = Guard::start(Phase::CleanupDispatch, || Identity::PlacementJob {
+            session: &options.session_id,
+            job: job_id.into(),
+            placement: Placement::Worker(worker_id.into()),
+        });
+        cleanup.detail("c2.scope", || {
+            "rpc_dispatch_to_mailbox_ack_not_executed_cleanup".into()
+        });
         ctx.spawn(async move {
-            if let Err(e) = client.clean_up_job(job_id, stage).await {
+            let output = client.clean_up_job(job_id, stage).await;
+            cleanup.finish_result(&output);
+            if let Err(e) = output {
                 Self::log_worker_control_error("clean up job", worker_id, &e);
             }
         });

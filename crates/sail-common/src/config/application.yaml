@@ -975,6 +975,15 @@
   description: Whether to export traces to an OpenTelemetry collector.
   experimental: true
 
+- key: telemetry.c2_observer
+  type: boolean
+  default: "false"
+  description: >-
+    Observe existing planning and execution calls for C2 through the configured
+    trace exporter. Requires telemetry.export_traces and an OTLP endpoint.
+    Durations overlap and do not form an additive execution breakdown.
+  experimental: true
+
 - key: telemetry.export_metrics
   type: boolean
   default: "false"

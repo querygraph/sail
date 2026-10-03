@@ -3,6 +3,7 @@ pub(crate) mod celeborn;
 pub mod error;
 pub(crate) mod local;
 pub mod merge;
+pub mod observation;
 pub mod reader;
 pub(crate) mod service;
 pub(crate) mod storage;
