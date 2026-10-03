@@ -2,15 +2,21 @@
 
 Build a native extension, install its Python wheel beside Sail, and call it from
 Spark Connect. No JVM or JAR is required. This page describes the experimental
-`work/extensions-datafusion-graphs` prototype, including its historical limitations.
+prototype on `sail-extensions`, whose runtime source is
+`bd8ce9ae8839477e2c08a0475ab7900b115c5366`, including its limitations.
+Start a review with the shared
+[Sail Extensions review request](../../docs/development/extensions/SAIL-EXTENSIONS-REVIEW-REQUEST.md),
+which also identifies the separately adoptable static-preflight candidate.
 
-The local `work/extensions-static-preflight` branch additionally requires static
-compatibility metadata recorded in the installed wheel before an entry point can
-load. Existing wheels without it must be rebuilt and reinstalled. Follow
+If already in the candidate checkout, skip the clone and `cd` commands below and
+build there. Follow that branch's static-metadata migration guide when packaging
+an extension; do not switch back to the prototype while reviewing the candidate.
+
+This `work/extensions-static-preflight` candidate requires static compatibility
+metadata recorded in the installed wheel before an entry point can load.
+Existing wheels without it must be rebuilt and reinstalled. Follow
 [the static-preflight schema and migration guide](../../docs/development/extensions/static-compatibility-preflight.md)
-alongside the package instructions below. The clone command retained here selects
-the historical prototype. The preflight branch is local and unpublished; test it
-from this checkout.
+alongside the package instructions below.
 
 ## Build and start Sail
 
@@ -19,7 +25,7 @@ headers), a C/C++ toolchain and GEOS development libraries (3.12 or later).
 On macOS, `brew install geos protobuf` supplies the latter dependencies.
 
 ```bash
-git clone --branch work/extensions-datafusion-graphs https://github.com/querygraph/sail.git
+git clone --branch sail-extensions https://github.com/querygraph/sail.git
 cd sail
 bash examples/extensions/scripts/build.sh
 

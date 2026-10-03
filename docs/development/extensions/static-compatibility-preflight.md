@@ -1,15 +1,20 @@
 # Static compatibility checks before extension import
 
+Start with the [Sail Extensions review request](SAIL-EXTENSIONS-REVIEW-REQUEST.md)
+to choose a review route and distinguish this candidate from the published
+prototype. This page records the candidate's contract and validation.
+
 This change lets Sail reject an extension's declared build incompatibility before
 loading its Python entry point. It closes the import-order gap in the reviewed
 prototype, while retaining the existing binding and DataFusion FFI paths.
 
-This candidate implementation lives on the local `work/extensions-static-preflight`
-branch, based on `bd8ce9ae8839477e2c08a0475ab7900b115c5366`. It proposes a stricter
+This candidate implementation is published on `work/extensions-static-preflight`.
+Its tested runtime source is `ae32aee3521540849ad55e9efa6f6733169a7013`, based on
+`bd8ce9ae8839477e2c08a0475ab7900b115c5366`; later review-document commits do not
+extend that runtime qualification. It proposes a stricter
 loading contract for review, including deliberate rejection of old wheels without
-static metadata. The decision book and its captured source
-remain a historical review of that base; this document describes the separate
-implementation change. Validation is recorded below and must be read independently
+static metadata. The original decision-book edition reviewed that base; retain
+its historical source and evidence separately from this implementation change. Validation is recorded below and must be read independently
 of the historical prototype's results.
 
 ## What changes for Alexy's decision
@@ -163,8 +168,8 @@ Describe it as **static declaration checks before extension loading**, rather th
 
 ## Validation
 
-These results cover the candidate branch over
-`bd8ce9ae8839477e2c08a0475ab7900b115c5366`, on macOS ARM64 with Python 3.12.8 and
+These results cover candidate runtime source
+`ae32aee3521540849ad55e9efa6f6733169a7013`, on macOS ARM64 with Python 3.12.8 and
 Rust 1.97.1. They do not reuse the historical prototype's test results.
 
 | Check | Result |

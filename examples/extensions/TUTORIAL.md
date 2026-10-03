@@ -1,9 +1,20 @@
 # Install and run Sail with Sedona and Nutmeg
 
-This walkthrough treats `sail-extensions-1` in `querygraph/sail` as a source
+Start with the [shared review request](../../docs/development/extensions/SAIL-EXTENSIONS-REVIEW-REQUEST.md)
+to choose the prototype or the separate static-preflight candidate. For Sedona,
+prepare the machine, build in step 4, start Sail in step 5, and run spatial SQL
+in step 6. Step 8 adds workers; step 6 alone does not build or start Sail.
+
+This walkthrough treats `sail-extensions` in `querygraph/sail` as a source
 distribution. Build Sail and its two independent extension wheels from that
 checkout; a released `pysail` wheel does not contain this branch's host changes.
 All commands below run from the checkout root unless stated otherwise.
+
+The prototype runtime is `bd8ce9ae8839477e2c08a0475ab7900b115c5366`; review-document
+commits may advance the branch. If you selected the preflight candidate, stay in
+its checkout and **skip this tutorial's clone commands**, including the Linux
+example. Its recorded qualification is macOS ARM64 only; the prototype's Linux
+and two-host receipts do not qualify the candidate.
 
 The same installation supports either review track. Build both extensions for
 this walkthrough and choose the Sedona or Nutmeg examples, or run both.
@@ -16,7 +27,7 @@ The two-host qualification harness requires both packages.
 | Local | One Sail server | All work in the server process |
 | Actor cluster | Driver and worker actors in one process | Distributed task scheduling within that process |
 | Process cluster | Driver and two worker processes on one host | Sedona scalars and relational graph plans on workers |
-| Two hosts | Driver plus one worker on each host | Networked worker tasks; verified by the supplied harness |
+| Two hosts | Driver plus one worker on each host | Networked worker tasks; historical prototype qualification uses the supplied harness |
 
 In every mode, Nutmeg native staging and algorithms remain on the driver.
 Distributed input partitions are gathered there; results can feed distributed
@@ -26,17 +37,18 @@ implement distributed native PageRank or distributed CSR residency.
 
 ## 2. Get the source
 
-Install Git, then clone the review tag:
+Install Git, then clone the review branch, unless already in the chosen checkout:
 
 ```bash
-git clone --branch sail-extensions-1 https://github.com/querygraph/sail.git
+git clone --branch sail-extensions https://github.com/querygraph/sail.git
 cd sail
 git rev-parse HEAD
 ```
 
-The tag pins source, Cargo lockfiles, Python dependency locks, the Sedona port,
-and the vendored Nutmeg source. Record the printed commit with review results.
-Cloning a tag leaves a detached checkout; create a branch if making changes.
+The checkout supplies source, Cargo lockfiles, Python dependency locks, the Sedona
+port, and vendored Nutmeg source. Record the printed commit with review results.
+The older `sail-extensions-1` tag remains a historical snapshot; this review route
+uses the `sail-extensions` branch and its updated documentation.
 Internet access is needed for the initial dependency downloads and pinned
 SedonaDB checkout. No Spark JVM, Sedona JAR, or separate graph service is needed.
 
@@ -78,18 +90,20 @@ The checked-in Dockerfile supplies the Linux compiler and system libraries.
 With a running Linux Docker engine, run the following from the host checkout:
 
 ```bash
-docker build -t sail-extensions-1-build -f examples/extensions/scripts/Dockerfile.linux .
-docker volume create sail-extensions-1-work
-docker run --name sail-extensions-1-review -it \
+docker build -t sail-extensions-build -f examples/extensions/scripts/Dockerfile.linux .
+docker volume create sail-extensions-work
+docker run --name sail-extensions-review -it \
   -p 127.0.0.1:50051:50051 \
-  -v sail-extensions-1-work:/work \
-  sail-extensions-1-build bash
+  -v sail-extensions-work:/work \
+  sail-extensions-build bash
 ```
 
-Inside the container, clone into its Linux filesystem:
+Inside the container, clone into its Linux filesystem. Use the branch selected
+for your review; the commands below select the prototype. Skip them if that
+checkout is already present:
 
 ```bash
-git clone --branch sail-extensions-1 https://github.com/querygraph/sail.git /work/sail
+git clone --branch sail-extensions https://github.com/querygraph/sail.git /work/sail
 cd /work/sail
 export SAIL_EXTENSION_PYTHON="$(uv python find 3.12)"
 df -h .
@@ -100,7 +114,7 @@ Rust source traversal very slow. Docker Desktop or Colima can supply the Linux
 engine; size the VM's actual memory and disk before compiling. The Dockerfile
 also works as the prerequisite inventory for a native Linux installation.
 The remainder runs inside this container, including the client in a second
-`docker exec -it sail-extensions-1-review bash` terminal. Use `/work/sail` there.
+`docker exec -it sail-extensions-review bash` terminal. Use `/work/sail` there.
 For host clients to reach the published port, bind Sail to `0.0.0.0` in step 5;
 otherwise keep its loopback default. This recipe is a one-host deployment.
 
@@ -121,6 +135,10 @@ for entry in sorted(entry_points(group="pysail.extensions"), key=lambda e: e.nam
     print(entry.name, entry.value, extension.manifest())
 PYCODE
 ```
+
+The Python inventory snippet explicitly calls `entry.load()`; it is not a test
+of the host's static preflight. The candidate's rejection-before-import tests
+are linked from the shared review request.
 
 The build fetches the pinned SedonaDB source, applies its DataFusion port,
 builds and repairs both native wheels, installs them, then builds Sail.
@@ -193,7 +211,7 @@ The pinned Apache Sedona Python package also supplies unmodified Connect helpers
 `tests/test_sedona.py` exercises those and spatial joins with residual predicates.
 
 This wheel exports 128 SedonaDB scalars plus aliases. General Sail joins execute
-spatial predicates; indexed Sedona spatial joins are outside this tag. Collect
+spatial predicates; indexed Sedona spatial joins are outside this prototype. Collect
 WKT, binary, booleans or numbers, rather than a Spark geometry UDT. Five colliding
 names retain Sail's definitions, including its existing SRID placeholders;
 see [Sedona scope](sedona/README.md#scope-and-next-increment).
@@ -300,7 +318,7 @@ wheels: the harness intentionally requires byte-identical executable and package
 identities. Independently built executables can differ even at the same SHA.
 Mixed native architectures cannot satisfy this harness's identity requirement.
 
-1. Clone the tag on both hosts. Install the runtime prerequisites and uv on
+1. Clone the selected review branch on both hosts. Install the runtime prerequisites and uv on
    each. Use a normal filesystem and a stable absolute checkout path.
 2. On the driver, complete step 4. Copy
    `target/extensions-poc/host/debug/sail` and `target/extensions-poc/wheels/`
@@ -372,5 +390,5 @@ When sharing a result, include source SHA, platform/architecture, toolchain,
 mode, commands, outcome and logs. Existing evidence and its exact revision
 boundaries are in the [design review](../../docs/development/extensions/design-review.md)
 and [compatibility matrix](../../docs/development/extensions/compatibility-matrix.json).
-The tag adds reviewer instructions; it does not broaden historical gate verdicts
+These reviewer instructions do not broaden historical gate verdicts
 to untested platforms or convert this experimental bootstrap into a stable ABI.
