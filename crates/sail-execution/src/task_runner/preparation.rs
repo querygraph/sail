@@ -15,6 +15,7 @@ use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::TryStreamExt;
 use log::debug;
 use sail_common::actor::ActorHandle;
+use sail_common::telemetry::c2::{self, Guard, Identity, Outcome, Phase, Placement};
 use sail_common_datafusion::schema_evolution::SchemaEvolutionPhysicalExprAdapterFactory;
 use sail_common_datafusion::worker_extension::{
     WorkerExtensionRegistry, WorkerJobIdentity, WorkerTaskScope,
@@ -28,6 +29,7 @@ use crate::id::{TaskKey, TaskKeyDisplay};
 use crate::plan::{ShuffleReadExec, ShuffleWriteExec, StageInputExec};
 use crate::proto::{RemoteExecutionCodec, proto_to_physical_plan};
 use crate::stream::accessor::TaskStreamFactory;
+use crate::stream::observation::{self, ObserverContext};
 use crate::task::definition::{TaskDefinition, TaskInput, TaskOutput};
 use crate::task_runner::TaskRunnerActor;
 
@@ -36,6 +38,24 @@ pub(super) struct TaskPreparation {
     pub handle: ActorHandle<TaskRunnerActor>,
     pub celeborn: bool,
     pub worker_id: Option<u64>,
+}
+
+struct PreparationObservation {
+    session: String,
+    placement: Placement,
+}
+
+impl PreparationObservation {
+    fn identity(&self, key: &TaskKey) -> Identity<'_> {
+        Identity::Task {
+            session: &self.session,
+            job: key.job_id.into(),
+            stage: key.stage,
+            partition: key.partition,
+            attempt: key.attempt,
+            placement: self.placement,
+        }
+    }
 }
 
 impl TaskPreparation {
@@ -47,7 +67,14 @@ impl TaskPreparation {
         proto: Arc<PhysicalPlanNode>,
         context: Arc<TaskContext>,
     ) -> SendableRecordBatchStream {
-        preparation_stream(key.clone(), move |canceled| {
+        let observation = c2::enabled().then(|| PreparationObservation {
+            session: self.session_id.clone(),
+            placement: match self.worker_id {
+                Some(worker_id) => Placement::Worker(worker_id),
+                None => Placement::Driver,
+            },
+        });
+        preparation_stream(key.clone(), observation, move |canceled| {
             self.execute_plan(&key, &definition, &proto, &canceled, context)
         })
     }
@@ -83,7 +110,17 @@ impl TaskPreparation {
             }
             _ => context,
         };
-        let plan = proto_to_physical_plan(&context, &RemoteExecutionCodec, proto)?;
+        let decode = Guard::start(Phase::PhysicalDecode, || Identity::Task {
+            session: &self.session_id,
+            job: key.job_id.into(),
+            stage: key.stage,
+            partition: key.partition,
+            attempt: key.attempt,
+            placement: self.worker_id.map_or(Placement::Driver, Placement::Worker),
+        });
+        let decoded = proto_to_physical_plan(&context, &RemoteExecutionCodec, proto);
+        decode.finish_result(&decoded);
+        let plan = decoded?;
         let plan = self.rewrite_file_scans(plan)?;
         let plan = self.rewrite_shuffle(
             key,
@@ -113,7 +150,15 @@ impl TaskPreparation {
                 "task canceled during preparation".into(),
             ));
         }
-        Ok(plan.execute(key.partition, context)?)
+        let stream = plan.execute(key.partition, context)?;
+        Ok(observation::task_stream(
+            stream,
+            ObserverContext::optional(
+                &self.session_id,
+                self.worker_id.map_or(Placement::Driver, Placement::Worker),
+            ),
+            key,
+        ))
     }
 
     fn rewrite_file_scans(
@@ -157,8 +202,16 @@ impl TaskPreparation {
         context: Arc<TaskContext>,
     ) -> ExecutionResult<Arc<dyn ExecutionPlan>> {
         let mappers = plan.output_partitioning().partition_count();
-        let streams =
-            TaskStreamFactory::new(self.handle.clone(), context.clone(), self.celeborn, mappers);
+        let streams = TaskStreamFactory::new(
+            self.handle.clone(),
+            context.clone(),
+            self.celeborn,
+            mappers,
+            ObserverContext::optional(
+                &self.session_id,
+                self.worker_id.map_or(Placement::Driver, Placement::Worker),
+            ),
+        );
         let result = {
             let streams = streams.clone();
             plan.transform(move |node| {
@@ -190,6 +243,7 @@ impl TaskPreparation {
 /// its inputs and result, so Tokio drops an abandoned result even after the monitor exits.
 fn preparation_stream(
     key: TaskKey,
+    observation: Option<PreparationObservation>,
     prepare: impl FnOnce(CancellationToken) -> ExecutionResult<SendableRecordBatchStream>
     + Send
     + 'static,
@@ -198,16 +252,36 @@ fn preparation_stream(
         let canceled = CancellationToken::new();
         let _cancel_on_drop = canceled.clone().drop_guard();
         let queued = Instant::now();
+        let queued_observation = Guard::start(Phase::PreparationQueue, || {
+            observation
+                .as_ref()
+                .map_or(Identity::CausalContext, |o| o.identity(&key))
+        });
         let span = fastrace::Span::enter_with_local_parent("TaskPreparation");
         tokio::task::spawn_blocking(move || {
             let _parent = span.set_local_parent();
             let started = Instant::now();
+            queued_observation.finish(Outcome::Succeeded);
+            let work_observation = Guard::start(Phase::Preparation, || {
+                observation
+                    .as_ref()
+                    .map_or(Identity::CausalContext, |o| o.identity(&key))
+            });
             if canceled.is_cancelled() {
+                work_observation.finish(Outcome::Cancelled);
                 return Err(ExecutionError::InternalError(
                     "task canceled before preparation".into(),
                 ));
             }
+            let observed_cancellation = c2::enabled().then(|| canceled.clone());
             let result = prepare(canceled);
+            work_observation.detail("c2.cancelled_at_completion", || {
+                observed_cancellation
+                    .as_ref()
+                    .is_some_and(CancellationToken::is_cancelled)
+                    .to_string()
+            });
+            work_observation.finish_result(&result);
             debug!(
                 "{} preparation wait={:?} duration={:?}",
                 TaskKeyDisplay(&key),
@@ -250,7 +324,7 @@ mod tests {
     async fn dropping_an_unpolled_stream_does_not_prepare() {
         let started = Arc::new(AtomicBool::new(false));
         let flag = started.clone();
-        let stream = preparation_stream(key(), move |_| {
+        let stream = preparation_stream(key(), None, move |_| {
             flag.store(true, Ordering::SeqCst);
             Err(ExecutionError::InternalError("should never start".into()))
         });
@@ -262,7 +336,7 @@ mod tests {
     #[tokio::test]
     async fn preparation_errors_and_panics_are_stream_errors()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut stream = preparation_stream(key(), |_| {
+        let mut stream = preparation_stream(key(), None, |_| {
             Err(ExecutionError::InvalidArgument("bad plan".into()))
         });
         assert!(
@@ -273,7 +347,7 @@ mod tests {
                 .is_err()
         );
         assert!(stream.next().await.is_none());
-        let mut stream = preparation_stream(key(), |_| {
+        let mut stream = preparation_stream(key(), None, |_| {
             std::panic::resume_unwind(Box::new("construction panic"))
         });
         assert!(stream.next().await.ok_or("missing panic error")?.is_err());
@@ -297,7 +371,7 @@ mod tests {
         let (release, blocked) = std::sync::mpsc::channel();
         let (observed, canceled) = oneshot::channel();
         let (dropped, result_dropped) = oneshot::channel();
-        let mut stream = preparation_stream(key(), move |token| {
+        let mut stream = preparation_stream(key(), None, move |token| {
             let _ = started.send(());
             blocked
                 .recv()

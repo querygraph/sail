@@ -1,6 +1,8 @@
 use async_stream;
 use datafusion::prelude::SessionContext;
+use fastrace::future::FutureExt;
 use log::debug;
+use sail_common::telemetry::c2::{self, Rpc};
 use sail_session::session_manager::SessionManager;
 use tonic::codegen::tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
@@ -428,26 +430,37 @@ impl SparkConnectService for SparkConnectServer {
         request: Request<ReleaseExecuteRequest>,
     ) -> Result<Response<ReleaseExecuteResponse>, Status> {
         let request = request.into_inner();
-        debug!("{request:?}");
-        let session_id = request.session_id.clone();
-        let user_id = request.user_context.map(|u| u.user_id).unwrap_or_default();
-        let ctx = self
-            .session_manager
-            .get_or_create_session_context(session_id, user_id)
-            .await
-            .map_err(SparkError::from)?;
-        let response_id = match request.release.required("release")? {
-            Release::ReleaseAll(ReleaseAll {}) => None,
-            Release::ReleaseUntil(ReleaseUntil { response_id }) => Some(response_id),
-        };
-        service::handle_release_execute(&ctx, request.operation_id.clone(), response_id).await?;
-        let response = ReleaseExecuteResponse {
-            session_id: request.session_id.clone(),
-            server_side_session_id: request.session_id,
-            operation_id: Some(request.operation_id),
-        };
-        debug!("{response:?}");
-        Ok(Response::new(response))
+        let span = c2::rpc_span(Rpc::ReleaseExecute, || {
+            vec![
+                ("session.id", request.session_id.clone()),
+                ("operation.id", request.operation_id.clone()),
+            ]
+        });
+        async {
+            debug!("{request:?}");
+            let session_id = request.session_id.clone();
+            let user_id = request.user_context.map(|u| u.user_id).unwrap_or_default();
+            let ctx = self
+                .session_manager
+                .get_or_create_session_context(session_id, user_id)
+                .await
+                .map_err(SparkError::from)?;
+            let response_id = match request.release.required("release")? {
+                Release::ReleaseAll(ReleaseAll {}) => None,
+                Release::ReleaseUntil(ReleaseUntil { response_id }) => Some(response_id),
+            };
+            service::handle_release_execute(&ctx, request.operation_id.clone(), response_id)
+                .await?;
+            let response = ReleaseExecuteResponse {
+                session_id: request.session_id.clone(),
+                server_side_session_id: request.session_id,
+                operation_id: Some(request.operation_id),
+            };
+            debug!("{response:?}");
+            Ok(Response::new(response))
+        }
+        .in_span(span)
+        .await
     }
 
     async fn release_session(

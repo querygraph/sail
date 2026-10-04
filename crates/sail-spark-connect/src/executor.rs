@@ -14,6 +14,7 @@ use fastrace::Span;
 use fastrace::future::FutureExt;
 use futures::Stream;
 use futures::stream::StreamExt;
+use sail_common::telemetry::c2::{self, Guard, Identity, NamedOwner, Phase};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
@@ -64,6 +65,8 @@ pub type ExecutorOutputStream = Pin<Box<dyn Stream<Item = SparkResult<ExecutorOu
 struct ExecutorBuffer {
     capacity: usize,
     inner: VecDeque<ExecutorOutput>,
+    // A named owner's lifetime; it makes no allocator-reclamation assertion.
+    _observer_owner: Option<NamedOwner<'static>>,
 }
 
 // TODO: use "spark.connect.execute.reattachable.observerRetryBufferSize"
@@ -75,6 +78,7 @@ impl ExecutorBuffer {
         Self {
             capacity,
             inner: VecDeque::with_capacity(capacity),
+            _observer_owner: None,
         }
     }
 
@@ -109,6 +113,8 @@ pub(crate) struct ExecutorMetadata {
 pub(crate) struct Executor {
     pub(crate) metadata: ExecutorMetadata,
     state: Mutex<ExecutorState>,
+    observer_session: Option<Arc<str>>,
+    _observer_owner: Option<NamedOwner<'static>>,
 }
 
 enum ExecutorState {
@@ -217,6 +223,7 @@ enum ExecutorTaskResult {
 
 impl Executor {
     pub(crate) fn new(
+        session_id: &str,
         metadata: ExecutorMetadata,
         stream: SendableRecordBatchStream,
         heartbeat_interval: Duration,
@@ -229,11 +236,28 @@ impl Executor {
                 completion: Some(completion),
             },
         };
-        let buffer = if metadata.reattachable {
+        let mut buffer = if metadata.reattachable {
             ExecutorBuffer::new(EXECUTOR_BUFFER_CAPACITY)
         } else {
             ExecutorBuffer::new(0)
         };
+        buffer._observer_owner = NamedOwner::optional(
+            Phase::ExecutorBufferOwner,
+            || Identity::Operation {
+                session: session_id,
+                operation: &metadata.operation_id,
+            },
+            "executor_response_buffer_owner",
+        );
+        let observer_session = c2::enabled().then(|| Arc::from(session_id));
+        let observer_owner = NamedOwner::optional(
+            Phase::ExecutorOwner,
+            || Identity::Operation {
+                session: session_id,
+                operation: &metadata.operation_id,
+            },
+            "spark_executor_owner",
+        );
         Self {
             metadata,
             state: Mutex::new(ExecutorState::Pending {
@@ -245,6 +269,8 @@ impl Executor {
                 },
                 span: Span::enter_with_local_parent("Executor::new"),
             }),
+            observer_session,
+            _observer_owner: observer_owner,
         }
     }
 
@@ -482,6 +508,19 @@ impl Executor {
     }
 
     pub(crate) fn release(&self, response_id: String) -> SparkResult<()> {
+        let released = Guard::start(Phase::ReleaseResponseBuffer, || Identity::Operation {
+            session: self.observer_session.as_deref().unwrap_or(""),
+            operation: &self.metadata.operation_id,
+        });
+        released.detail("c2.scope", || {
+            "remove_matching_buffer_prefix_not_executor_or_allocator_reclaim".into()
+        });
+        let result = self.release_internal(response_id);
+        released.finish_result(&result);
+        result
+    }
+
+    fn release_internal(&self, response_id: String) -> SparkResult<()> {
         let state = self.state.lock()?;
         let buffer = match state.deref() {
             ExecutorState::Running { task, span: _ } => &task.buffer,

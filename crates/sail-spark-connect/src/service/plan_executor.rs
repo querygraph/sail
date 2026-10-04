@@ -9,6 +9,7 @@ use fastrace::future::FutureExt;
 use futures::stream;
 use log::debug;
 use sail_common::spec;
+use sail_common::telemetry::c2;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::session::job::JobService;
 use sail_plan::resolve_and_execute_plan;
@@ -120,13 +121,22 @@ async fn handle_execute_plan(
     let spark = ctx.extension::<SparkSession>()?;
     let service = ctx.extension::<JobService>()?;
     let operation_id = metadata.operation_id.clone();
-    let (plan, _) = resolve_and_execute_plan(ctx, spark.plan_config()?, plan).await?;
+    c2::bind_operation(&span, spark.session_id(), &operation_id);
+    let (plan, _) = if c2::enabled() {
+        resolve_and_execute_plan(ctx, spark.plan_config()?, plan)
+            .in_span(Span::enter_with_parent("c2.resolve_scope", &span))
+            .await?
+    } else {
+        resolve_and_execute_plan(ctx, spark.plan_config()?, plan).await?
+    };
     let stream = {
         let span = Span::enter_with_parent("JobRunner::execute", &span);
         service.runner().execute(ctx, plan).in_span(span).await?
     };
     let _guard = span.set_local_parent();
+    let stream = sail_execution::operation_stream(stream, spark.session_id(), &operation_id);
     let executor = Executor::new(
+        spark.session_id(),
         metadata,
         stream,
         spark.options().execution_heartbeat_interval,

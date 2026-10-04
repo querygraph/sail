@@ -11,6 +11,7 @@ use tokio::sync::oneshot;
 use crate::error::ExecutionResult;
 use crate::id::{JobId, TaskKey, TaskStreamKey, WorkerId};
 use crate::stream::merge::merged_stream;
+use crate::stream::observation::{self, ObserverContext};
 use crate::stream::reader::{TaskStreamReader, TaskStreamSource};
 use crate::stream::writer::{
     MultiChannelTaskStreamSink, TaskStreamChannelSink, TaskStreamSink, TaskStreamWriter,
@@ -23,6 +24,7 @@ pub struct TaskStreamFactory {
     context: Arc<TaskContext>,
     celeborn: bool,
     mappers: usize,
+    observation: Option<ObserverContext>,
 }
 
 impl Clone for TaskStreamFactory {
@@ -32,22 +34,25 @@ impl Clone for TaskStreamFactory {
             context: self.context.clone(),
             celeborn: self.celeborn,
             mappers: self.mappers,
+            observation: self.observation.clone(),
         }
     }
 }
 
 impl TaskStreamFactory {
-    pub fn new(
+    pub(crate) fn new(
         handle: ActorHandle<TaskRunnerActor>,
         context: Arc<TaskContext>,
         celeborn: bool,
         mappers: usize,
+        observation: Option<ObserverContext>,
     ) -> Self {
         Self {
             handle,
             context,
             celeborn,
             mappers,
+            observation,
         }
     }
 
@@ -57,13 +62,15 @@ impl TaskStreamFactory {
         input: TaskInput,
         schema: SchemaRef,
     ) -> Arc<dyn TaskStreamReader> {
-        Arc::new(MultiChannelTaskStreamReader::new(
+        let scope = self.observation.as_ref().map(|context| context.task(&key));
+        let inner = Arc::new(MultiChannelTaskStreamReader::new(
             self.handle.clone(),
             self.context.clone(),
             key,
             input,
             schema,
-        ))
+        ));
+        observation::reader(inner, scope)
     }
 
     pub fn writer(
@@ -72,24 +79,27 @@ impl TaskStreamFactory {
         output: TaskOutput,
         schema: SchemaRef,
     ) -> Arc<dyn TaskStreamWriter> {
-        if self.celeborn && matches!(output.locator, TaskOutputLocator::Blocking) {
-            Arc::new(CelebornTaskStreamWriter::new(
-                self.handle.clone(),
-                self.context.clone(),
-                key,
-                output.channels(),
-                schema,
-                self.mappers,
-            ))
-        } else {
-            Arc::new(MultiChannelTaskStreamWriter::new(
-                self.handle.clone(),
-                self.context.clone(),
-                key,
-                output,
-                schema,
-            ))
-        }
+        let scope = self.observation.as_ref().map(|context| context.task(&key));
+        let inner: Arc<dyn TaskStreamWriter> =
+            if self.celeborn && matches!(output.locator, TaskOutputLocator::Blocking) {
+                Arc::new(CelebornTaskStreamWriter::new(
+                    self.handle.clone(),
+                    self.context.clone(),
+                    key,
+                    output.channels(),
+                    schema,
+                    self.mappers,
+                ))
+            } else {
+                Arc::new(MultiChannelTaskStreamWriter::new(
+                    self.handle.clone(),
+                    self.context.clone(),
+                    key,
+                    output,
+                    schema,
+                ))
+            };
+        observation::writer(inner, scope)
     }
 }
 

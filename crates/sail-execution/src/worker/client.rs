@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use prost::Message;
+use sail_common::telemetry::c2::{Guard, Identity, Outcome, Phase};
 
 use crate::error::ExecutionResult;
 use crate::id::{JobId, TaskAttempt, TaskKey};
@@ -52,8 +53,17 @@ impl WorkerClient {
         definition: Arc<TaskDefinition>,
         peers: Vec<WorkerLocation>,
     ) -> ExecutionResult<()> {
+        let encode = Guard::start(Phase::TaskDefinitionEncode, || Identity::CausalStage {
+            job: job_id.into(),
+            stage: stage as u64,
+        });
         let definition =
             crate::task::r#gen::TaskDefinition::from(definition.as_ref().clone()).encode_to_vec();
+        encode.detail("c2.encoded_definition_bytes", || {
+            definition.len().to_string()
+        });
+        encode.detail("c2.task_attempts", || tasks.len().to_string());
+        encode.finish(Outcome::Succeeded);
         log::debug!(
             "task batch tasks={} encoded definition bytes={}",
             tasks.len(),
@@ -72,9 +82,18 @@ impl WorkerClient {
             definition,
             peers: peers.into_iter().map(|x| x.into()).collect(),
         };
-        let response = self.inner.get().await?.run_task_batch(request).await?;
-        let RunTaskBatchResponse {} = response.into_inner();
-        Ok(())
+        let dispatch = Guard::start(Phase::BatchDispatch, || Identity::CausalStage {
+            job: job_id.into(),
+            stage: stage as u64,
+        });
+        let result = async {
+            let response = self.inner.get().await?.run_task_batch(request).await?;
+            let RunTaskBatchResponse {} = response.into_inner();
+            Ok(())
+        }
+        .await;
+        dispatch.finish_result(&result);
+        result
     }
 
     pub async fn stop_task(&self, key: TaskKey) -> ExecutionResult<()> {

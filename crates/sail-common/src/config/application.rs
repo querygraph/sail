@@ -943,6 +943,7 @@ pub struct FlightConfig {
 #[serde(deny_unknown_fields)]
 pub struct TelemetryConfig {
     pub export_traces: bool,
+    pub c2_observer: bool,
     pub export_metrics: bool,
     pub export_logs: bool,
     pub exporter: TelemetryExporterConfig,
