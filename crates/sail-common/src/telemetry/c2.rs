@@ -368,6 +368,39 @@ pub fn enabled() -> bool {
     STATE.enabled.load(Ordering::Relaxed)
 }
 
+/// Unmetered RPC context for guards whose callers previously had no parent.
+/// These names are outside the `c2.*` observation namespace and do not alter
+/// its sequence or phase counters.
+#[derive(Clone, Copy)]
+pub enum Rpc {
+    ReleaseExecute,
+    RegisterWorker,
+}
+
+impl Rpc {
+    fn name(self) -> &'static str {
+        match self {
+            Self::ReleaseExecute => "ReleaseExecute",
+            Self::RegisterWorker => "RegisterWorker",
+        }
+    }
+}
+
+pub fn rpc_span(rpc: Rpc, properties: impl FnOnce() -> Vec<(&'static str, String)>) -> Span {
+    rpc_span_in(&STATE, rpc, properties)
+}
+
+fn rpc_span_in(
+    state: &State,
+    rpc: Rpc,
+    properties: impl FnOnce() -> Vec<(&'static str, String)>,
+) -> Span {
+    if !state.enabled.load(Ordering::Relaxed) {
+        return Span::noop();
+    }
+    Span::root(rpc.name(), SpanContext::random()).with_properties(properties)
+}
+
 /// Called once during telemetry initialization, after its exporter is ready.
 pub fn configure(enabled: bool) {
     STATE.enabled.store(enabled, Ordering::Relaxed);

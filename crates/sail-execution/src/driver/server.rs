@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
+use fastrace::future::FutureExt;
 use log::debug;
 use opentelemetry_proto::tonic::metrics::v1::ResourceMetrics;
 use prost::Message;
+use sail_common::telemetry::c2::{self, Rpc};
 use tokio::sync::oneshot;
 use tonic::{Request, Response, Status};
 
@@ -33,33 +35,43 @@ impl DriverService for DriverServer {
         request: Request<RegisterWorkerRequest>,
     ) -> Result<Response<RegisterWorkerResponse>, Status> {
         let request = request.into_inner();
-        debug!("{request:?}");
-        let RegisterWorkerRequest {
-            driver_id,
-            worker_id,
-            host,
-            port,
-        } = request;
-        let port = u16::try_from(port).map_err(|_| {
-            Status::invalid_argument("port must be a valid 16-bit unsigned integer")
-        })?;
-        let (tx, rx) = oneshot::channel();
-        let message = DriverMessage::RegisterWorker {
-            worker_id: WorkerId::from(worker_id),
-            host,
-            port,
-            result: tx,
-        };
-        self.registry
-            .get(DriverId::from(driver_id))
-            .await?
-            .send(message)
-            .await
-            .map_err(ExecutionError::from)?;
-        rx.await.map_err(ExecutionError::from)??;
-        let response = RegisterWorkerResponse {};
-        debug!("{response:?}");
-        Ok(Response::new(response))
+        let span = c2::rpc_span(Rpc::RegisterWorker, || {
+            vec![
+                ("cluster.driver.id", request.driver_id.to_string()),
+                ("cluster.worker.id", request.worker_id.to_string()),
+            ]
+        });
+        async {
+            debug!("{request:?}");
+            let RegisterWorkerRequest {
+                driver_id,
+                worker_id,
+                host,
+                port,
+            } = request;
+            let port = u16::try_from(port).map_err(|_| {
+                Status::invalid_argument("port must be a valid 16-bit unsigned integer")
+            })?;
+            let (tx, rx) = oneshot::channel();
+            let message = DriverMessage::RegisterWorker {
+                worker_id: WorkerId::from(worker_id),
+                host,
+                port,
+                result: tx,
+            };
+            self.registry
+                .get(DriverId::from(driver_id))
+                .await?
+                .send(message)
+                .await
+                .map_err(ExecutionError::from)?;
+            rx.await.map_err(ExecutionError::from)??;
+            let response = RegisterWorkerResponse {};
+            debug!("{response:?}");
+            Ok(Response::new(response))
+        }
+        .in_span(span)
+        .await
     }
 
     async fn report_worker_heartbeat(

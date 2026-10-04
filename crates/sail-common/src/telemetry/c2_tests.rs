@@ -1,5 +1,7 @@
 use std::cell::Cell;
 
+use fastrace::future::FutureExt;
+
 use super::*;
 
 fn state(enabled: bool) -> State {
@@ -16,6 +18,79 @@ fn guard(state: &State) -> Guard<'_> {
         true,
         || (Span::noop(), true),
     )
+}
+
+#[test]
+fn disabled_rpc_context_skips_properties_and_span_creation() {
+    let state = state(false);
+    let calls = Cell::new(0);
+    for rpc in [Rpc::ReleaseExecute, Rpc::RegisterWorker] {
+        let span = rpc_span_in(&state, rpc, || {
+            calls.set(calls.get() + 1);
+            vec![("request", "must not allocate".into())]
+        });
+        assert!(SpanContext::from_span(&span).is_none());
+    }
+    assert_eq!(calls.get(), 0);
+    assert_eq!(state.summary().created, 0);
+}
+
+#[tokio::test]
+async fn release_and_initial_worker_registration_have_real_rpc_parents() -> Result<(), &'static str>
+{
+    for (rpc, phases) in [
+        (
+            Rpc::ReleaseExecute,
+            vec![Phase::ReleaseResponseBuffer, Phase::ReleaseOperation],
+        ),
+        (Rpc::RegisterWorker, vec![Phase::Schedule]),
+    ] {
+        let state = state(true);
+        let span = rpc_span_in(&state, rpc, || vec![("request", "actual request".into())]);
+        let rpc_context = SpanContext::from_span(&span).ok_or("enabled RPC span")?;
+        let original: Result<(), &str> = async {
+            // Yield across a poll boundary: the RPC future must restore its
+            // parent on each poll, including an error return.
+            tokio::task::yield_now().await;
+            let parent = SpanContext::current_local_parent().ok_or("RPC local parent")?;
+            assert_eq!(parent.trace_id, rpc_context.trace_id);
+            assert_eq!(parent.span_id, rpc_context.span_id);
+            for phase in phases {
+                let parent = SpanContext::current_local_parent().ok_or("guard parent")?;
+                let observation = Guard::make(
+                    &state,
+                    phase,
+                    || match rpc {
+                        Rpc::ReleaseExecute => Identity::Operation {
+                            session: "session",
+                            operation: "operation",
+                        },
+                        Rpc::RegisterWorker => Identity::Session("session"),
+                    },
+                    true,
+                    || (Span::root(phase.name(), parent), true),
+                );
+                observation.finish(Outcome::Succeeded);
+            }
+            Err("original RPC error")
+        }
+        .in_span(span)
+        .await;
+        assert_eq!(original, Err("original RPC error"));
+        let summary = state.summary();
+        assert_eq!(summary.created, summary.ended);
+        assert_eq!(summary.incomplete_identity, 0);
+        assert_eq!(summary.outstanding, 0);
+        assert_eq!(
+            summary.created,
+            match rpc {
+                Rpc::ReleaseExecute => 2,
+                Rpc::RegisterWorker => 1,
+            }
+        );
+        assert!(SpanContext::current_local_parent().is_none());
+    }
+    Ok(())
 }
 
 #[test]
