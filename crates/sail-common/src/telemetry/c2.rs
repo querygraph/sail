@@ -2,6 +2,7 @@
 //! Durations are local monotonic intervals and may overlap. They are not
 //! an additive execution breakdown or proof that resources were reclaimed.
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
 use fastrace::Span;
@@ -414,6 +415,7 @@ pub fn summary() -> Option<Summary> {
 struct Active<'a> {
     state: &'a State,
     span: Span,
+    details: Mutex<Vec<(&'static str, String)>>,
     clock: Option<Instant>,
     sequence: u64,
 }
@@ -464,17 +466,21 @@ impl<'a> Guard<'a> {
         let sequence = state.increment(&state.sequence);
         state.increment(&state.phases[phase as usize]);
         let (span, has_parent) = span();
-        let (properties, complete) = identity().properties();
+        let (mut properties, complete) = identity().properties();
         let complete = complete && has_parent;
-        for (key, value) in properties {
-            span.add_property(move || (key, value));
-        }
-        span.add_property(|| ("c2.schema_version", "1"));
-        span.add_property(|| ("c2.observation_id", sequence.to_string()));
-        span.add_property(|| ("c2.pid", std::process::id().to_string()));
-        span.add_property(|| ("c2.causal_parent_present", has_parent.to_string()));
-        span.add_property(|| ("c2.identity_complete", complete.to_string()));
-        span.add_property(|| ("c2.kind", if timed { "interval" } else { "event" }));
+        // Keep identity on the owned raw span. Separate add_property commands
+        // can arrive after this span is exported when it moves across threads.
+        let span = span.with_properties(|| {
+            properties.extend([
+                ("c2.schema_version", "1".into()),
+                ("c2.observation_id", sequence.to_string()),
+                ("c2.pid", std::process::id().to_string()),
+                ("c2.causal_parent_present", has_parent.to_string()),
+                ("c2.identity_complete", complete.to_string()),
+                ("c2.kind", if timed { "interval" } else { "event" }.into()),
+            ]);
+            properties
+        });
         if !complete {
             state.increment(&state.incomplete_identity);
         }
@@ -482,6 +488,7 @@ impl<'a> Guard<'a> {
             active: Some(Active {
                 state,
                 span,
+                details: Mutex::new(Vec::new()),
                 clock,
                 sequence,
             }),
@@ -500,8 +507,16 @@ impl<'a> Guard<'a> {
     }
 
     pub fn detail(&self, key: &'static str, value: impl FnOnce() -> String) {
-        if let Some(active) = &self.active {
-            active.span.add_property(move || (key, value()));
+        if let Some(active) = &self.active
+            && SpanContext::from_span(&active.span).is_some()
+        {
+            // Preserve noop callback laziness and run user code before locking.
+            let value = value();
+            active
+                .details
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((key, value));
         }
     }
 
@@ -519,16 +534,24 @@ impl<'a> Guard<'a> {
 
     fn end(&mut self, outcome: Outcome) {
         if let Some(active) = self.active.take() {
-            if let Some(clock) = active.clock {
+            let elapsed = active.clock.map(|clock| {
                 let elapsed = u64::try_from(clock.elapsed().as_nanos());
                 if elapsed.is_err() {
                     active.state.saturated.store(true, Ordering::Relaxed);
                 }
-                active
-                    .span
-                    .add_property(|| ("c2.elapsed_ns", elapsed.unwrap_or(u64::MAX).to_string()));
-            }
-            active.span.add_property(|| ("c2.outcome", outcome.name()));
+                elapsed.unwrap_or(u64::MAX)
+            });
+            let mut properties = active
+                .details
+                .into_inner()
+                .unwrap_or_else(PoisonError::into_inner);
+            let span = active.span.with_properties(|| {
+                if let Some(elapsed) = elapsed {
+                    properties.push(("c2.elapsed_ns", elapsed.to_string()));
+                }
+                properties.push(("c2.outcome", outcome.name().into()));
+                properties
+            });
             active.state.increment(&active.state.ended);
             match outcome {
                 Outcome::Succeeded => {}
@@ -542,6 +565,7 @@ impl<'a> Guard<'a> {
                     active.state.increment(&active.state.abandoned);
                 }
             }
+            drop(span);
         }
     }
 }

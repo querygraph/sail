@@ -1,5 +1,6 @@
 use std::cell::Cell;
 
+use fastrace::collector::{Config, SpanRecord, TestReporter};
 use fastrace::future::FutureExt;
 
 use super::*;
@@ -338,4 +339,183 @@ fn job_scoped_cleanup_does_not_invent_a_stage() {
 #[test]
 fn every_phase_has_a_counter_slot() {
     assert_eq!(Phase::ExecutorBufferOwner as usize + 1, PHASE_COUNT);
+}
+
+fn require_send_sync<T: Send + Sync>() {}
+
+#[test]
+fn observation_and_named_owner_preserve_send_and_sync() {
+    require_send_sync::<Guard<'static>>();
+    require_send_sync::<NamedOwner<'static>>();
+}
+
+#[test]
+fn enabled_noop_guard_skips_detail_callback() -> Result<(), &'static str> {
+    let state = state(true);
+    let calls = Cell::new(0);
+    let observation = guard(&state);
+    observation.detail("noop", || {
+        calls.set(calls.get() + 1);
+        "must not evaluate".into()
+    });
+    let child = observation
+        .child_span("noop child")
+        .ok_or("enabled guard retains its child-span API")?;
+    assert!(SpanContext::from_span(&child).is_none());
+    drop(observation);
+    assert_eq!(calls.get(), 0);
+    assert_eq!(state.summary().abandoned, 1);
+    assert_eq!(state.summary().outstanding, 0);
+    Ok(())
+}
+
+fn property<'a>(record: &'a SpanRecord, key: &str) -> Result<&'a str, &'static str> {
+    let mut values = record.properties.iter().filter(|(name, _)| name == key);
+    let (_, value) = values.next().ok_or("exported property is missing")?;
+    assert!(
+        values.next().is_none(),
+        "duplicate exported property: {key}"
+    );
+    Ok(value)
+}
+
+#[test]
+fn cross_thread_guard_export_preserves_initial_details_and_terminal_fields()
+-> Result<(), &'static str> {
+    let (reporter, records) = TestReporter::new();
+    fastrace::set_reporter(reporter, Config::default());
+    let state = state(true);
+    let parent = Span::root("guard_export_parent", SpanContext::random());
+    let context = SpanContext::from_span(&parent).ok_or("recording parent")?;
+    let make = |phase: Phase, timed: bool| {
+        Guard::make(
+            &state,
+            phase,
+            || Identity::Task {
+                session: "export-session",
+                job: 17,
+                stage: 4,
+                partition: 31,
+                attempt: 2,
+                placement: Placement::Worker(9),
+            },
+            timed,
+            || (Span::root(phase.name(), context), true),
+        )
+    };
+    let owner = make(Phase::StreamOwner, true);
+    let consumption = make(Phase::StreamConsumption, true);
+    let abandoned = make(Phase::ReaderOpen, true);
+    let cancelled = make(Phase::TaskTerminal, false);
+    owner.detail("c2.owner_role", || {
+        // A detail callback may add another detail without holding our mutex.
+        owner.detail("c2.open_partition", || "31".into());
+        "opened_shuffle_source".into()
+    });
+    consumption.detail("c2.owner_role", || "opened_shuffle_source".into());
+    let owner_context = owner
+        .active
+        .as_ref()
+        .and_then(|active| SpanContext::from_span(&active.span))
+        .ok_or("recording owner")?;
+    let child = owner.child_span("guard_export_child").ok_or("child span")?;
+    std::thread::scope(|scope| -> Result<(), &'static str> {
+        scope
+            .spawn(move || {
+                drop(child);
+                owner.detail("c2.terminal_reason", || "named_wrapper_owner_drop".into());
+                owner.finish(Outcome::Succeeded);
+                consumption.detail("c2.rows", || "0".into());
+                consumption.detail("c2.terminal_reason", || "inner_stream_error".into());
+                let original: Result<(), &str> = Err("original stream error");
+                consumption.finish_result(&original);
+                assert_eq!(original, Err("original stream error"));
+                drop(abandoned);
+                cancelled.finish(Outcome::Cancelled);
+            })
+            .join()
+            .map_err(|_| "guard export thread panicked")?;
+        Ok(())
+    })?;
+    drop(parent);
+    fastrace::flush();
+    let records = records.lock();
+    let observed: Vec<_> = records
+        .iter()
+        .filter(|record| record.trace_id == context.trace_id && record.name.starts_with("c2."))
+        .collect();
+    assert_eq!(observed.len(), 4);
+    let pid = std::process::id().to_string();
+    for (phase, sequence, outcome, timed) in [
+        (Phase::StreamOwner, "1", "succeeded", true),
+        (Phase::StreamConsumption, "2", "failed", true),
+        (Phase::ReaderOpen, "3", "abandoned", true),
+        (Phase::TaskTerminal, "4", "cancelled", false),
+    ] {
+        let record = observed
+            .iter()
+            .copied()
+            .find(|record| record.name == phase.name())
+            .ok_or("exported observation is missing")?;
+        assert_eq!(record.parent_id, context.span_id);
+        for (key, expected) in [
+            ("c2.identity_kind", "task"),
+            ("session.id", "export-session"),
+            ("execution.job.id", "17"),
+            ("execution.stage", "4"),
+            ("execution.partition", "31"),
+            ("execution.attempt", "2"),
+            ("c2.placement", "worker"),
+            ("cluster.worker.id", "9"),
+            ("c2.schema_version", "1"),
+            ("c2.observation_id", sequence),
+            ("c2.pid", pid.as_str()),
+            ("c2.causal_parent_present", "true"),
+            ("c2.identity_complete", "true"),
+            ("c2.kind", if timed { "interval" } else { "event" }),
+            ("c2.outcome", outcome),
+        ] {
+            assert_eq!(property(record, key)?, expected, "{key}");
+        }
+        if timed {
+            property(record, "c2.elapsed_ns")?
+                .parse::<u64>()
+                .map_err(|_| "exported duration is invalid")?;
+        } else {
+            assert!(
+                !record
+                    .properties
+                    .iter()
+                    .any(|(key, _)| key == "c2.elapsed_ns")
+            );
+        }
+        if record.name == Phase::StreamOwner.name() {
+            assert_eq!(property(record, "c2.owner_role")?, "opened_shuffle_source");
+            assert_eq!(property(record, "c2.open_partition")?, "31");
+            assert_eq!(
+                property(record, "c2.terminal_reason")?,
+                "named_wrapper_owner_drop"
+            );
+        } else if record.name == Phase::StreamConsumption.name() {
+            assert_eq!(property(record, "c2.owner_role")?, "opened_shuffle_source");
+            assert_eq!(property(record, "c2.rows")?, "0");
+            assert_eq!(
+                property(record, "c2.terminal_reason")?,
+                "inner_stream_error"
+            );
+        }
+    }
+    let child = records
+        .iter()
+        .find(|record| record.trace_id == context.trace_id && record.name == "guard_export_child")
+        .ok_or("exported child is missing")?;
+    assert_eq!(child.parent_id, owner_context.span_id);
+    let summary = state.summary();
+    assert_eq!(summary.created, 4);
+    assert_eq!(summary.ended, 4);
+    assert_eq!(summary.failed, 1);
+    assert_eq!(summary.cancelled, 1);
+    assert_eq!(summary.abandoned, 1);
+    assert_eq!(summary.outstanding, 0);
+    Ok(())
 }
