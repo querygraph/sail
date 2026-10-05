@@ -318,22 +318,23 @@ pub fn refresh_work_tables(
     .data()
 }
 
-/// Whether `plan` is a recursive CTE's self-reference: a scan of a work table
-/// outside any finished recursive query.
+/// Whether `plan` is a recursive CTE's self-reference: the (aliased) scan of
+/// its work table. A CTE that merely reads the work table, defined inside the
+/// recursive term, is not: it is shared like any other CTE, and computed again
+/// for every iteration. Treating it as a self-reference would inline it at
+/// every reference, and a chain of such CTEs grows exponentially.
 pub fn is_work_table_reference(plan: &datafusion_expr::LogicalPlan) -> Result<bool> {
     use datafusion::datasource::source_as_provider;
-    use datafusion_common::tree_node::TreeNode;
     use datafusion_expr::LogicalPlan;
 
-    if plan.exists(|node| Ok(matches!(node, LogicalPlan::RecursiveQuery(_))))? {
-        return Ok(false);
+    let mut node = plan;
+    while let LogicalPlan::SubqueryAlias(alias) = node {
+        node = alias.input.as_ref();
     }
-    plan.exists(|node| {
-        Ok(match node {
-            LogicalPlan::TableScan(scan) => source_as_provider(&scan.source)
-                .map(|p| p.downcast_ref::<SharedCteWorkTable>().is_some())
-                .unwrap_or(false),
-            _ => false,
-        })
+    Ok(match node {
+        LogicalPlan::TableScan(scan) => source_as_provider(&scan.source)
+            .map(|p| p.downcast_ref::<SharedCteWorkTable>().is_some())
+            .unwrap_or(false),
+        _ => false,
     })
 }

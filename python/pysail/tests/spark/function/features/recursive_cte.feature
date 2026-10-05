@@ -196,3 +196,49 @@ Feature: Recursive CTEs
         | 0   | 6.0   |
         | 1   | 30.0  |
         | 2   | 150.0 |
+
+  Rule: CTEs defined inside the recursive term are shared, not inlined
+
+    Scenario: a chain of CTEs over the iteration, each read twice
+      When query
+        """
+        WITH RECURSIVE w AS (
+          SELECT 0 AS tic, CAST(1 AS BIGINT) AS x
+          UNION ALL
+          SELECT * FROM (
+            WITH c0 AS (SELECT tic, x FROM w),
+            c1 AS (SELECT a.tic, a.x + b.x AS x FROM c0 a JOIN c0 b ON a.tic = b.tic),
+            c2 AS (SELECT a.tic, a.x + b.x AS x FROM c1 a JOIN c1 b ON a.tic = b.tic),
+            c3 AS (SELECT a.tic, a.x + b.x AS x FROM c2 a JOIN c2 b ON a.tic = b.tic),
+            c4 AS (SELECT a.tic, a.x + b.x AS x FROM c3 a JOIN c3 b ON a.tic = b.tic),
+            c5 AS (SELECT a.tic, a.x + b.x AS x FROM c4 a JOIN c4 b ON a.tic = b.tic),
+            c6 AS (SELECT a.tic, a.x + b.x AS x FROM c5 a JOIN c5 b ON a.tic = b.tic),
+            c7 AS (SELECT a.tic, a.x + b.x AS x FROM c6 a JOIN c6 b ON a.tic = b.tic),
+            c8 AS (SELECT a.tic, a.x + b.x AS x FROM c7 a JOIN c7 b ON a.tic = b.tic),
+            c9 AS (SELECT a.tic, a.x + b.x AS x FROM c8 a JOIN c8 b ON a.tic = b.tic),
+            c10 AS (SELECT a.tic, a.x + b.x AS x FROM c9 a JOIN c9 b ON a.tic = b.tic),
+            c11 AS (SELECT a.tic, a.x + b.x AS x FROM c10 a JOIN c10 b ON a.tic = b.tic),
+            c12 AS (SELECT a.tic, a.x + b.x AS x FROM c11 a JOIN c11 b ON a.tic = b.tic),
+            c13 AS (SELECT a.tic, a.x + b.x AS x FROM c12 a JOIN c12 b ON a.tic = b.tic),
+            c14 AS (SELECT a.tic, a.x + b.x AS x FROM c13 a JOIN c13 b ON a.tic = b.tic),
+            c15 AS (SELECT a.tic, a.x + b.x AS x FROM c14 a JOIN c14 b ON a.tic = b.tic),
+            c16 AS (SELECT a.tic, a.x + b.x AS x FROM c15 a JOIN c15 b ON a.tic = b.tic),
+            c17 AS (SELECT a.tic, a.x + b.x AS x FROM c16 a JOIN c16 b ON a.tic = b.tic),
+            c18 AS (SELECT a.tic, a.x + b.x AS x FROM c17 a JOIN c17 b ON a.tic = b.tic),
+            c19 AS (SELECT a.tic, a.x + b.x AS x FROM c18 a JOIN c18 b ON a.tic = b.tic),
+            c20 AS (SELECT a.tic, a.x + b.x AS x FROM c19 a JOIN c19 b ON a.tic = b.tic),
+            c21 AS (SELECT a.tic, a.x + b.x AS x FROM c20 a JOIN c20 b ON a.tic = b.tic),
+            c22 AS (SELECT a.tic, a.x + b.x AS x FROM c21 a JOIN c21 b ON a.tic = b.tic),
+            c23 AS (SELECT a.tic, a.x + b.x AS x FROM c22 a JOIN c22 b ON a.tic = b.tic),
+            c24 AS (SELECT a.tic, a.x + b.x AS x FROM c23 a JOIN c23 b ON a.tic = b.tic)
+            SELECT tic + 1 AS tic, x FROM c24
+          ) s
+          WHERE s.tic <= 2
+        )
+        SELECT tic, x FROM w ORDER BY tic
+        """
+      Then query result ordered
+        | tic | x               |
+        | 0   | 1               |
+        | 1   | 16777216        |
+        | 2   | 281474976710656 |
