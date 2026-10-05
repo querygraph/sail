@@ -80,6 +80,21 @@ impl PlanResolver<'_> {
             let mut plan = sail_common_datafusion::cte_work_table::refresh_work_tables(
                 cte.plan.as_ref().clone(),
             )?;
+            // A reference to a definition reads its shared result; the scope's
+            // `share_or_inline` inlines it again if it is the only reference.
+            // A recursive CTE's own self-reference is its work table, and is
+            // left alone.
+            if cte.is_definition()
+                && !sail_common_datafusion::cte_work_table::is_work_table_reference(&plan)?
+            {
+                plan = LogicalPlan::Extension(datafusion_expr::Extension {
+                    node: Arc::new(sail_logical_plan::shared_cte::SharedCteRefNode::new(
+                        cte.id,
+                        table_reference.table().to_string(),
+                        plan.schema().clone(),
+                    )),
+                });
+            }
             if let Some(names) = cte.renew_reference(state)? {
                 plan = rename_logical_plan_reusing_projection(plan, &names)?;
                 state.register_missing_input_boundary(&plan);

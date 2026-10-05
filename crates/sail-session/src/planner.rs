@@ -52,6 +52,7 @@ use sail_logical_plan::remote_checkpoint::{
 };
 use sail_logical_plan::repartition::{ExplicitRepartitionKind, ExplicitRepartitionNode};
 use sail_logical_plan::schema_pivot::SchemaPivotNode;
+use sail_logical_plan::shared_cte::{SharedCteRefNode, WithSharedCtesNode};
 use sail_logical_plan::show_string::ShowStringNode;
 use sail_logical_plan::sort::{RequiredSortNode, SortWithinPartitionsNode};
 use sail_logical_plan::spark_partition_id::SparkPartitionIdNode;
@@ -71,6 +72,7 @@ use sail_physical_plan::remote_checkpoint::{
 };
 use sail_physical_plan::repartition::ExplicitRepartitionExec;
 use sail_physical_plan::schema_pivot::SchemaPivotExec;
+use sail_physical_plan::shared_cte::{SharedCteRefExec, SharedCteResult, WithSharedCtesExec};
 use sail_physical_plan::show_string::ShowStringExec;
 use sail_physical_plan::spark_partition_id::SparkPartitionIdExec;
 use sail_physical_plan::streaming::collector::StreamCollectorExec;
@@ -107,6 +109,10 @@ impl QueryPlanner for ExtensionQueryPlanner {
             Arc::new(ConsolePhysicalPlanner),
             Arc::new(NoopPhysicalPlanner),
             Arc::new(PythonPhysicalPlanner),
+            // One per query: every reference to a shared CTE in this plan shares
+            // one result. Before ExtensionPhysicalPlanner, which rejects nodes it
+            // does not know.
+            Arc::new(SharedCtePhysicalPlanner::default()),
             Arc::new(ExtensionPhysicalPlanner),
         ];
         let planner = DefaultPhysicalPlanner::with_extension_planners(extension_planners);
@@ -162,6 +168,59 @@ fn ensure_scalar_subquery_nullability(
         }
     })
     .data()
+}
+
+/// Plans shared CTEs: a `WithSharedCtesNode` and the `SharedCteRefNode`s that
+/// read its definitions. All the nodes of one CTE in a plan share one
+/// `SharedCteResult`.
+#[derive(Debug, Default)]
+pub struct SharedCtePhysicalPlanner {
+    results: std::sync::Mutex<std::collections::HashMap<u64, Arc<SharedCteResult>>>,
+}
+
+impl SharedCtePhysicalPlanner {
+    fn result(&self, id: u64) -> datafusion_common::Result<Arc<SharedCteResult>> {
+        let mut results = self.results.lock().map_err(|_| {
+            datafusion_common::DataFusionError::Internal(
+                "shared CTE planner is poisoned".to_string(),
+            )
+        })?;
+        Ok(Arc::clone(results.entry(id).or_default()))
+    }
+}
+
+#[async_trait]
+impl ExtensionPlanner for SharedCtePhysicalPlanner {
+    async fn plan_extension(
+        &self,
+        _planner: &dyn PhysicalPlanner,
+        node: &dyn UserDefinedLogicalNode,
+        _logical_inputs: &[&LogicalPlan],
+        physical_inputs: &[Arc<dyn ExecutionPlan>],
+        _session: &dyn Session,
+        _planning_ctx: &PhysicalPlanningContext,
+    ) -> datafusion_common::Result<Option<Arc<dyn ExecutionPlan>>> {
+        if let Some(node) = node.as_any().downcast_ref::<SharedCteRefNode>() {
+            return Ok(Some(Arc::new(SharedCteRefExec::new(
+                node.cte_name().to_string(),
+                self.result(node.id())?,
+                node.schema().inner().clone(),
+            ))));
+        }
+        if let Some(node) = node.as_any().downcast_ref::<WithSharedCtesNode>() {
+            let results = node
+                .ids()
+                .iter()
+                .map(|id| self.result(*id))
+                .collect::<datafusion_common::Result<Vec<_>>>()?;
+            return Ok(Some(Arc::new(WithSharedCtesExec::try_new(
+                node.names().to_vec(),
+                results,
+                physical_inputs.to_vec(),
+            )?)));
+        }
+        Ok(None)
+    }
 }
 
 pub struct ExtensionPhysicalPlanner;

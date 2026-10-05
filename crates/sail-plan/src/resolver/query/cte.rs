@@ -21,6 +21,8 @@ pub(in crate::resolver) enum CteKind {
 #[derive(Debug)]
 pub(in crate::resolver) struct CteInfo {
     pub(super) plan: Arc<LogicalPlan>,
+    /// Identifies the definition, so that references to it can share one result.
+    pub(super) id: u64,
     /// Whether this is a CTE definition or a parameter view.
     kind: CteKind,
     /// The attribute identity of each output field.
@@ -30,6 +32,10 @@ pub(in crate::resolver) struct CteInfo {
 }
 
 impl CteInfo {
+    pub(super) fn is_definition(&self) -> bool {
+        self.kind == CteKind::Definition
+    }
+
     pub(in crate::resolver) fn try_new(
         plan: LogicalPlan,
         kind: CteKind,
@@ -47,6 +53,7 @@ impl CteInfo {
         }
         Ok(Self {
             plan: Arc::new(plan),
+            id: sail_logical_plan::shared_cte::next_shared_cte_id(),
             kind,
             origins,
             bindings,
@@ -113,8 +120,10 @@ impl PlanResolver<'_> {
             .collect();
         let mut scope = state.enter_cte_scope();
         let state = scope.state();
+        let mut defined = Vec::new();
         for (name, query) in ctes.into_iter() {
             let reference = self.resolve_table_reference(&spec::ObjectName::bare(name.clone()))?;
+            defined.push(reference.clone());
             let plan = if recursive {
                 self.resolve_recursive_query_plan(&reference, query, state)
                     .await?
@@ -125,9 +134,35 @@ impl PlanResolver<'_> {
                 Arc::new(plan),
                 reference.clone(),
             )?);
+            // Coerce the definition's types now: a shared reference is a leaf
+            // that keeps the definition's schema, and the analyzer's type
+            // coercion would otherwise change the definition (say, a CASE of
+            // INT and BIGINT becoming BIGINT) but not the leaf.
+            let session = self.ctx.state();
+            let plan =
+                session
+                    .analyzer()
+                    .execute_and_check(plan, session.config_options(), |_, _| {})?;
             state.insert_cte(reference, plan, CteKind::Definition)?;
         }
         let plan = self.resolve_query_plan(input, state).await?;
+        // A CTE referenced more than once is computed once; one referenced once
+        // is inlined, so the optimizer can push work into it.
+        let definitions = defined
+            .iter()
+            .filter_map(|reference| {
+                state.get_cte(reference).and_then(|cte| {
+                    cte.is_definition().then(|| {
+                        (
+                            cte.id,
+                            reference.table().to_string(),
+                            cte.plan.as_ref().clone(),
+                        )
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        let plan = share_or_inline(plan, definitions)?;
         // Spark's `WithCTE` also has the CTE definitions as children, so
         // missing-reference recovery resolves only against the query output.
         Self::restore_cte_output_bindings(&plan, state)?;
@@ -159,4 +194,95 @@ impl PlanResolver<'_> {
         }
         Ok(())
     }
+}
+
+/// Decides, for the CTEs of one `WITH` scope (in definition order), whether
+/// each is shared or inlined. A CTE can only be referenced by the CTEs defined
+/// after it and by the query, so going from the last CTE to the first gives
+/// each its final count: none, and it is dropped; one, and its reference
+/// becomes its plan; more, and its references read one result, computed by the
+/// `WithSharedCtesNode` placed over the query.
+fn share_or_inline(
+    plan: LogicalPlan,
+    definitions: Vec<(u64, String, LogicalPlan)>,
+) -> PlanResult<LogicalPlan> {
+    use datafusion_common::tree_node::{Transformed, TransformedResult, TreeNodeRecursion};
+    use datafusion_expr::Extension;
+    use sail_logical_plan::shared_cte::{SharedCteRefNode, WithSharedCtesNode};
+
+    fn ref_id(node: &LogicalPlan) -> Option<u64> {
+        match node {
+            LogicalPlan::Extension(Extension { node }) => node
+                .as_any()
+                .downcast_ref::<SharedCteRefNode>()
+                .map(|r| r.id()),
+            _ => None,
+        }
+    }
+    fn count(plan: &LogicalPlan, id: u64) -> PlanResult<usize> {
+        let mut n = 0;
+        plan.apply_with_subqueries(|node| {
+            if ref_id(node) == Some(id) {
+                n += 1;
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        Ok(n)
+    }
+    fn inline(plan: LogicalPlan, id: u64, definition: &LogicalPlan) -> PlanResult<LogicalPlan> {
+        Ok(plan
+            .transform_up_with_subqueries(|node| {
+                if ref_id(&node) == Some(id) {
+                    Ok(Transformed::yes(definition.clone()))
+                } else {
+                    Ok(Transformed::no(node))
+                }
+            })
+            .data()?)
+    }
+
+    if definitions.is_empty() {
+        return Ok(plan);
+    }
+    let mut plan = plan;
+    // (id, name, definition) of the shared CTEs, last first.
+    let mut shared: Vec<(u64, String, LogicalPlan)> = Vec::new();
+    for (id, name, definition) in definitions.into_iter().rev() {
+        let mut n = count(&plan, id)?;
+        for (_, _, d) in &shared {
+            n += count(d, id)?;
+        }
+        match n {
+            0 => {}
+            1 => {
+                plan = inline(plan, id, &definition)?;
+                shared = shared
+                    .into_iter()
+                    .map(|(i, n, d)| Ok((i, n, inline(d, id, &definition)?)))
+                    .collect::<PlanResult<Vec<_>>>()?;
+            }
+            _ => shared.push((id, name, definition)),
+        }
+    }
+    if shared.is_empty() {
+        return Ok(plan);
+    }
+    shared.reverse();
+    let (ids, names, definitions): (Vec<_>, Vec<_>, Vec<_>) = shared.into_iter().fold(
+        (vec![], vec![], vec![]),
+        |(mut ids, mut names, mut defs), (i, n, d)| {
+            ids.push(i);
+            names.push(n);
+            defs.push(std::sync::Arc::new(d));
+            (ids, names, defs)
+        },
+    );
+    Ok(LogicalPlan::Extension(Extension {
+        node: std::sync::Arc::new(WithSharedCtesNode::new(
+            ids,
+            names,
+            definitions,
+            std::sync::Arc::new(plan),
+        )),
+    }))
 }
