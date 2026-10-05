@@ -30,6 +30,7 @@ impl PhysicalOptimizerRule for PostFilterPushdown {
                 // `reset_state` (`with_new_children` shares it), so every
                 // iteration of a recursive term after the first scans with the
                 // bound the first iteration learned, and finds nothing past it.
+                // https://github.com/apache/datafusion/issues/26054
                 || node.downcast_ref::<RecursiveQueryExec>().is_some())
         })? {
             // A NULL-only partition can reset DataFusion's shared MIN bound to NULL.
