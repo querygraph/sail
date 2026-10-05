@@ -27,9 +27,11 @@ type SharedBatches =
 /// it. A reference may run before that, as in a scalar subquery that is
 /// executed ahead of the main plan, so a reference that finds nothing started
 /// starts the computation itself, from the definition `WithSharedCtesExec`
-/// registered (the latest one, after the physical optimizer). `RecursiveQueryExec` runs its recursive term again for every iteration,
-/// resetting the plan's state first; a reset clears the result, so a CTE inside
-/// a recursive term is computed again for each iteration.
+/// registered (the latest one, after the physical optimizer).
+/// `RecursiveQueryExec` runs its recursive term again for every iteration,
+/// resetting the plan's state first; the reset of the `WithSharedCtesExec`
+/// clears the result, so a CTE defined inside a recursive term is computed
+/// again for each iteration, and one defined outside it is computed once.
 #[derive(Debug, Default)]
 pub struct SharedCteResult {
     batches: Mutex<Option<SharedBatches>>,
@@ -188,8 +190,12 @@ impl ExecutionPlan for SharedCteRefExec {
         )
     }
 
+    /// A reference leaves the result alone: the `WithSharedCtesExec` that owns
+    /// the CTE resets it. A recursive query resets the plan of its recursive
+    /// term for every iteration, and a CTE defined outside that term is the
+    /// same for every iteration; clearing it from a reference inside the term
+    /// would run its (already consumed) definition again.
     fn reset_state(self: Arc<Self>) -> Result<Arc<dyn ExecutionPlan>> {
-        self.result.reset()?;
         Ok(self)
     }
 

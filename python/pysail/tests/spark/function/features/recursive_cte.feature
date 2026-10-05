@@ -242,3 +242,42 @@ Feature: Recursive CTEs
         | 0   | 1               |
         | 1   | 16777216        |
         | 2   | 281474976710656 |
+
+    Scenario: a recursive term reads a CTE defined outside it
+      When query
+        """
+        WITH RECURSIVE a AS (SELECT id % 7 AS k, count(*) AS c FROM range(1000) r(id) GROUP BY id % 7),
+        r AS (
+          SELECT 0 AS n
+          UNION ALL
+          SELECT r.n + 1 FROM r JOIN (SELECT count(*) AS c FROM a) x ON r.n < x.c
+        )
+        SELECT (SELECT max(n) FROM r) AS m, (SELECT sum(c) FROM a) AS total
+        """
+      Then query result
+        | m | total |
+        | 7 | 1000  |
+
+    Scenario: an aggregate over a table scan is computed again in every iteration
+      Given variable location for temporary directory recursive_cte_max
+      Given statement template
+        """
+        INSERT OVERWRITE DIRECTORY {{ location.sql }} USING parquet
+        SELECT CAST(id AS DOUBLE) AS r FROM range(129)
+        """
+      When query template
+        """
+        WITH RECURSIVE w AS (
+          SELECT 0 AS t, CAST(NULL AS DOUBLE) AS m
+          UNION ALL
+          SELECT w.t + 1, x.m FROM w CROSS JOIN (SELECT MAX(r) AS m FROM parquet.`{{ location.string }}` WHERE r % 2 = 0) x
+          WHERE w.t < 3
+        )
+        SELECT t, m FROM w ORDER BY t
+        """
+      Then query result ordered
+        | t | m     |
+        | 0 | NULL  |
+        | 1 | 128.0 |
+        | 2 | 128.0 |
+        | 3 | 128.0 |
