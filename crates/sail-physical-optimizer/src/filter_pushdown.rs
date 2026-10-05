@@ -7,6 +7,7 @@ use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_optimizer::filter_pushdown::FilterPushdown;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::aggregates::AggregateExec;
+use datafusion::physical_plan::recursive_query::RecursiveQueryExec;
 
 #[derive(Debug)]
 pub struct PostFilterPushdown;
@@ -24,7 +25,12 @@ impl PhysicalOptimizerRule for PostFilterPushdown {
                 .is_some_and(|aggregate| {
                     aggregate.aggr_expr().len() > 1
                         && !aggregate.dynamic_expressions_produced().is_empty()
-                }))
+                })
+                // An AggregateExec keeps its MIN/MAX dynamic filter through
+                // `reset_state` (`with_new_children` shares it), so every
+                // iteration of a recursive term after the first scans with the
+                // bound the first iteration learned, and finds nothing past it.
+                || node.downcast_ref::<RecursiveQueryExec>().is_some())
         })? {
             // A NULL-only partition can reset DataFusion's shared MIN bound to NULL.
             // Omitting that bound from a multi-aggregate filter can prune unread minima.
