@@ -155,3 +155,44 @@ Feature: Recursive CTEs
         | n | s    |
         | 1 | x    |
         | 2 | NULL |
+
+  Rule: The recursive term may refer to the CTE more than once
+
+    Scenario: rows of an iteration read other rows of the same iteration
+      When query
+        """
+        WITH RECURSIVE w AS (
+          SELECT 0 AS tic, 'p' AS kind, 0 AS id, 0.0D AS x
+          UNION ALL
+          SELECT 0, 't', CAST(id AS INT), CAST(id * 10 AS DOUBLE) FROM range(3) r(id)
+          UNION ALL
+          SELECT t.tic + 1, t.kind, t.id,
+                 CASE WHEN t.kind = 't' THEN t.x - 1 ELSE t.x + p.x END
+          FROM w t CROSS JOIN (SELECT x FROM w WHERE kind = 't' AND id = 1) p
+          WHERE t.tic < 2
+        )
+        SELECT tic, kind, id, x FROM w WHERE kind = 'p' ORDER BY tic
+        """
+      Then query result ordered
+        | tic | kind | id | x    |
+        | 0   | p    | 0  | 0.0  |
+        | 1   | p    | 0  | 10.0 |
+        | 2   | p    | 0  | 19.0 |
+
+    Scenario: an aggregate of the iteration joined back to it
+      When query
+        """
+        WITH RECURSIVE w AS (
+          SELECT 0 AS tic, CAST(id AS INT) AS id, CAST(id AS DOUBLE) AS x FROM range(4) r(id)
+          UNION ALL
+          SELECT w.tic + 1, w.id, w.x + a.s
+          FROM w CROSS JOIN (SELECT sum(x) AS s FROM w) a
+          WHERE w.tic < 2
+        )
+        SELECT tic, sum(x) AS total FROM w GROUP BY tic ORDER BY tic
+        """
+      Then query result ordered
+        | tic | total |
+        | 0   | 6.0   |
+        | 1   | 30.0  |
+        | 2   | 150.0 |

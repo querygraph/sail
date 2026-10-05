@@ -77,7 +77,9 @@ impl PlanResolver<'_> {
                     "SQL time travel is not supported for CTEs",
                 ));
             }
-            let mut plan = cte.plan.as_ref().clone();
+            let mut plan = sail_common_datafusion::cte_work_table::refresh_work_tables(
+                cte.plan.as_ref().clone(),
+            )?;
             if let Some(names) = cte.renew_reference(state)? {
                 plan = rename_logical_plan_reusing_projection(plan, &names)?;
                 state.register_missing_input_boundary(&plan);

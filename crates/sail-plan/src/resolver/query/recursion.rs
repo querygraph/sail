@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
-use datafusion::datasource::cte_worktable::CteWorkTable;
 use datafusion::datasource::provider_as_source;
 use datafusion_common::TableReference;
 use datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion_expr::{LogicalPlan, LogicalPlanBuilder, SubqueryAlias, TableSource};
 use sail_common::spec;
+use sail_common_datafusion::cte_work_table::SharedCteWorkTable;
 
 use crate::error::PlanResult;
 use crate::resolver::PlanResolver;
@@ -89,11 +89,12 @@ impl PlanResolver<'_> {
 
         // The work table that stands for the CTE inside the recursive term. Values
         // from earlier iterations may be null even where the static term's are not.
+        // The recursive term may refer to the CTE more than once: every reference
+        // replays the same iteration's rows.
         let name = reference.table().to_string();
-        let work_table: Arc<dyn TableSource> = provider_as_source(Arc::new(CteWorkTable::new(
-            &name,
-            nullable_schema(static_plan.schema().inner()),
-        )));
+        let work_table: Arc<dyn TableSource> = provider_as_source(Arc::new(
+            SharedCteWorkTable::new(&name, nullable_schema(static_plan.schema().inner())),
+        ));
         let work_table_plan =
             LogicalPlanBuilder::scan(name.clone(), Arc::clone(&work_table), None)?.build()?;
         let work_table_plan = LogicalPlan::SubqueryAlias(SubqueryAlias::try_new(
