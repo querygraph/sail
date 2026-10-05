@@ -116,7 +116,8 @@ impl PlanResolver<'_> {
         for (name, query) in ctes.into_iter() {
             let reference = self.resolve_table_reference(&spec::ObjectName::bare(name.clone()))?;
             let plan = if recursive {
-                self.resolve_recursive_query_plan(query, state).await?
+                self.resolve_recursive_query_plan(&reference, query, state)
+                    .await?
             } else {
                 self.resolve_query_plan(query, state).await?
             };

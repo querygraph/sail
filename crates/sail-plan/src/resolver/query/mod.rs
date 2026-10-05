@@ -15,7 +15,7 @@ use crate::resolver::state::PlanResolverState;
 mod aggregate;
 mod alias;
 mod column_op;
-mod cte;
+pub(in crate::resolver) mod cte;
 mod dedup;
 mod filter;
 mod join;
