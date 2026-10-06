@@ -33,7 +33,8 @@ use datafusion::catalog::Session;
 use datafusion::datasource::TableProvider;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
-use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::coop::cooperative;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType, SchedulingType};
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
@@ -122,19 +123,43 @@ impl SlotExec {
             Some(projection) => Arc::new(slot.schema.project(projection)?),
             None => Arc::clone(&slot.schema),
         };
-        let cache = Arc::new(PlanProperties::new(
-            EquivalenceProperties::new(Arc::clone(&schema)),
-            Partitioning::UnknownPartitioning(1),
-            EmissionType::Incremental,
-            Boundedness::Bounded,
-        ));
         Ok(Self {
             slot,
             projection,
+            cache: slot_properties(Arc::clone(&schema)),
             schema,
-            cache,
         })
     }
+
+    /// This scan with only `columns` of its current output, named by
+    /// `schema` (it takes over a parent projection that only picks and
+    /// renames columns).
+    pub fn with_output(&self, columns: &[usize], schema: SchemaRef) -> Self {
+        let projection = match &self.projection {
+            Some(current) => columns.iter().map(|i| current[*i]).collect(),
+            None => columns.to_vec(),
+        };
+        Self {
+            slot: Arc::clone(&self.slot),
+            projection: Some(projection),
+            cache: slot_properties(Arc::clone(&schema)),
+            schema,
+        }
+    }
+}
+
+/// A slot scan's properties: one partition, and a stream that takes part in
+/// cooperative scheduling itself, so no `CooperativeExec` is put over it.
+fn slot_properties(schema: SchemaRef) -> Arc<PlanProperties> {
+    Arc::new(
+        PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        )
+        .with_scheduling_type(SchedulingType::Cooperative),
+    )
 }
 
 impl DisplayAs for SlotExec {
@@ -198,15 +223,25 @@ impl ExecutionPlan for SlotExec {
         let batches = match &self.projection {
             Some(projection) => batches
                 .iter()
-                .map(|b| b.project(projection))
+                .map(|b| {
+                    let arrays = projection
+                        .iter()
+                        .map(|i| Arc::clone(b.column(*i)))
+                        .collect();
+                    RecordBatch::try_new_with_options(
+                        Arc::clone(&self.schema),
+                        arrays,
+                        &RecordBatchOptions::new().with_row_count(Some(b.num_rows())),
+                    )
+                })
                 .collect::<std::result::Result<Vec<_>, _>>()?,
             None => batches.as_ref().clone(),
         };
-        Ok(Box::pin(MemoryStream::try_new(
+        Ok(Box::pin(cooperative(MemoryStream::try_new(
             batches,
             Arc::clone(&self.schema),
             None,
-        )?))
+        )?)))
     }
 }
 

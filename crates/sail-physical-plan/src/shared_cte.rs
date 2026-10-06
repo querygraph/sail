@@ -1,11 +1,13 @@
 use std::fmt::Formatter;
 use std::sync::{Arc, Mutex};
 
+use datafusion::arrow::array::RecordBatchOptions;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
-use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::coop::cooperative;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType, SchedulingType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
@@ -151,11 +153,17 @@ fn single_partition(schema: SchemaRef) -> Arc<PlanProperties> {
     ))
 }
 
-/// A reference to a shared CTE: streams the CTE's result.
+/// A reference to a shared CTE: streams the CTE's result. Its stream takes
+/// part in cooperative scheduling itself, so no `CooperativeExec` is put over
+/// it, and it can take over a parent projection that only picks and renames
+/// columns (`with_output`): a CTE read in many places otherwise carries one
+/// such operator per reference.
 #[derive(Debug, Clone)]
 pub struct SharedCteRefExec {
     name: String,
     result: Arc<SharedCteResult>,
+    /// The columns of the CTE's rows this reference outputs, in order.
+    columns: Option<Vec<usize>>,
     cache: Arc<PlanProperties>,
 }
 
@@ -164,17 +172,60 @@ impl SharedCteRefExec {
         Self {
             name,
             result,
-            cache: single_partition(schema),
+            columns: None,
+            cache: cooperative_partition(schema),
         }
     }
+
+    /// This reference with only `columns` of its current output, named by
+    /// `schema`.
+    pub fn with_output(&self, columns: &[usize], schema: SchemaRef) -> Self {
+        let columns = match &self.columns {
+            Some(current) => columns.iter().map(|i| current[*i]).collect(),
+            None => columns.to_vec(),
+        };
+        Self {
+            name: self.name.clone(),
+            result: Arc::clone(&self.result),
+            columns: Some(columns),
+            cache: cooperative_partition(schema),
+        }
+    }
+}
+
+fn cooperative_partition(schema: SchemaRef) -> Arc<PlanProperties> {
+    let properties = Arc::unwrap_or_clone(single_partition(schema));
+    Arc::new(properties.with_scheduling_type(SchedulingType::Cooperative))
+}
+
+/// `batch`'s `columns`, named by `schema`.
+pub fn select_columns(
+    batch: &RecordBatch,
+    columns: &[usize],
+    schema: &SchemaRef,
+) -> Result<RecordBatch> {
+    let arrays = columns
+        .iter()
+        .map(|i| Arc::clone(batch.column(*i)))
+        .collect();
+    Ok(RecordBatch::try_new_with_options(
+        Arc::clone(schema),
+        arrays,
+        &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+    )?)
 }
 
 impl DisplayAs for SharedCteRefExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         match t {
-            DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "SharedCteRefExec: name={}", self.name)
-            }
+            DisplayFormatType::Default | DisplayFormatType::Verbose => match &self.columns {
+                Some(columns) => write!(
+                    f,
+                    "SharedCteRefExec: name={}, columns={columns:?}",
+                    self.name
+                ),
+                None => write!(f, "SharedCteRefExec: name={}", self.name),
+            },
             DisplayFormatType::TreeRender => write!(f, "name={}", self.name),
         }
     }
@@ -241,17 +292,25 @@ impl ExecutionPlan for SharedCteRefExec {
             );
         }
         let result = Arc::clone(&self.result);
+        let columns = self.columns.clone();
+        let schema = self.schema();
+        let output = Arc::clone(&schema);
         let stream = futures::stream::once(async move {
             let batches = result.get(context).await?;
-            Ok::<_, DataFusionError>(futures::stream::iter(
-                batches.iter().cloned().map(Ok).collect::<Vec<_>>(),
-            ))
+            let batches = match &columns {
+                Some(columns) => batches
+                    .iter()
+                    .map(|b| select_columns(b, columns, &output))
+                    .collect::<Vec<_>>(),
+                None => batches.iter().cloned().map(Ok).collect::<Vec<_>>(),
+            };
+            Ok::<_, DataFusionError>(futures::stream::iter(batches))
         })
         .try_flatten();
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            self.schema(),
+        Ok(Box::pin(cooperative(RecordBatchStreamAdapter::new(
+            schema,
             stream.boxed(),
-        )))
+        ))))
     }
 }
 
