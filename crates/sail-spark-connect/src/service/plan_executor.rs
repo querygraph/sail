@@ -174,6 +174,8 @@ pub(crate) async fn handle_execute_relation(
         reuse.clear_plans()?;
         return handle_execute_plan(ctx, relation.try_into()?, metadata, ExecutorMode::Query).await;
     }
+    let mut relation = relation;
+    fill_slots_from_arguments(&mut relation, &reuse)?;
     // The plan cache (`sail_common_datafusion::plan_reuse`) is keyed by the
     // relation as received, so that a cached query is not even parsed again.
     // The client numbers every DataFrame it builds (`plan_id`, in the
@@ -301,6 +303,58 @@ fn relation_key(relation: &Relation) -> String {
         hasher.finish()
     };
     format!("{:016x}{:016x}{}", hash(0), hash(1), bytes.len())
+}
+
+/// The prefix of a named argument whose value fills a slot.
+const SLOT_ARGUMENT_PREFIX: &str = "__slot_";
+
+/// Fills slots from the query's `__slot_NAME` named arguments, each a binary
+/// literal holding an Arrow IPC stream, and removes them from the relation
+/// (so they are neither part of the plan cache's key nor parameters of the
+/// query). A query thus carries its own inputs in the one request that runs
+/// it. The slot NAME must exist as a slot view with the same column types.
+fn fill_slots_from_arguments(relation: &mut Relation, reuse: &PlanReuse) -> SparkResult<()> {
+    use crate::spark::connect::expression::ExprType;
+    use crate::spark::connect::expression::literal::LiteralType;
+
+    let Some(relation::RelType::Sql(sql)) = relation.rel_type.as_mut() else {
+        return Ok(());
+    };
+    let names: Vec<String> = sql
+        .named_arguments
+        .keys()
+        .filter(|k| k.starts_with(SLOT_ARGUMENT_PREFIX))
+        .cloned()
+        .collect();
+    for key in names {
+        let Some(expression) = sql.named_arguments.remove(&key) else {
+            continue;
+        };
+        let bytes = match expression.expr_type {
+            Some(ExprType::Literal(literal)) => match literal.literal_type {
+                Some(LiteralType::Binary(bytes)) => bytes,
+                _ => {
+                    return Err(SparkError::invalid(format!(
+                        "slot argument {key} must be a binary Arrow IPC stream"
+                    )));
+                }
+            },
+            _ => {
+                return Err(SparkError::invalid(format!(
+                    "slot argument {key} must be a literal"
+                )));
+            }
+        };
+        let reader = datafusion::arrow::ipc::reader::StreamReader::try_new(
+            std::io::Cursor::new(bytes),
+            None,
+        )?;
+        let schema = reader.schema();
+        let batches = reader.collect::<Result<Vec<_>, _>>()?;
+        let name = &key[SLOT_ARGUMENT_PREFIX.len()..];
+        reuse.replace_slot_rows(name, &schema, batches)?;
+    }
+    Ok(())
 }
 
 fn config_value(spark: &SparkSession, key: &str) -> SparkResult<Option<String>> {
