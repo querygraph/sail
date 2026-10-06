@@ -226,6 +226,9 @@ hdfs-native-object-store = "0.16.0"
 # You can use `path = "..."` to temporarily point to your local copy of the crates to speed up local development.
 # datafusion-common 55.1.0 with cheap equality for nested scalars (apache/datafusion#26065).
 datafusion-common = { path = "vendor/datafusion-common" }
+# datafusion-physical-expr-common 55.1.0 with a cheap output bytes metric
+# (see vendor/datafusion-physical-expr-common/src/metrics/baseline.rs).
+datafusion-physical-expr-common = { path = "vendor/datafusion-physical-expr-common" }
 
 [profile.release]
 # https://doc.rust-lang.org/cargo/reference/profiles.html#release
