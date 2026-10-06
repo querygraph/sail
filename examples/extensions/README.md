@@ -1,4 +1,4 @@
-# Two native extensions on Sail
+# Native extensions on Sail
 
 For a design review, start at the shared
 [Sail Extensions review request](../../docs/development/extensions/SAIL-EXTENSIONS-REVIEW-REQUEST.md).
@@ -36,6 +36,9 @@ separates the original findings, implemented corrections and remaining acceptanc
   Python wheel through DataFusion FFI. Spark SQL, DataFrame expressions and
   Apache Sedona's unmodified Connect helpers call them by name. Ordinary Sail
   spatial joins evaluate those predicates.
+- **[Second String](second-string/README.md):** sixteen native string similarity
+  and phonetic functions, plus configurable variants, preserving the Spark
+  Second String source semantics through a separate Arrow FFI wheel.
 - **Nutmeg graph tables:** normal Sail relations with degree, triplet and bounded
   walk helpers compiled into DataFusion joins/aggregations. This path runs on
   workers with extensions disabled and constructs no CSR.
@@ -44,7 +47,7 @@ separates the original findings, implemented corrections and remaining acceptanc
   inputs atomically, including every partition. Reads pin a graph revision and
   stream results through DataFusion FFI.
 
-Both packages have independent Cargo workspaces and no Sail engine dependency.
+These packages have independent Cargo workspaces and no Sail engine dependency.
 Nutmeg shares a small dependency-free memory-lease ABI definition with Sail.
 The host and plugins use DataFusion 55.1.0 and Arrow 59.3.0. This is an experimental
 Python bootstrap API with API/DataFusion/Arrow version checks, not a stable binary

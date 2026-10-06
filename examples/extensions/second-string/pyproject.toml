@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "sail-second-string-extension"
+version = "0.1.0"
+description = "Native Spark Second String metrics for Sail"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+
+[project.optional-dependencies]
+client = ["pyspark[connect]>=4.0.1,<4.1"]
+
+[project.entry-points."pysail.extensions"]
+second_string = "sail_second_string:extension"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "sail_second_string._native"
+python-source = "python"
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
