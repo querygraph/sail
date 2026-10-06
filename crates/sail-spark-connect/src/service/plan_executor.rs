@@ -176,7 +176,7 @@ pub(crate) async fn handle_execute_relation(
     // relation as received, so that a cached query is not even parsed again.
     // The client numbers every DataFrame it builds (`plan_id`, in the
     // relation's common fields), so the key leaves that out.
-    let key = format!("{:?}", relation.rel_type);
+    let key = relation_key(&relation);
     let plan = match reuse.cached_plan(&key)? {
         Some(plan) => plan,
         None => {
@@ -218,6 +218,33 @@ pub(crate) async fn handle_execute_relation(
         operation_id,
         rx,
     ))
+}
+
+/// The plan cache key of a relation: a 128-bit hash of its protobuf
+/// encoding without the common fields. Formatting a large query's relation
+/// for the key cost as much as running its cached plan.
+fn relation_key(relation: &Relation) -> String {
+    use std::hash::{BuildHasher, Hasher};
+
+    use prost::Message;
+
+    let bytes = relation.rel_type.as_ref().map(|r| {
+        Relation {
+            common: None,
+            rel_type: Some(r.clone()),
+        }
+        .encode_to_vec()
+    });
+    let bytes = bytes.unwrap_or_default();
+    let hash = |seed: u64| {
+        let mut hasher =
+            std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default()
+                .build_hasher();
+        hasher.write_u64(seed);
+        hasher.write(&bytes);
+        hasher.finish()
+    };
+    format!("{:016x}{:016x}{}", hash(0), hash(1), bytes.len())
 }
 
 fn config_value(spark: &SparkSession, key: &str) -> SparkResult<Option<String>> {
