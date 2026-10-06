@@ -2,6 +2,7 @@
 members = [
     "crates/*",
 ]
+exclude = ["vendor"]
 resolver = "2"
 
 [workspace.package]
@@ -223,6 +224,8 @@ hdfs-native-object-store = "0.16.0"
 [patch.crates-io]
 # Override dependencies to use our forked versions.
 # You can use `path = "..."` to temporarily point to your local copy of the crates to speed up local development.
+# datafusion-common 55.1.0 with cheap equality for nested scalars (apache/datafusion#26065).
+datafusion-common = { path = "vendor/datafusion-common" }
 
 [profile.release]
 # https://doc.rust-lang.org/cargo/reference/profiles.html#release
