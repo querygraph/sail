@@ -11,7 +11,7 @@ use datafusion::physical_plan::{
     ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     ReplaceChildrenOptions, SendableRecordBatchStream, collect,
 };
-use datafusion_common::tree_node::TreeNodeRecursion;
+use datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion_common::{DataFusionError, Result, internal_err};
 use futures::future::{BoxFuture, FutureExt, Shared};
 use futures::{StreamExt, TryStreamExt};
@@ -109,6 +109,37 @@ impl SharedCteResult {
         *self.lock()? = None;
         Ok(())
     }
+
+    /// The batches, if the computation has finished.
+    pub fn finished(&self) -> Result<Option<Arc<Vec<RecordBatch>>>> {
+        let started = self.lock()?.clone();
+        match started.and_then(|f| f.now_or_never()) {
+            Some(Ok(batches)) => Ok(Some(batches)),
+            Some(Err(e)) => Err(DataFusionError::Shared(e)),
+            None => Ok(None),
+        }
+    }
+}
+
+/// The schema and finished batches of the shared CTE `name` in `plan`: what a
+/// query computed for that CTE, once the query has run.
+pub fn shared_cte_batches(
+    plan: &Arc<dyn ExecutionPlan>,
+    name: &str,
+) -> Result<Option<(SchemaRef, Arc<Vec<RecordBatch>>)>> {
+    let mut found = None;
+    plan.apply(|node| {
+        if let Some(with) = node.downcast_ref::<WithSharedCtesExec>()
+            && let Some(i) = with.names.iter().position(|n| n.eq_ignore_ascii_case(name))
+        {
+            if let Some(batches) = with.results[i].finished()? {
+                found = Some((with.children[i].schema(), batches));
+                return Ok(TreeNodeRecursion::Stop);
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    Ok(found)
 }
 
 fn single_partition(schema: SchemaRef) -> Arc<PlanProperties> {

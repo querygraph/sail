@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use datafusion::arrow::compute::concat_batches;
-use datafusion::physical_plan::{ExecutionPlan, execute_stream};
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream, execute_stream};
 use datafusion::prelude::SessionContext;
 use fastrace::Span;
 use fastrace::collector::SpanContext;
@@ -14,6 +15,7 @@ use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::plan_reuse::{
     PLAN_CACHE_OPTION, PlanReuse, TARGET_PARTITIONS_OPTION, reset_plan_keep_properties,
+    result_slot_name,
 };
 use sail_common_datafusion::session::job::JobService;
 use sail_plan::{resolve_and_execute_plan, resolve_and_plan_physical};
@@ -177,6 +179,10 @@ pub(crate) async fn handle_execute_relation(
     // The client numbers every DataFrame it builds (`plan_id`, in the
     // relation's common fields), so the key leaves that out.
     let key = relation_key(&relation);
+    let result_slot = match &relation.rel_type {
+        Some(relation::RelType::Sql(sql)) => result_slot_name(&sql.query),
+        _ => None,
+    };
     let plan = match reuse.cached_plan(&key)? {
         Some(plan) => plan,
         None => {
@@ -198,12 +204,35 @@ pub(crate) async fn handle_execute_relation(
         }
     };
     let plan = reset_plan_keep_properties(plan)?;
+    if let Some((name, Some(cte))) = result_slot {
+        // The query's rows go to the client; when they have all gone, the
+        // rows it computed for the shared CTE go to the slot.
+        let stream = execute_stream(Arc::clone(&plan), ctx.task_ctx())?;
+        let stream = keep_cte_in_slot(stream, plan, cte, name, Arc::clone(&reuse));
+        return execute_stream_plan(&spark, stream, metadata);
+    }
+    if let Some((name, None)) = result_slot {
+        // The result goes to a slot on the server, not to the client.
+        let schema = plan.schema();
+        let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx()).await?;
+        reuse.replace_slot_rows(&name, &schema, batches)?;
+        let empty = Arc::new(datafusion::physical_plan::empty::EmptyExec::new(schema));
+        return execute_physical_plan(ctx, &spark, empty, metadata, ExecutorMode::Query).await;
+    }
     // A cached plan runs here, in the server process, not through the job
     // runner: the slots it reads live in this process, and the runner's
     // per-operator tracing costs more than the work of a small plan.
+    let stream = execute_stream(plan, ctx.task_ctx())?;
+    execute_stream_plan(&spark, stream, metadata)
+}
+
+fn execute_stream_plan(
+    spark: &SparkSession,
+    stream: SendableRecordBatchStream,
+    metadata: ExecutorMetadata,
+) -> SparkResult<ExecutePlanResponseStream> {
     let span = Span::root("handle_execute_plan", SpanContext::random());
     let _guard = span.set_local_parent();
-    let stream = execute_stream(plan, ctx.task_ctx())?;
     let operation_id = metadata.operation_id.clone();
     let executor = Executor::new(
         metadata,
@@ -218,6 +247,33 @@ pub(crate) async fn handle_execute_relation(
         operation_id,
         rx,
     ))
+}
+
+/// `stream`, which, when it ends, puts the rows `plan` computed for its
+/// shared CTE `cte` into the slot `slot`.
+fn keep_cte_in_slot(
+    stream: SendableRecordBatchStream,
+    plan: Arc<dyn ExecutionPlan>,
+    cte: String,
+    slot: String,
+    reuse: Arc<PlanReuse>,
+) -> SendableRecordBatchStream {
+    let schema = stream.schema();
+    let mut stream = stream;
+    let output = async_stream::try_stream! {
+        while let Some(batch) = futures::StreamExt::next(&mut stream).await {
+            yield batch?;
+        }
+        match sail_physical_plan::shared_cte::shared_cte_batches(&plan, &cte)? {
+            Some((schema, batches)) => {
+                reuse.replace_slot_rows(&slot, &schema, batches.as_ref().clone())?;
+            }
+            None => Err(datafusion::common::DataFusionError::Internal(format!(
+                "the query computed no shared CTE {cte} for slot {slot}"
+            )))?,
+        }
+    };
+    Box::pin(RecordBatchStreamAdapter::new(schema, output))
 }
 
 /// The plan cache key of a relation: a 128-bit hash of its protobuf

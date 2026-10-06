@@ -25,7 +25,9 @@ use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::array::RecordBatchOptions;
+use datafusion::arrow::compute::cast;
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::Session;
 use datafusion::datasource::TableProvider;
@@ -238,6 +240,14 @@ impl PlanReuse {
         schema: SchemaRef,
         batches: Vec<RecordBatch>,
     ) -> Result<SlotTable> {
+        // A slot's schema is its rows' schema with every field nullable and
+        // no metadata, so rows of the same columns keep the slot whichever
+        // plan or upload produced them.
+        let schema = nullable_schema(&schema);
+        let batches = batches
+            .into_iter()
+            .map(|b| conform_batch(b, &schema))
+            .collect::<Result<Vec<_>>>()?;
         let Ok(mut slots) = self.slots.lock() else {
             return internal_err!("plan reuse slots are poisoned");
         };
@@ -260,6 +270,48 @@ impl PlanReuse {
         slots.insert(name.to_string(), Arc::clone(&slot));
         self.clear_plans()?;
         Ok(SlotTable { slot })
+    }
+
+    /// Replaces the rows of an existing slot, as a query's result slot: the
+    /// slot must exist (as a slot view) with the same columns, since a new
+    /// slot would not be the one its view reads.
+    pub fn replace_slot_rows(
+        &self,
+        name: &str,
+        schema: &SchemaRef,
+        batches: Vec<RecordBatch>,
+    ) -> Result<()> {
+        let schema = nullable_schema(schema);
+        let Ok(slots) = self.slots.lock() else {
+            return internal_err!("plan reuse slots are poisoned");
+        };
+        let Some(slot) = slots.get(name) else {
+            return internal_err!("no slot view {name} to hold the result");
+        };
+        // Columns are matched by position and type: a CTE's rows carry the
+        // plan's internal column names, not the view's.
+        let same_types = slot.schema.fields().len() == schema.fields().len()
+            && slot
+                .schema
+                .fields()
+                .iter()
+                .zip(schema.fields())
+                .all(|(a, b)| a.data_type() == b.data_type());
+        if !same_types {
+            return internal_err!(
+                "the result does not have the columns of slot view {name}: {schema:?} against {:?}",
+                slot.schema
+            );
+        }
+        let batches = batches
+            .into_iter()
+            .map(|b| conform_batch(b, &slot.schema))
+            .collect::<Result<Vec<_>>>()?;
+        let Ok(mut current) = slot.batches.write() else {
+            return internal_err!("slot {name} is poisoned");
+        };
+        *current = Arc::new(batches);
+        Ok(())
     }
 
     pub fn cached_plan(&self, key: &str) -> Result<Option<Arc<dyn ExecutionPlan>>> {
@@ -319,4 +371,80 @@ pub fn reset_plan_keep_properties(plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dy
         plan
     };
     plan.reset_state()
+}
+
+fn nullable_type(data_type: &DataType) -> DataType {
+    match data_type {
+        DataType::Struct(fields) => DataType::Struct(
+            fields
+                .iter()
+                .map(|f| nullable_field(f))
+                .collect::<Vec<_>>()
+                .into(),
+        ),
+        DataType::List(f) => DataType::List(Arc::new(nullable_field(f))),
+        DataType::LargeList(f) => DataType::LargeList(Arc::new(nullable_field(f))),
+        DataType::FixedSizeList(f, n) => DataType::FixedSizeList(Arc::new(nullable_field(f)), *n),
+        other => other.clone(),
+    }
+}
+
+fn nullable_field(field: &Field) -> Field {
+    Field::new(field.name(), nullable_type(field.data_type()), true)
+}
+
+/// `schema` with every field, nested ones included, nullable, and no metadata.
+pub fn nullable_schema(schema: &Schema) -> SchemaRef {
+    Arc::new(Schema::new(
+        schema
+            .fields()
+            .iter()
+            .map(|f| nullable_field(f))
+            .collect::<Vec<_>>(),
+    ))
+}
+
+/// `batch` with `schema`, which differs from the batch's at most in
+/// nullability and metadata.
+fn conform_batch(batch: RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
+    if batch.schema() == *schema {
+        return Ok(batch);
+    }
+    let columns = batch
+        .columns()
+        .iter()
+        .zip(schema.fields())
+        .map(|(c, f)| {
+            if c.data_type() == f.data_type() {
+                Ok(Arc::clone(c))
+            } else {
+                Ok(cast(c, f.data_type())?)
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(RecordBatch::try_new_with_options(
+        Arc::clone(schema),
+        columns,
+        &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+    )?)
+}
+
+/// The slot a query's result goes to, named by a leading
+/// `/* sail.result_slot=NAME */` comment: the query's rows are kept in that
+/// slot instead of being returned. With two slots read and written in turn,
+/// a step function (a game's tic) keeps its state on the server.
+///
+/// `/* sail.result_slot=NAME:CTE */` keeps instead the rows the query computed
+/// for its shared CTE `CTE` (a CTE it reads more than once), and the query's
+/// own rows go to the client as usual. Returns (slot, CTE).
+pub fn result_slot_name(sql: &str) -> Option<(String, Option<String>)> {
+    let rest = sql.trim_start().strip_prefix("/*")?;
+    let (comment, _) = rest.split_once("*/")?;
+    let spec = comment.trim().strip_prefix("sail.result_slot=")?.trim();
+    let (name, cte) = match spec.split_once(':') {
+        Some((name, cte)) => (name.trim(), Some(cte.trim())),
+        None => (spec, None),
+    };
+    let valid = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    (valid(name) && cte.is_none_or(valid)).then(|| (name.to_string(), cte.map(str::to_string)))
 }
