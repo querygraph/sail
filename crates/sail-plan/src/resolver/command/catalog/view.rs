@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use datafusion::datasource::provider_as_source;
+use datafusion::physical_plan::collect;
 use datafusion_common::TableReference;
-use datafusion_expr::{LogicalPlan, SubqueryAlias};
+use datafusion_expr::{LogicalPlan, LogicalPlanBuilder, SubqueryAlias};
 use sail_catalog::command::CatalogCommand;
 use sail_catalog::manager::CatalogManager;
 use sail_catalog::manager::tracker::CatalogLogicalPlanId;
@@ -12,6 +14,7 @@ use sail_catalog::provider::{
 use sail_common::spec;
 use sail_common_datafusion::catalog::TemporaryViewSource;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
+use sail_common_datafusion::plan_reuse::{PlanReuse, is_slot_view};
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 
 use crate::error::{PlanError, PlanResult};
@@ -139,6 +142,12 @@ impl PlanResolver<'_> {
             None => (Self::get_field_names(input.schema(), state)?, vec![]),
         };
         let input = rename_logical_plan(input, &fields)?;
+        let name = String::from(view.clone());
+        let input = if !is_global && is_slot_view(self.config.slot_views.as_deref(), &name) {
+            self.fill_slot(&name, input).await?
+        } else {
+            input
+        };
         let manager = self.ctx.extension::<CatalogManager>()?;
         let input: CatalogLogicalPlanId = manager.track_logical_plan(Arc::new(input))?;
         let command = CatalogCommand::CreateTemporaryView {
@@ -155,6 +164,25 @@ impl PlanResolver<'_> {
             },
         };
         self.resolve_catalog_command(command)
+    }
+
+    /// Runs a slot view's query now and keeps its rows in the session's slot
+    /// of that name; the view becomes a scan of the slot
+    /// (`sail_common_datafusion::plan_reuse`).
+    async fn fill_slot(&self, name: &str, input: LogicalPlan) -> PlanResult<LogicalPlan> {
+        let session = self.ctx.state();
+        let optimized = session.optimize(&input)?;
+        let physical = session
+            .query_planner()
+            .create_physical_plan(&optimized, &session)
+            .await?;
+        let schema = physical.schema();
+        let batches = collect(physical, self.ctx.task_ctx()).await?;
+        let table = self
+            .ctx
+            .extension::<PlanReuse>()?
+            .update_slot(name, schema, batches)?;
+        Ok(LogicalPlanBuilder::scan(name, provider_as_source(Arc::new(table)), None)?.build()?)
     }
 
     pub(in super::super) async fn resolve_catalog_drop_view(

@@ -223,6 +223,10 @@ impl TryFrom<&SparkRuntimeConfig> for PlanConfig {
     fn try_from(config: &SparkRuntimeConfig) -> SparkResult<Self> {
         let mut output = PlanConfig::new()?;
 
+        output.slot_views = config
+            .get_option(sail_common_datafusion::plan_reuse::SLOT_VIEWS_OPTION)
+            .map(|x| x.to_string());
+
         if let Some(value) = config
             .get_option(SparkConfigKey::SPARK_SQL_SESSION_TIME_ZONE)
             .map(|x| x.to_string())

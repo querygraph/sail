@@ -36,10 +36,31 @@ pub async fn resolve_and_execute_plan(
     config: Arc<PlanConfig>,
     plan: spec::Plan,
 ) -> PlanResult<(Arc<dyn ExecutionPlan>, Vec<StringifiedPlan>)> {
+    resolve_and_plan(ctx, config, plan, true).await
+}
+
+/// [`resolve_and_execute_plan`] without the stringified plans, which cost a
+/// noticeable share of planning a large query when nothing reads them.
+pub async fn resolve_and_plan_physical(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    plan: spec::Plan,
+) -> PlanResult<Arc<dyn ExecutionPlan>> {
+    Ok(resolve_and_plan(ctx, config, plan, false).await?.0)
+}
+
+async fn resolve_and_plan(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    plan: spec::Plan,
+    with_info: bool,
+) -> PlanResult<(Arc<dyn ExecutionPlan>, Vec<StringifiedPlan>)> {
     let mut info = vec![];
     let resolver = PlanResolver::new(ctx, config);
     let NamedPlan { plan, fields } = resolver.resolve_named_plan(plan).await?;
-    info.push(plan.to_stringified(PlanType::InitialLogicalPlan));
+    if with_info {
+        info.push(plan.to_stringified(PlanType::InitialLogicalPlan));
+    }
     let df = execute_logical_plan(ctx, plan).await?;
     let (session_state, plan) = df.into_parts();
     let plan = session_state.optimize(&plan)?;
@@ -48,7 +69,9 @@ pub async fn resolve_and_execute_plan(
     } else {
         plan
     };
-    info.push(plan.to_stringified(PlanType::FinalLogicalPlan));
+    if with_info {
+        info.push(plan.to_stringified(PlanType::FinalLogicalPlan));
+    }
     let plan = session_state
         .query_planner()
         .create_physical_plan(&plan, &session_state)
@@ -58,9 +81,11 @@ pub async fn resolve_and_execute_plan(
     } else {
         plan
     };
-    info.push(StringifiedPlan::new(
-        PlanType::FinalPhysicalPlan,
-        displayable(plan.as_ref()).indent(true).to_string(),
-    ));
+    if with_info {
+        info.push(StringifiedPlan::new(
+            PlanType::FinalPhysicalPlan,
+            displayable(plan.as_ref()).indent(true).to_string(),
+        ));
+    }
     Ok((plan, info))
 }

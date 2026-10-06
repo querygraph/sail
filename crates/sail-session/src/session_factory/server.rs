@@ -15,6 +15,7 @@ use sail_catalog_system::service::SystemTableService;
 use sail_common::actor::ActorHandle;
 use sail_common::config::{AppConfig, ExecutionMode};
 use sail_common::runtime::RuntimeHandle;
+use sail_common_datafusion::plan_reuse::PlanReuse;
 use sail_common_datafusion::session::activity::ActivityTracker;
 use sail_common_datafusion::session::job::{JobRunner, JobService};
 use sail_common_datafusion::session::repartition::RepartitionBufferConfig;
@@ -126,7 +127,8 @@ impl ServerSessionFactory {
                 self.config.cluster.task_stream_buffer,
             )))
             .with_extension(Arc::new(self.create_system_table_service(info)?))
-            .with_extension(Arc::new(DeltaTableCache::default()));
+            .with_extension(Arc::new(DeltaTableCache::default()))
+            .with_extension(Arc::new(PlanReuse::default()));
         self.apply_execution_config(&mut config)?;
         self.apply_execution_parquet_config(&mut config);
         self.apply_optimizer_config(&mut config)?;

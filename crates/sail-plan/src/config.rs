@@ -67,6 +67,9 @@ pub struct PlanConfig {
     /// Whether `COUNT()` is accepted with no arguments. Spark's legacy behavior returns zero;
     /// it does not interpret the call as `COUNT(*)`.
     pub legacy_allow_parameterless_count: bool,
+    /// The temporary views whose rows are kept in plan-reuse slots
+    /// (`spark.sail.slotViews`, comma-separated).
+    pub slot_views: Option<String>,
 }
 
 impl PlanConfig {
@@ -99,6 +102,7 @@ impl Default for PlanConfig {
             pivot_max_values: 10000,
             tvf_allow_multiple_table_arguments: false,
             legacy_allow_parameterless_count: false,
+            slot_views: None,
         }
     }
 }

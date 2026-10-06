@@ -1,7 +1,10 @@
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use datafusion::arrow::compute::concat_batches;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::execution_plan::reset_plan_states;
 use datafusion::prelude::SessionContext;
 use fastrace::Span;
 use fastrace::collector::SpanContext;
@@ -10,8 +13,9 @@ use futures::stream;
 use log::debug;
 use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
+use sail_common_datafusion::plan_reuse::{PLAN_CACHE_OPTION, PlanReuse};
 use sail_common_datafusion::session::job::JobService;
-use sail_plan::resolve_and_execute_plan;
+use sail_plan::{resolve_and_execute_plan, resolve_and_plan_physical};
 use tonic::Status;
 use tonic::codegen::tokio_stream::Stream;
 
@@ -120,7 +124,7 @@ async fn handle_execute_plan(
     let spark = ctx.extension::<SparkSession>()?;
     let service = ctx.extension::<JobService>()?;
     let operation_id = metadata.operation_id.clone();
-    let (plan, _) = resolve_and_execute_plan(ctx, spark.plan_config()?, plan).await?;
+    let plan = plan_or_reuse(ctx, &spark, plan).await?;
     let stream = {
         let span = Span::enter_with_parent("JobRunner::execute", &span);
         service.runner().execute(ctx, plan).in_span(span).await?
@@ -139,6 +143,41 @@ async fn handle_execute_plan(
         operation_id,
         rx,
     ))
+}
+
+/// The physical plan of `plan`: from the session's plan cache when it is on
+/// and holds this query (with its operator state reset), else planned anew
+/// (`sail_common_datafusion::plan_reuse`).
+async fn plan_or_reuse(
+    ctx: &SessionContext,
+    spark: &SparkSession,
+    plan: spec::Plan,
+) -> SparkResult<Arc<dyn ExecutionPlan>> {
+    let reuse = ctx.extension::<PlanReuse>()?;
+    let enabled = spark
+        .get_config_option(vec![PLAN_CACHE_OPTION.to_string()])?
+        .into_iter()
+        .next()
+        .and_then(|kv| kv.value)
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("true"));
+    if !enabled {
+        reuse.clear_plans()?;
+        return Ok(resolve_and_plan_physical(ctx, spark.plan_config()?, plan).await?);
+    }
+    let key = match &plan {
+        // The client numbers every DataFrame it builds (`plan_id`); the same
+        // query sent again is the same plan.
+        spec::Plan::Query(query) => format!("{:?}", query.node),
+        spec::Plan::Command(_) => {
+            return Ok(resolve_and_plan_physical(ctx, spark.plan_config()?, plan).await?);
+        }
+    };
+    if let Some(cached) = reuse.cached_plan(&key)? {
+        return Ok(reset_plan_states(cached)?);
+    }
+    let physical = resolve_and_plan_physical(ctx, spark.plan_config()?, plan).await?;
+    reuse.cache_plan(key, Arc::clone(&physical))?;
+    Ok(reset_plan_states(physical)?)
 }
 
 pub(crate) async fn handle_execute_relation(
