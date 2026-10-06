@@ -34,6 +34,7 @@ mod explicit_repartition;
 mod filter_pushdown;
 mod fold_leaf_projections;
 mod join_reorder;
+mod merge_projections;
 mod projection_pushdown;
 mod scan_partitions;
 mod select_semi_join_build_side;
@@ -77,6 +78,7 @@ pub fn get_physical_optimizers(
     rules.push(Arc::new(TopKRepartition::new()));
     rules.push(Arc::new(LambdaSafeProjectionPushdown::new()));
     rules.push(Arc::new(PushdownSort::new()));
+    rules.push(Arc::new(merge_projections::MergeProjections));
     rules.push(Arc::new(fold_leaf_projections::FoldLeafProjections));
     rules.push(Arc::new(EnsureCooperative::new()));
     rules.push(Arc::new(PostFilterPushdown));

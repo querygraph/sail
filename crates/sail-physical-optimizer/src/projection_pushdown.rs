@@ -93,7 +93,7 @@ fn expression_contains_lambda_variable(expression: &Arc<dyn PhysicalExpr>) -> Re
     expression.exists(|expression| Ok(expression.is::<LambdaVariable>()))
 }
 
-fn projection_contains_lambda_variable(projection: &ProjectionExec) -> Result<bool> {
+pub(crate) fn projection_contains_lambda_variable(projection: &ProjectionExec) -> Result<bool> {
     for projection_expr in projection.expr() {
         if expression_contains_lambda_variable(&projection_expr.expr)? {
             return Ok(true);

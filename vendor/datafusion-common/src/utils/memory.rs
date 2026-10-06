@@ -167,9 +167,8 @@ impl RecordBatchMemoryCounter {
         let mut total_size = 0;
 
         for array in batch.columns() {
-            let array_data = array.to_data();
-            count_array_data_memory_size(
-                &array_data,
+            count_array_memory_size(
+                array.as_ref(),
                 &mut self.counted_buffers,
                 &mut total_size,
             );
@@ -186,6 +185,65 @@ impl RecordBatchMemoryCounter {
 }
 
 /// Count the memory usage of `array_data` and its children recursively.
+/// [`count_array_data_memory_size`] without building `ArrayData` for the
+/// common array types: their buffers are read from the arrays. (Vendored
+/// change for Sail: converting wide struct columns to `ArrayData` for every
+/// batch, in every hash join build, cost more than the joins.)
+fn count_array_memory_size(
+    array: &dyn arrow::array::Array,
+    counted_buffers: &mut HashSet<NonZero<usize>>,
+    total_size: &mut usize,
+) {
+    use arrow::array::AsArray;
+    use arrow::buffer::Buffer;
+    use arrow::datatypes::DataType;
+
+    let mut count = |buffer: &Buffer| {
+        if counted_buffers.insert(buffer.data_ptr().addr()) {
+            *total_size += buffer.capacity();
+        }
+    };
+    if let Some(nulls) = array.nulls() {
+        count(nulls.inner().inner());
+    }
+    let data_type = array.data_type();
+    if data_type.is_primitive() {
+        arrow::array::downcast_primitive_array!(
+            array => count(array.values().inner()),
+            _ => {}
+        );
+        return;
+    }
+    match data_type {
+        DataType::Boolean => count(array.as_boolean().values().inner()),
+        DataType::Utf8 => {
+            let a = array.as_string::<i32>();
+            count(a.offsets().inner().inner());
+            count(a.values());
+        }
+        DataType::LargeUtf8 => {
+            let a = array.as_string::<i64>();
+            count(a.offsets().inner().inner());
+            count(a.values());
+        }
+        DataType::Binary => {
+            let a = array.as_binary::<i32>();
+            count(a.offsets().inner().inner());
+            count(a.values());
+        }
+        DataType::Struct(_) => {
+            for column in array.as_struct().columns() {
+                count_array_memory_size(column.as_ref(), counted_buffers, total_size);
+            }
+        }
+        _ => {
+            // The null buffer was counted above; ArrayData counts it again
+            // only if it is not already in the set.
+            count_array_data_memory_size(&array.to_data(), counted_buffers, total_size);
+        }
+    }
+}
+
 fn count_array_data_memory_size(
     array_data: &ArrayData,
     counted_buffers: &mut HashSet<NonZero<usize>>,

@@ -36,12 +36,14 @@ use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExp
 use datafusion::physical_plan::coop::cooperative;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType, SchedulingType};
 use datafusion::physical_plan::memory::MemoryStream;
+use datafusion::physical_plan::statistics::StatisticsArgs;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     ReplaceChildrenOptions, SendableRecordBatchStream,
 };
+use datafusion_common::stats::Precision;
 use datafusion_common::tree_node::TreeNodeRecursion;
-use datafusion_common::{Result, internal_err};
+use datafusion_common::{Result, Statistics, internal_err};
 use datafusion_expr::{Expr, TableType};
 
 use crate::extension::SessionExtension;
@@ -209,6 +211,21 @@ impl ExecutionPlan for SlotExec {
             children,
             ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
         )
+    }
+
+    /// The slot's row count when asked (inexact: the rows change between
+    /// runs), so a join puts the smaller side on its build side.
+    fn statistics_from_inputs(
+        &self,
+        _input_stats: &[Arc<Statistics>],
+        _args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        let mut statistics = Statistics::new_unknown(&self.schema);
+        if let Ok(batches) = self.slot.current() {
+            let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            statistics.num_rows = Precision::Inexact(rows);
+        }
+        Ok(Arc::new(statistics))
     }
 
     fn execute(
