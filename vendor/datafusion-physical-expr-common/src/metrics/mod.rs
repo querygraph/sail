@@ -1007,3 +1007,16 @@ mod tests {
         );
     }
 }
+
+/// Whether operators record execution metrics: true unless the process was
+/// started with `SAIL_EXECUTION_METRICS=off`. (Vendored change for Sail.) A
+/// plan of thousands of small operators run every few milliseconds spends a
+/// visible share of its time creating, registering, timing and dropping
+/// metrics that nothing reads; with the switch off they are neither
+/// registered nor timed, and `EXPLAIN ANALYZE` shows none.
+pub fn metrics_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !std::env::var("SAIL_EXECUTION_METRICS").is_ok_and(|v| v.eq_ignore_ascii_case("off"))
+    })
+}

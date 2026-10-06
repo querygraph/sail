@@ -126,6 +126,9 @@ impl<'a> MetricBuilder<'a> {
     /// Consume self and create a metric of the specified value
     /// registered with the MetricsSet
     pub fn build(self, value: MetricValue) {
+        if !super::metrics_enabled() {
+            return;
+        }
         let Self {
             labels,
             partition,

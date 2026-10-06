@@ -214,7 +214,7 @@ impl Time {
     pub fn timer(&self) -> ScopedTimerGuard<'_> {
         ScopedTimerGuard {
             inner: self,
-            start: Some(Instant::now()),
+            start: super::metrics_enabled().then(Instant::now),
         }
     }
 
@@ -333,7 +333,7 @@ impl ScopedTimerGuard<'_> {
 
     /// Restarts the timer recording from the current time
     pub fn restart(&mut self) {
-        self.start = Some(Instant::now())
+        self.start = super::metrics_enabled().then(Instant::now)
     }
 
     /// Stop the timer, record the time taken and consume self
