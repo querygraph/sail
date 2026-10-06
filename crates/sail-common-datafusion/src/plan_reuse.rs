@@ -47,6 +47,10 @@ use crate::extension::SessionExtension;
 pub const SLOT_VIEWS_OPTION: &str = "spark.sail.slotViews";
 /// The session option that turns the plan cache on (`true`) or off.
 pub const PLAN_CACHE_OPTION: &str = "spark.sail.planCache";
+/// The session option for the number of partitions that cached plans are
+/// planned for. Queries over a few thousand rows in slots gain nothing from
+/// spreading them over every core, and pay for the repartitioning each run.
+pub const TARGET_PARTITIONS_OPTION: &str = "spark.sail.targetPartitions";
 
 /// The rows of one slot.
 struct Slot {
@@ -289,4 +293,30 @@ pub fn is_slot_view(option: Option<&str>, name: &str) -> bool {
             .split(',')
             .any(|n| n.trim().eq_ignore_ascii_case(name))
     })
+}
+
+/// Resets the operator state of a plan that is about to run again, as
+/// DataFusion's `reset_plan_states` does, but keeps every node's computed
+/// properties: a node whose children are unchanged is only reset, and one
+/// whose children were reset gets them with `ChildrenPropertiesMode::Keep`.
+/// The tree's shape is unchanged, so its properties still hold, and
+/// recomputing them (equivalences, orderings) costs about what planning does.
+pub fn reset_plan_keep_properties(plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+    let children = plan.children();
+    let mut new_children = Vec::with_capacity(children.len());
+    let mut changed = false;
+    for child in children {
+        let reset = reset_plan_keep_properties(Arc::clone(child))?;
+        changed |= !Arc::ptr_eq(&reset, child);
+        new_children.push(reset);
+    }
+    let plan = if changed {
+        plan.replace_children(
+            new_children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Keep),
+        )?
+    } else {
+        plan
+    };
+    plan.reset_state()
 }
