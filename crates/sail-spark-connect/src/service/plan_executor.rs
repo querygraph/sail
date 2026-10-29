@@ -92,6 +92,12 @@ impl Stream for ExecutePlanResponseStream {
                         response.response_type =
                             Some(ResponseType::CheckpointCommandResult(*result));
                     }
+                    ExecutorBatch::PipelineCommandResult(result) => {
+                        response.response_type = Some(ResponseType::PipelineCommandResult(*result));
+                    }
+                    ExecutorBatch::PipelineEventResult(result) => {
+                        response.response_type = Some(ResponseType::PipelineEventResult(*result));
+                    }
                     ExecutorBatch::Schema(schema) => {
                         response.schema = Some(*schema);
                     }

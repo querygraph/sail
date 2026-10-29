@@ -37,6 +37,8 @@ pub enum ExecutorBatch {
     StreamingQueryCommandResult(Box<StreamingQueryCommandResult>),
     StreamingQueryManagerCommandResult(Box<StreamingQueryManagerCommandResult>),
     CheckpointCommandResult(Box<CheckpointCommandResult>),
+    PipelineCommandResult(Box<crate::spark::connect::PipelineCommandResult>),
+    PipelineEventResult(Box<crate::spark::connect::PipelineEventResult>),
     Schema(Box<DataType>),
     Complete,
 }
@@ -144,6 +146,7 @@ struct ExecutorTaskContext {
 
 pub(crate) enum ExecutorMode {
     Query,
+    Outputs(ExecutorOutputStream),
     Command {
         completion: CommandCompletionHandler,
     },
@@ -167,6 +170,7 @@ impl ExecutorMode {
 
 pub(crate) enum ExecutorTaskState {
     Query,
+    Outputs(ExecutorOutputStream),
     Command {
         batches: Vec<RecordBatch>,
         completion: Option<CommandCompletionHandler>,
@@ -226,6 +230,7 @@ impl Executor {
     ) -> Self {
         let state = match mode {
             ExecutorMode::Query => ExecutorTaskState::Query,
+            ExecutorMode::Outputs(stream) => ExecutorTaskState::Outputs(stream),
             ExecutorMode::Command { completion } => ExecutorTaskState::Command {
                 batches: vec![],
                 completion: Some(completion),
@@ -263,6 +268,25 @@ impl Executor {
         }
     }
 
+    /// Execute typed protocol messages with the same replay, heartbeat, and
+    /// interruption lifecycle as record batches.
+    pub(crate) fn with_outputs(
+        metadata: ExecutorMetadata,
+        outputs: ExecutorOutputStream,
+        heartbeat_interval: Duration,
+    ) -> Self {
+        let empty = datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(
+            Arc::new(datafusion::arrow::datatypes::Schema::empty()),
+            stream::empty(),
+        );
+        Self::new(
+            metadata,
+            Box::pin(empty),
+            heartbeat_interval,
+            ExecutorMode::Outputs(outputs),
+        )
+    }
+
     async fn run_internal(
         context: &mut ExecutorTaskContext,
         tx: &mpsc::Sender<SparkResult<ExecutorOutput>>,
@@ -276,6 +300,18 @@ impl Executor {
             tx.send(Ok(output)).await?;
         }
         match &mut context.state {
+            ExecutorTaskState::Outputs(stream) => loop {
+                let item = tokio::select! {
+                    item = stream.next() => item,
+                    _ = tokio::time::sleep(context.heartbeat_interval) => {
+                        Some(Ok(ExecutorOutput::new(ExecutorBatch::Heartbeat)))
+                    }
+                };
+                let Some(item) = item else {
+                    break;
+                };
+                ExecutorTaskContext::send_output(&context.buffer, tx, item?).await?;
+            },
             ExecutorTaskState::Query => {
                 let schema = to_spark_schema(context.stream.schema())?;
                 ExecutorTaskContext::send_output(
