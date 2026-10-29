@@ -10,6 +10,7 @@ pub mod r#gen {
     include!(concat!(env!("OUT_DIR"), "/options/rate.rs"));
     include!(concat!(env!("OUT_DIR"), "/options/console.rs"));
     include!(concat!(env!("OUT_DIR"), "/options/parquet.rs"));
+    include!(concat!(env!("OUT_DIR"), "/options/orc.rs"));
     include!(concat!(env!("OUT_DIR"), "/options/csv.rs"));
     include!(concat!(env!("OUT_DIR"), "/options/json.rs"));
     include!(concat!(env!("OUT_DIR"), "/options/text.rs"));

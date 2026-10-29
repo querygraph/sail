@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     build_data_source_options("Csv", "csv")?;
     build_data_source_options("Json", "json")?;
     build_data_source_options("Parquet", "parquet")?;
+    build_data_source_options("Orc", "orc")?;
     build_data_source_options("Text", "text")?;
     build_data_source_options("Socket", "socket")?;
     build_data_source_options("Rate", "rate")?;

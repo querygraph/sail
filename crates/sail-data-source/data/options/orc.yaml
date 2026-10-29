@@ -1,0 +1,96 @@
+# Sail operational read limits, not Spark type-validity or ORC format limits.
+# Zero is an actual zero budget. Byte limits are capped by the local runtime's
+# finite pool limit and addressability when constructing a reader.
+
+- key: max_encoded_metadata_bytes
+  description: |
+    Maximum combined encoded footer and file metadata bytes.
+    The native reader may read its initial tail of up to 16 KiB before checking
+    the declared metadata lengths. This does not bound encoded stripe data.
+  default:
+    value: "67108864"
+    parser: crate::options::parsers::parse_usize
+  supported: true
+  rust_type: usize
+  scopes:
+    - read
+  origins:
+    - type: option
+      keys:
+        - max_encoded_metadata_bytes
+        - maxEncodedMetadataBytes
+      parser: crate::options::parsers::parse_usize
+    - type: table_property
+      keys:
+        - option.max_encoded_metadata_bytes
+        - option.maxEncodedMetadataBytes
+      parser: crate::options::parsers::parse_usize
+
+- key: max_decoded_metadata_bytes
+  description: |
+    Maximum combined decoded footer and file metadata bytes.
+    This bounds decoded byte counts, not total heap use or retained protobuf objects.
+  default:
+    value: "67108864"
+    parser: crate::options::parsers::parse_usize
+  supported: true
+  rust_type: usize
+  scopes:
+    - read
+  origins:
+    - type: option
+      keys:
+        - max_decoded_metadata_bytes
+        - maxDecodedMetadataBytes
+      parser: crate::options::parsers::parse_usize
+    - type: table_property
+      keys:
+        - option.max_decoded_metadata_bytes
+        - option.maxDecodedMetadataBytes
+      parser: crate::options::parsers::parse_usize
+
+- key: max_decoded_stripe_footer_bytes
+  description: |
+    Maximum decoded bytes of each started stripe's footer before protobuf parsing.
+    This does not impose a cumulative limit on decoded column data or Arrow batches.
+  default:
+    value: "67108864"
+    parser: crate::options::parsers::parse_usize
+  supported: true
+  rust_type: usize
+  scopes:
+    - read
+  origins:
+    - type: option
+      keys:
+        - max_decoded_stripe_footer_bytes
+        - maxDecodedStripeFooterBytes
+      parser: crate::options::parsers::parse_usize
+    - type: table_property
+      keys:
+        - option.max_decoded_stripe_footer_bytes
+        - option.maxDecodedStripeFooterBytes
+      parser: crate::options::parsers::parse_usize
+
+- key: max_schema_depth
+  description: |
+    Maximum schema depth, counting the root STRUCT as depth zero.
+    Applied to the complete file type tree before projection or recursive conversion.
+  default:
+    value: "64"
+    parser: crate::options::parsers::parse_usize
+  supported: true
+  rust_type: usize
+  scopes:
+    - read
+  origins:
+    - type: option
+      keys:
+        - max_schema_depth
+        - maxSchemaDepth
+      parser: crate::options::parsers::parse_usize
+    - type: table_property
+      keys:
+        - option.max_schema_depth
+        - option.maxSchemaDepth
+      parser: crate::options::parsers::parse_usize
