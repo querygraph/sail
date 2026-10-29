@@ -46,6 +46,7 @@ fastrace = { workspace = true }
 pyo3 = { workspace = true }
 
 [dev-dependencies]
+sail-catalog-memory = { path = "../sail-catalog-memory" }
 sail-telemetry = { path = "../sail-telemetry" }
 
 [build-dependencies]

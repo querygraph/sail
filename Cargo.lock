@@ -7836,6 +7836,7 @@ dependencies = [
  "regex",
  "sail-cache",
  "sail-catalog",
+ "sail-catalog-memory",
  "sail-common",
  "sail-common-datafusion",
  "sail-data-source",
