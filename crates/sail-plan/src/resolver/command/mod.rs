@@ -29,6 +29,7 @@ mod update;
 mod variable;
 mod with_relations;
 mod write;
+mod write_schema;
 mod write_stream;
 mod write_v1;
 mod write_v2;

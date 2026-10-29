@@ -938,7 +938,7 @@ impl PlanResolver<'_> {
     ) -> PlanResult<LogicalPlan> {
         let table_schema = Schema::new(info.columns.iter().map(|x| x.field()).collect::<Vec<_>>());
         if input.schema().fields().len() != table_schema.fields().len() {
-            return Err(PlanError::invalid(format!(
+            return Err(PlanError::analysis(format!(
                 "input schema for INSERT has {} fields, but table schema has {} fields",
                 input.schema().fields().len(),
                 table_schema.fields().len()
@@ -972,6 +972,12 @@ impl PlanResolver<'_> {
                             .iter()
                             .filter(|f| f.name().eq_ignore_ascii_case(name))
                             .map(|f| {
+                                super::write_schema::validate_nested_fields(
+                                    f.data_type(),
+                                    field.data_type(),
+                                    name,
+                                    self.config.case_sensitive,
+                                )?;
                                 let expr = self.cast_to_column(
                                     col(Column::from_name(f.name())),
                                     field.data_type(),
