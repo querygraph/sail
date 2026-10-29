@@ -29,19 +29,19 @@ class Result(unittest.TextTestResult):
         super().__init__(*args, **kwargs)
         self.outcomes = []
 
-    def addSuccess(self, test):  # noqa: N802
+    def addSuccess(self, test):
         super().addSuccess(test)
         self.outcomes.append({"id": test.id(), "outcome": "passed"})
 
-    def addFailure(self, test, err):  # noqa: N802
+    def addFailure(self, test, err):
         super().addFailure(test, err)
         self.outcomes.append({"id": test.id(), "outcome": "failed", "detail": self.failures[-1][1]})
 
-    def addError(self, test, err):  # noqa: N802
+    def addError(self, test, err):
         super().addError(test, err)
         self.outcomes.append({"id": test.id(), "outcome": "error", "detail": self.errors[-1][1]})
 
-    def addSkip(self, test, reason):  # noqa: N802
+    def addSkip(self, test, reason):
         super().addSkip(test, reason)
         self.outcomes.append({"id": test.id(), "outcome": "skipped", "detail": reason})
 
@@ -61,9 +61,7 @@ def main():
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
     source = args.spark_source.resolve()
-    commit = subprocess.check_output(
-        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
-    ).strip()
+    commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     if commit != SPARK_COMMIT:
         parser.error(f"Expected Spark {SPARK_VERSION} at {SPARK_COMMIT}, found {commit}")
     subprocess.run(
@@ -91,10 +89,19 @@ def main():
 
     import pyspark
     import pyspark.pipelines
+    from pyspark.sql import SparkSession
 
     if pyspark.__version__ != SPARK_VERSION:
+        parser.error(f"Install pyspark[connect,pipelines]=={SPARK_VERSION}; found {pyspark.__version__}")
+    session = SparkSession.builder.remote(args.remote).create()
+    try:
+        server_version = session.version
+    finally:
+        session.stop()
+    if server_version != SPARK_VERSION:
         parser.error(
-            f"Install pyspark[connect,pipelines]=={SPARK_VERSION}; found {pyspark.__version__}"
+            f"Expected the server to report Spark {SPARK_VERSION}; found {server_version}. "
+            "Ensure the Sail server's Python environment contains the pinned PySpark version."
         )
     # Wheels omit the upstream tests. Add just the source tests, continuing to
     # use the installed, version-pinned PySpark implementation and test helpers.
@@ -112,6 +119,7 @@ def main():
     report = {
         "spark_version": SPARK_VERSION,
         "spark_commit": commit,
+        "server_spark_version": server_version,
         "remote": args.remote,
         "collected": collected,
         "tests_run": result.testsRun,
@@ -122,11 +130,7 @@ def main():
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n")
-    return (
-        0
-        if result.wasSuccessful() and not result.skipped and result.testsRun == len(collected)
-        else 1
-    )
+    return 0 if result.wasSuccessful() and not result.skipped and result.testsRun == len(collected) else 1
 
 
 if __name__ == "__main__":
