@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool, UnboundedMemoryPool};
 use futures::stream::{self, BoxStream};
 use futures::{StreamExt, TryStreamExt};
 use object_store::memory::InMemory;
@@ -20,9 +21,15 @@ use orc_rust::reader::AsyncChunkReader;
 
 use super::OrcObjectReader;
 
+fn unbounded_reader(store: Arc<dyn ObjectStore>, meta: ObjectMeta) -> OrcObjectReader {
+    OrcObjectReader::new(store, meta, Arc::new(UnboundedMemoryPool::default()))
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Response {
     Normal,
+    PendingBody,
+    BodyError,
     Truncated,
     TooLong,
     WrongRange,
@@ -95,6 +102,28 @@ impl ObjectStore for RecordingStore {
             Response::WrongSize => result.meta.size += 1,
             Response::WrongEtag => result.meta.e_tag = Some("different-etag".to_string()),
             Response::WrongVersion => result.meta.version = Some("different-version".to_string()),
+            Response::PendingBody => {
+                let polls = Arc::clone(&self.body_polls);
+                result.payload = GetResultPayload::Stream(
+                    stream::poll_fn(move |_| {
+                        polls.fetch_add(1, Ordering::Relaxed);
+                        std::task::Poll::Pending
+                    })
+                    .boxed(),
+                );
+            }
+            Response::BodyError => {
+                result.payload = GetResultPayload::Stream(
+                    stream::iter([
+                        Ok(Bytes::from_static(b"x")),
+                        Err(object_store::Error::Generic {
+                            store: "RecordingStore",
+                            source: std::io::Error::other("body failed").into(),
+                        }),
+                    ])
+                    .boxed(),
+                );
+            }
             Response::Normal => {}
         }
         let GetResult {
@@ -167,7 +196,7 @@ async fn fixture(response: Response, version: Option<&str>) -> (Arc<RecordingSto
 #[tokio::test]
 async fn reads_exact_ranges_and_keeps_etag_on_every_request() {
     let (store, meta) = fixture(Response::Normal, None).await;
-    let mut reader = OrcObjectReader::new(store.clone(), meta.clone());
+    let mut reader = unbounded_reader(store.clone(), meta.clone());
     assert_eq!(reader.len().await.unwrap(), 10);
     assert_eq!(reader.get_bytes(0, 3).await.unwrap(), b"012"[..]);
     assert_eq!(reader.get_bytes(7, 3).await.unwrap(), b"789"[..]);
@@ -185,12 +214,12 @@ async fn reads_exact_ranges_and_keeps_etag_on_every_request() {
 async fn empty_ranges_need_no_io_or_object_validator() {
     let (store, mut meta) = fixture(Response::Normal, None).await;
     meta.e_tag = None;
-    let mut reader = OrcObjectReader::new(store.clone(), meta.clone());
+    let mut reader = unbounded_reader(store.clone(), meta.clone());
     for offset in [0, 3, 10] {
         assert!(reader.get_bytes(offset, 0).await.unwrap().is_empty());
     }
     meta.size = 0;
-    let mut empty_reader = OrcObjectReader::new(store.clone(), meta);
+    let mut empty_reader = unbounded_reader(store.clone(), meta);
     assert_eq!(empty_reader.len().await.unwrap(), 0);
     assert!(empty_reader.get_bytes(0, 0).await.unwrap().is_empty());
     assert!(store.requests.lock().unwrap().is_empty());
@@ -199,7 +228,7 @@ async fn empty_ranges_need_no_io_or_object_validator() {
 #[tokio::test]
 async fn invalid_ranges_are_rejected_before_io() {
     let (store, mut meta) = fixture(Response::Normal, None).await;
-    let mut reader = OrcObjectReader::new(store.clone(), meta.clone());
+    let mut reader = unbounded_reader(store.clone(), meta.clone());
     for (offset, length) in [(10, 1), (11, 0), (0, 11), (u64::MAX, 1)] {
         assert_eq!(
             reader.get_bytes(offset, length).await.unwrap_err().kind(),
@@ -207,7 +236,7 @@ async fn invalid_ranges_are_rejected_before_io() {
         );
     }
     meta.size = u64::MAX;
-    let mut huge_reader = OrcObjectReader::new(store.clone(), meta);
+    let mut huge_reader = unbounded_reader(store.clone(), meta);
     assert_eq!(
         huge_reader.get_bytes(0, u64::MAX).await.unwrap_err().kind(),
         ErrorKind::InvalidInput
@@ -222,7 +251,7 @@ async fn missing_or_unusable_validators_are_rejected_before_io() {
         let mut meta = original.clone();
         meta.e_tag = etag.map(str::to_string);
         meta.version = Some(String::new());
-        let mut reader = OrcObjectReader::new(store.clone(), meta);
+        let mut reader = unbounded_reader(store.clone(), meta);
         let error = reader.get_bytes(0, 3).await.unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Unsupported);
         assert!(error.to_string().contains("version or usable ETag"));
@@ -233,7 +262,7 @@ async fn missing_or_unusable_validators_are_rejected_before_io() {
 #[tokio::test]
 async fn changed_etag_preserves_precondition_failure_without_retry() {
     let (store, meta) = fixture(Response::Normal, None).await;
-    let mut reader = OrcObjectReader::new(store.clone(), meta.clone());
+    let mut reader = unbounded_reader(store.clone(), meta.clone());
     reader.get_bytes(0, 3).await.unwrap();
     store
         .inner
@@ -259,7 +288,7 @@ async fn changed_etag_preserves_precondition_failure_without_retry() {
 #[tokio::test]
 async fn forwards_version_and_etag_on_every_range() {
     let (store, meta) = fixture(Response::Normal, Some("version-1")).await;
-    let mut reader = OrcObjectReader::new(store.clone(), meta.clone());
+    let mut reader = unbounded_reader(store.clone(), meta.clone());
     reader.get_bytes(0, 3).await.unwrap();
     reader.get_bytes(7, 3).await.unwrap();
     let requests = store.requests.lock().unwrap();
@@ -274,7 +303,7 @@ async fn forwards_version_and_etag_on_every_range() {
 async fn explicit_version_does_not_require_an_etag() {
     let (store, mut meta) = fixture(Response::Normal, Some("version-1")).await;
     meta.e_tag = None;
-    let mut reader = OrcObjectReader::new(store.clone(), meta);
+    let mut reader = unbounded_reader(store.clone(), meta);
     assert_eq!(reader.get_bytes(7, 3).await.unwrap(), b"789"[..]);
     let requests = store.requests.lock().unwrap();
     assert_eq!(requests[0].version.as_deref(), Some("version-1"));
@@ -288,7 +317,7 @@ async fn rejects_truncated_or_excess_response_bytes() {
         (Response::TooLong, ErrorKind::InvalidData),
     ] {
         let (store, meta) = fixture(response, None).await;
-        let mut reader = OrcObjectReader::new(store, meta);
+        let mut reader = unbounded_reader(store, meta);
         assert_eq!(reader.get_bytes(2, 3).await.unwrap_err().kind(), kind);
     }
 }
@@ -302,11 +331,101 @@ async fn rejects_changed_response_identity_or_range_before_reading_body() {
         Response::WrongVersion,
     ] {
         let (store, meta) = fixture(response, Some("version-1")).await;
-        let mut reader = OrcObjectReader::new(store.clone(), meta);
+        let mut reader = unbounded_reader(store.clone(), meta);
         assert_eq!(
             reader.get_bytes(2, 3).await.unwrap_err().kind(),
             ErrorKind::InvalidData
         );
         assert_eq!(store.body_polls.load(Ordering::Relaxed), 0);
     }
+}
+
+#[tokio::test]
+async fn memory_admission_precedes_io_and_empty_ranges_need_no_reservation() {
+    let (store, meta) = fixture(Response::Normal, None).await;
+    let pool = Arc::new(GreedyMemoryPool::new(0));
+    let mut reader = OrcObjectReader::new(store.clone(), meta, pool.clone());
+    assert!(reader.get_bytes(0, 0).await.unwrap().is_empty());
+    let error = reader.get_bytes(0, 1).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::OutOfMemory);
+    assert!(matches!(
+        error
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<datafusion_common::DataFusionError>()),
+        Some(datafusion_common::DataFusionError::ResourcesExhausted(_))
+    ));
+    assert!(store.requests.lock().unwrap().is_empty());
+    assert_eq!(pool.reserved(), 0);
+}
+
+#[tokio::test]
+async fn returned_ranges_hold_memory_until_the_last_clone_or_slice_drops() {
+    let (store, meta) = fixture(Response::Normal, None).await;
+    let pool = Arc::new(GreedyMemoryPool::new(4));
+    let mut reader = OrcObjectReader::new(store.clone(), meta, pool.clone());
+    let bytes = reader.get_bytes(0, 3).await.unwrap();
+    assert_eq!(bytes.as_ref(), b"012");
+    assert_eq!(pool.reserved(), 3);
+    let clone = bytes.clone();
+    let slice = bytes.slice(1..2);
+    drop(bytes);
+    drop(clone);
+    assert_eq!(pool.reserved(), 3);
+    assert_eq!(
+        reader.get_bytes(3, 2).await.unwrap_err().kind(),
+        ErrorKind::OutOfMemory
+    );
+    assert_eq!(store.requests.lock().unwrap().len(), 1);
+    assert_eq!(pool.reserved(), 3);
+    drop(slice);
+    assert_eq!(pool.reserved(), 0);
+    let bytes = reader.get_bytes(3, 4).await.unwrap();
+    assert_eq!(pool.reserved(), 4);
+    drop(reader);
+    assert_eq!(pool.reserved(), 4);
+    assert_eq!(bytes.as_ref(), b"3456");
+    drop(bytes);
+    assert_eq!(pool.reserved(), 0);
+}
+
+#[tokio::test]
+async fn failed_reads_release_reserved_memory() {
+    for response in [
+        Response::Truncated,
+        Response::TooLong,
+        Response::BodyError,
+        Response::WrongRange,
+        Response::WrongSize,
+        Response::WrongEtag,
+        Response::WrongVersion,
+    ] {
+        let (store, meta) = fixture(response, Some("version-1")).await;
+        let pool = Arc::new(GreedyMemoryPool::new(3));
+        let mut reader = OrcObjectReader::new(store, meta, pool.clone());
+        assert!(reader.get_bytes(0, 3).await.is_err());
+        assert_eq!(pool.reserved(), 0, "{response:?}");
+    }
+    let (store, meta) = fixture(Response::Normal, None).await;
+    store
+        .inner
+        .put(&meta.location, Bytes::from_static(b"abcdefghij").into())
+        .await
+        .unwrap();
+    let pool = Arc::new(GreedyMemoryPool::new(3));
+    let mut reader = OrcObjectReader::new(store, meta, pool.clone());
+    assert!(reader.get_bytes(0, 3).await.is_err());
+    assert_eq!(pool.reserved(), 0);
+}
+
+#[tokio::test]
+async fn cancelling_a_pending_body_releases_its_range_reservation() {
+    let (store, meta) = fixture(Response::PendingBody, None).await;
+    let pool = Arc::new(GreedyMemoryPool::new(3));
+    let mut reader = OrcObjectReader::new(store.clone(), meta, pool.clone());
+    let mut read = Box::pin(reader.get_bytes(0, 3));
+    assert!(futures::poll!(read.as_mut()).is_pending());
+    assert_eq!(store.body_polls.load(Ordering::Relaxed), 1);
+    assert_eq!(pool.reserved(), 3);
+    drop(read);
+    assert_eq!(pool.reserved(), 0);
 }

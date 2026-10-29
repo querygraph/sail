@@ -2,6 +2,7 @@ use std::io;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryPool, MemoryReservation};
 use futures::future::BoxFuture;
 use futures::{FutureExt, TryStreamExt};
 use object_store::{GetOptions, GetRange, ObjectMeta, ObjectStore};
@@ -14,15 +15,21 @@ use orc_rust::reader::AsyncChunkReader;
 /// Consistency relies on the store's version/conditional-read contract. In
 /// particular, a local filesystem's metadata-derived ETag cannot establish an
 /// immutable snapshot against out-of-band writes that preserve that metadata.
+///
+/// The supplied pool accounts for this reader's encoded range buffers. Charges
+/// follow the returned `Bytes` through clones and slices until the last owner
+/// drops. Object-store response chunks and native decoded allocations are outside
+/// this accounting; it is not a whole-scan or allocator-level memory limit.
 #[derive(Debug)]
 pub struct OrcObjectReader {
     store: Arc<dyn ObjectStore>,
     meta: ObjectMeta,
+    pool: Arc<dyn MemoryPool>,
 }
 
 impl OrcObjectReader {
-    pub fn new(store: Arc<dyn ObjectStore>, meta: ObjectMeta) -> Self {
-        Self { store, meta }
+    pub fn new(store: Arc<dyn ObjectStore>, meta: ObjectMeta, pool: Arc<dyn MemoryPool>) -> Self {
+        Self { store, meta, pool }
     }
 
     async fn read_range(&self, offset: u64, length: u64) -> io::Result<Bytes> {
@@ -72,6 +79,13 @@ impl OrcObjectReader {
                 ),
             ));
         }
+
+        // Admit the requested buffer before issuing I/O or allocating it. A
+        // separate reservation per range follows the returned buffer's lifetime.
+        let reservation = MemoryConsumer::new("OrcObjectReader").register(&self.pool);
+        reservation
+            .try_resize(length)
+            .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
 
         let range = offset..end;
         let result = self
@@ -125,6 +139,11 @@ impl OrcObjectReader {
         buffer
             .try_reserve_exact(length)
             .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+        // Vec may report more capacity than requested. Account for that before
+        // consuming the response; this reconciliation necessarily follows allocation.
+        reservation
+            .try_resize(buffer.capacity())
+            .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
         while let Some(chunk) = stream.try_next().await.map_err(io::Error::from)? {
             if chunk.len() > length - buffer.len() {
                 return Err(io::Error::new(
@@ -143,7 +162,22 @@ impl OrcObjectReader {
                 ),
             ));
         }
-        Ok(buffer.into())
+        Ok(Bytes::from_owner(ReservedRange {
+            buffer,
+            _reservation: reservation,
+        }))
+    }
+}
+
+/// Drop the buffer before releasing its reservation, including on sliced Bytes.
+struct ReservedRange {
+    buffer: Vec<u8>,
+    _reservation: MemoryReservation,
+}
+
+impl AsRef<[u8]> for ReservedRange {
+    fn as_ref(&self) -> &[u8] {
+        &self.buffer
     }
 }
 
