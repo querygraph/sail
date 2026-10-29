@@ -18,6 +18,7 @@ use sail_function::scalar::datetime::spark_timestamp::SparkTimestamp;
 use sail_function::scalar::datetime::timestamp_cast::{
     cast_timestamp_ltz_to_ntz, cast_timestamp_ntz_to_ltz,
 };
+use sail_function::scalar::spark_ansi_string_cast::SparkAnsiStringCast;
 use sail_function::scalar::spark_cast_string_to_int32::SparkCastStringToInt32;
 use sail_function::scalar::spark_struct_rename::SparkStructRename;
 use sail_function::scalar::spark_to_string::{SparkToLargeUtf8, SparkToUtf8, SparkToUtf8View};
@@ -194,6 +195,14 @@ impl PlanResolver<'_> {
                     lit("$"),
                     lit(data_type_string),
                 ])
+            }
+            (DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View, to, false)
+                if self.config.ansi_mode && SparkAnsiStringCast::target_name(&to).is_some() =>
+            {
+                let sql_target = SparkAnsiStringCast::target_name(&to)
+                    .ok_or_else(|| PlanError::internal("missing ANSI cast target name"))?;
+                ScalarUDF::new_from_impl(SparkAnsiStringCast::try_new(to, sql_target.into())?)
+                    .call(vec![expr])
             }
             (DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View, DataType::Int32, false)
                 if !self.config.ansi_mode =>
@@ -497,8 +506,19 @@ fn need_rename_cast(expr: &expr::Expr) -> bool {
         expr::Expr::Alias(_) | expr::Expr::Column(_) | expr::Expr::OuterReferenceColumn(..) => {
             false
         }
+        expr::Expr::ScalarFunction(function)
+            if function.func.inner().is::<SparkAnsiStringCast>() =>
+        {
+            match function.args.as_slice() {
+                [input] => need_rename_cast(input),
+                _ => true,
+            }
+        }
         expr::Expr::Cast(cast) => need_rename_cast(cast.expr.as_ref()),
         expr::Expr::TryCast(try_cast) => need_rename_cast(try_cast.expr.as_ref()),
         _ => true,
     }
 }
+
+#[cfg(test)]
+mod tests;
