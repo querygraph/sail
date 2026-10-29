@@ -3,9 +3,10 @@ use std::sync::Arc;
 use sail_common::spec;
 use sail_sql_analyzer::expression::{from_ast_expression, from_ast_object_name};
 use sail_sql_analyzer::parser::{
-    parse_expression, parse_object_name, parse_one_statement, rewrite_positional_parameter_markers,
+    parse_expression, parse_object_name, rewrite_positional_parameter_markers,
 };
-use sail_sql_analyzer::statement::from_ast_statement;
+use sail_sql_analyzer::source::SqlSource;
+use sail_sql_analyzer::statement::from_ast_statement_with_source;
 
 use crate::error::{ProtoFieldExt, SparkError, SparkResult};
 use crate::proto::data_type::{DEFAULT_FIELD_NAME, parse_spark_data_type};
@@ -538,7 +539,8 @@ impl TryFrom<RelType> for RelationNode {
                         positional_arguments.len()
                     )));
                 }
-                match from_ast_statement(parse_one_statement(query.as_str())?)? {
+                let source = SqlSource::new(&query)?;
+                match from_ast_statement_with_source(source.parse_one_statement()?, &source)? {
                     spec::Plan::Query(input) => {
                         Ok(RelationNode::Query(spec::QueryNode::WithParameters {
                             input: Box::new(input),
@@ -2177,6 +2179,28 @@ mod tests {
             |sql: String| Ok(from_ast_statement(parse_one_statement(&sql)?)?),
             SparkError::internal,
         )
+    }
+
+    #[test]
+    fn sql_relation_preserves_persisted_view_source() -> SparkResult<()> {
+        let relation = sc::Relation {
+            common: None,
+            rel_type: Some(sc::relation::RelType::Sql(sc::Sql {
+                query: "CREATE VIEW `雪` COMMENT 'comment' AS /* leading */ SELECT 'é;雪' AS x /* trailing */;".into(),
+                ..Default::default()
+            })),
+        };
+        let plan: spec::Plan = relation.try_into()?;
+        let spec::Plan::Command(spec::CommandPlan {
+            node: spec::CommandNode::CreateView { definition, .. },
+            ..
+        }) = plan
+        else {
+            return Err(SparkError::internal("expected persisted view"));
+        };
+        assert_eq!(definition.definition, "SELECT 'é;雪' AS x");
+        assert_eq!(definition.comment.as_deref(), Some("comment"));
+        Ok(())
     }
 
     #[test]

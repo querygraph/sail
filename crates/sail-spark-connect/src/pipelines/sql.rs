@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use sail_common::spec;
-use sail_sql_analyzer::parser::parse_statements;
-use sail_sql_analyzer::pipeline::{PipelineStatement, from_ast_pipeline_statement};
+use sail_sql_analyzer::pipeline::{PipelineStatement, from_ast_pipeline_statement_with_source};
+use sail_sql_analyzer::source::SqlSource;
 
 use super::graph::{Flow, PipelineGraph, analysis, quoted};
 use crate::error::{ProtoFieldExt, SparkError, SparkResult};
@@ -20,8 +20,9 @@ pub(super) fn register(
         graph.definition.sql_conf.clone(),
     );
     draft.definition = graph.definition.clone();
-    for statement in parse_statements(&text)? {
-        let result = from_ast_pipeline_statement(statement)
+    let source = SqlSource::new(&text)?;
+    for statement in source.parse_statements()? {
+        let result = from_ast_pipeline_statement_with_source(statement, &source)
             .map_err(SparkError::from)
             .and_then(|statement| register_statement(&mut draft, statement));
         if let Err(error) = result {

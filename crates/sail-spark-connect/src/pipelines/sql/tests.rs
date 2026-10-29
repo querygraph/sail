@@ -200,3 +200,59 @@ async fn declared_schema_validation_preserves_resolved_query_nullability()
     assert_eq!(resolved.schema().as_arrow(), &expected);
     Ok(())
 }
+
+#[test]
+fn persisted_view_retains_original_query_text_and_comment() -> SparkResult<()> {
+    let mut graph = graph();
+    register_sql(
+        &mut graph,
+        "CREATE VIEW b COMMENT 'my persisted comment' AS SELECT * FROM range(1, 4);",
+        "view.sql",
+    )?;
+    let [output] = graph.definition.outputs.as_slice() else {
+        return Err(SparkError::internal("expected one persisted view"));
+    };
+    assert_eq!(output.name, name("b"));
+    assert_ne!(output.kind, OutputType::TemporaryView);
+    let Some(view) = &output.view else {
+        return Err(SparkError::internal("expected persisted view definition"));
+    };
+    assert_eq!(view.definition, "SELECT * FROM range(1, 4)");
+    assert_eq!(view.comment.as_deref(), Some("my persisted comment"));
+    Ok(())
+}
+
+#[test]
+fn view_source_intervals_preserve_file_atomicity_and_namespace_reset() -> SparkResult<()> {
+    let mut graph = graph();
+    register_sql(
+        &mut graph,
+        "USE other_db; CREATE VIEW a AS SELECT 'é;雪' AS x; \
+         CREATE VIEW b AS SELECT /* ; */ x FROM a;",
+        "views.sql",
+    )?;
+    assert_eq!(graph.definition.outputs.len(), 2);
+    for (output, (table, query)) in graph.definition.outputs.iter().zip([
+        ("a", "SELECT 'é;雪' AS x"),
+        ("b", "SELECT /* ; */ x FROM a"),
+    ]) {
+        assert_eq!(output.name, vec!["test_catalog", "other_db", table]);
+        let Some(view) = &output.view else {
+            return Err(SparkError::internal("expected persisted view"));
+        };
+        assert_eq!(view.definition, query);
+    }
+    assert!(
+        register_sql(
+            &mut graph,
+            "USE failed_db; CREATE VIEW rejected AS SELECT 2; SELECT 3;",
+            "failed.sql",
+        )
+        .is_err()
+    );
+    assert_eq!(graph.definition.outputs.len(), 2);
+    register_sql(&mut graph, "CREATE VIEW c AS SELECT 4", "next.sql")?;
+    assert_eq!(graph.definition.outputs.len(), 3);
+    assert_eq!(graph.definition.outputs[2].name, name("c"));
+    Ok(())
+}

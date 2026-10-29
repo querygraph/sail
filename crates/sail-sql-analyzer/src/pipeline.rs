@@ -8,7 +8,8 @@ use sail_sql_parser::ast::statement::Statement;
 use crate::error::{SqlError, SqlResult};
 use crate::expression::from_ast_object_name;
 use crate::query::from_ast_query;
-use crate::statement::from_ast_statement;
+use crate::source::SqlSource;
+use crate::statement::{from_ast_statement, from_ast_statement_with_source};
 
 pub enum PipelineStatement {
     Dataset {
@@ -26,6 +27,21 @@ pub enum PipelineStatement {
 }
 
 pub fn from_ast_pipeline_statement(statement: Statement) -> SqlResult<PipelineStatement> {
+    from_ast_pipeline_statement_impl(statement, None)
+}
+
+/// Lowers a pipeline declaration parsed from the same original SQL source.
+pub fn from_ast_pipeline_statement_with_source(
+    statement: Statement,
+    source: &SqlSource<'_>,
+) -> SqlResult<PipelineStatement> {
+    from_ast_pipeline_statement_impl(statement, Some(source))
+}
+
+fn from_ast_pipeline_statement_impl(
+    statement: Statement,
+    source: Option<&SqlSource<'_>>,
+) -> SqlResult<PipelineStatement> {
     match statement {
         Statement::CreatePipelineDataset(dataset) => {
             let streaming = matches!(dataset.kind, Either::Right(_));
@@ -98,7 +114,10 @@ pub fn from_ast_pipeline_statement(statement: Statement) -> SqlResult<PipelineSt
                 query: from_ast_query(query)?,
             })
         }
-        statement => match from_ast_statement(statement)? {
+        statement => match match source {
+            Some(source) => from_ast_statement_with_source(statement, source),
+            None => from_ast_statement(statement),
+        }? {
             spec::Plan::Command(plan) => Ok(PipelineStatement::Command(plan.node)),
             _ => Err(SqlError::analysis(
                 "[PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR] Unsupported query statement in pipeline definitions",
