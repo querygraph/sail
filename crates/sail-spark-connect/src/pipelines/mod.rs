@@ -1,6 +1,7 @@
 mod analysis;
 mod execution;
 mod graph;
+mod schema;
 mod selection;
 mod topology;
 

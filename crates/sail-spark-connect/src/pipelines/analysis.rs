@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use datafusion::arrow::datatypes::Schema;
 use datafusion::common::DFSchema;
 use datafusion::logical_expr::{EmptyRelation, LogicalPlan};
 use datafusion::prelude::SessionContext;
@@ -132,8 +131,7 @@ pub(super) async fn analyze(
                 }
                 plans.remove(0)
             } else {
-                let schema =
-                    Schema::try_merge(plans.iter().map(|x| x.schema().as_arrow().clone()))?;
+                let schema = super::schema::infer(ctx, output, &plans)?;
                 LogicalPlan::EmptyRelation(EmptyRelation {
                     produce_one_row: false,
                     schema: Arc::new(DFSchema::try_from(schema)?),
