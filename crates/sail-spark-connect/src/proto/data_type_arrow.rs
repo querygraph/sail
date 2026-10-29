@@ -122,7 +122,16 @@ impl TryFrom<adt::Field> for sdt::StructField {
             name: field.name().clone(),
             data_type: Some(data_type),
             nullable: field.is_nullable(),
-            metadata: field.metadata().get(spec::SPARK_METADATA_JSON_KEY).cloned(),
+            metadata: field
+                .metadata()
+                .get(spec::SPARK_METADATA_JSON_KEY)
+                .cloned()
+                .or_else(|| {
+                    field
+                        .metadata()
+                        .get("comment")
+                        .map(|comment| serde_json::json!({ "comment": comment }).to_string())
+                }),
         })
     }
 }
