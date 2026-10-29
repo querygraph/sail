@@ -183,8 +183,11 @@ def test_failed_analysis_still_reserves_the_graph(pipeline_spark, pipeline):
 
 def test_empty_registration_can_be_corrected_before_start(pipeline_spark, pipeline):
     _, registry, run = pipeline
-    with pytest.raises(AnalysisException, match="RUN_EMPTY_PIPELINE"):
+    with pytest.raises(AnalysisException) as error:
         run(dry=True)
+    assert error.value.getCondition() == "RUN_EMPTY_PIPELINE"
+    assert error.value.getMessageParameters() == {}
+    assert error.value.getSqlState() == "42617"
     with graph_element_registration_context(registry):
         dp.materialized_view(name="output")(lambda: pipeline_spark.range(2))
     run(dry=True)
@@ -257,8 +260,11 @@ def test_cycle_does_not_read_old_catalog_output(pipeline_spark, pipeline, dry):
 def test_empty_pipeline(pipeline):
     """SqlPipelineSuite: No table defined pipeline fails with RUN_EMPTY_PIPELINE."""
     _, _, run = pipeline
-    with pytest.raises(AnalysisException, match="RUN_EMPTY_PIPELINE"):
+    with pytest.raises(AnalysisException) as error:
         run(dry=True)
+    assert error.value.getCondition() == "RUN_EMPTY_PIPELINE"
+    assert error.value.getMessageParameters() == {}
+    assert error.value.getSqlState() == "42617"
 
 
 def test_only_temporary_views(pipeline_spark, pipeline):
@@ -270,8 +276,11 @@ def test_only_temporary_views(pipeline_spark, pipeline):
         def intermediate():
             return pipeline_spark.range(1)
 
-    with pytest.raises(AnalysisException, match="RUN_EMPTY_PIPELINE"):
+    with pytest.raises(AnalysisException) as error:
         run(dry=True)
+    assert error.value.getCondition() == "RUN_EMPTY_PIPELINE"
+    assert error.value.getMessageParameters() == {}
+    assert error.value.getSqlState() == "42617"
 
 
 def test_duplicate_output(pipeline_spark, pipeline):

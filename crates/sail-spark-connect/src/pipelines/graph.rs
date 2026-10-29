@@ -243,7 +243,21 @@ impl GraphDefinition {
             .iter()
             .any(|x| x.kind != sc::OutputType::TemporaryView)
         {
-            return Err(analysis("RUN_EMPTY_PIPELINE", "no materialized outputs"));
+            return Err(Box::new(StructuredSparkError {
+                class: "org.apache.spark.sql.AnalysisException",
+                condition: "RUN_EMPTY_PIPELINE",
+                sql_state: "42617",
+                message: concat!(
+                    "Pipelines are expected to have at least one non-temporary dataset defined ",
+                    "(tables, persisted views) but no non-temporary datasets were found in your pipeline. ",
+                    "Please verify that you have included the expected source files, and that your source ",
+                    "code includes table definitions (e.g., CREATE MATERIALIZED VIEW in SQL code, ",
+                    "@dp.table in python code)."
+                )
+                .to_string(),
+                parameters: HashMap::new(),
+            })
+            .into());
         }
         let mut names = BTreeSet::new();
         for output in &self.outputs {
