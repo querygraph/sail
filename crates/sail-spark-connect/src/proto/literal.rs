@@ -17,8 +17,11 @@ impl TryFrom<Literal> for spec::Literal {
         } = literal;
         let literal_type = literal_type.required("literal type")?;
         let literal = match literal_type {
-            LiteralType::Null(data_type) => {
-                if data_type.kind.is_some() {
+            LiteralType::Null(null_type) => {
+                // Spark gives the root type precedence over the legacy null type.
+                let has_data_type = data_type.is_some() || null_type.kind.is_some();
+                let data_type = data_type.unwrap_or(null_type);
+                if has_data_type {
                     let data_type: spec::DataType = data_type.try_into()?;
                     data_type_to_null_literal(data_type)?
                 } else {
@@ -219,25 +222,36 @@ impl TryFrom<Literal> for spec::Literal {
                 return Err(SparkError::todo("specialized array literal"));
             }
             LiteralType::Time(Time { nano, precision }) => {
-                // Spark TIME literals carry nanoseconds since midnight.
-                // Precision values: 0 = seconds, 3 = milliseconds, 6 = microseconds (default), 9 = nanoseconds.
-                match precision.unwrap_or(6) {
-                    0 => spec::Literal::Time32Second {
-                        seconds: Some((nano / 1_000_000_000) as i32),
-                    },
-                    3 => spec::Literal::Time32Millisecond {
-                        milliseconds: Some((nano / 1_000_000) as i32),
-                    },
-                    6 => spec::Literal::Time64Microsecond {
-                        microseconds: Some(nano / 1_000),
-                    },
-                    9 => spec::Literal::Time64Nanosecond {
-                        nanoseconds: Some(nano),
-                    },
-                    p => return Err(SparkError::invalid(format!("invalid TIME precision: {p}"))),
+                // The root type overrides the legacy TIME payload precision.
+                let precision = match data_type {
+                    Some(DataType {
+                        kind: Some(sdt::Kind::Time(time)),
+                    }) => time.precision,
+                    Some(_) => {
+                        return Err(SparkError::invalid(
+                            "expected TIME data type for TIME literal",
+                        ));
+                    }
+                    None => precision,
+                };
+                let metadata = spec::SparkTimeMetadata::try_new(precision.unwrap_or(6))?;
+                // Spark converts through LocalTime.ofNanoOfDay. Precision does
+                // not truncate a literal's value, including sub-microsecond bits.
+                if !(0..86_400_000_000_000).contains(&nano) {
+                    return Err(SparkError::invalid(format!(
+                        "TIME literal nanoseconds must be within a day: {nano}"
+                    )));
+                }
+                spec::Literal::Time {
+                    nanoseconds: Some(nano),
+                    precision: metadata.precision(),
                 }
             }
         };
         Ok(literal)
     }
 }
+
+#[cfg(test)]
+#[path = "literal_time_tests.rs"]
+mod time_tests;

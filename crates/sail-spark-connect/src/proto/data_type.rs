@@ -272,25 +272,10 @@ impl TryFrom<DataType> for spec::DataType {
                 precision,
                 type_variation_reference: _,
             }) => {
-                let precision = precision.unwrap_or(6); // Default to microsecond if not specified
-                match precision {
-                    0 => Ok(spec::DataType::Time32 {
-                        time_unit: spec::TimeUnit::Second,
-                    }),
-                    3 => Ok(spec::DataType::Time32 {
-                        time_unit: spec::TimeUnit::Millisecond,
-                    }),
-                    6 => Ok(spec::DataType::Time64 {
-                        time_unit: spec::TimeUnit::Microsecond,
-                    }),
-                    9 => Ok(spec::DataType::Time64 {
-                        time_unit: spec::TimeUnit::Nanosecond,
-                    }),
-                    _ => Err(SparkError::invalid(format!(
-                        "unsupported TIME precision: {}. Only 0, 3, 6, and 9 are supported",
-                        precision
-                    ))),
-                }
+                let metadata = spec::SparkTimeMetadata::try_new(precision.unwrap_or(6))?;
+                Ok(spec::DataType::Time {
+                    precision: metadata.precision(),
+                })
             }
         }
     }
@@ -423,61 +408,18 @@ mod tests {
     fn test_time_proto_to_spec() -> SparkResult<()> {
         use crate::spark::connect::data_type::{Kind, Time};
 
-        // TIME(0) -> Time32 Second
-        let proto = crate::spark::connect::DataType {
-            kind: Some(Kind::Time(Time {
-                precision: Some(0),
-                type_variation_reference: 0,
-            })),
-        };
-        assert_eq!(
-            spec::DataType::try_from(proto)?,
-            spec::DataType::Time32 {
-                time_unit: spec::TimeUnit::Second
-            }
-        );
-
-        // TIME(3) -> Time32 Millisecond
-        let proto = crate::spark::connect::DataType {
-            kind: Some(Kind::Time(Time {
-                precision: Some(3),
-                type_variation_reference: 0,
-            })),
-        };
-        assert_eq!(
-            spec::DataType::try_from(proto)?,
-            spec::DataType::Time32 {
-                time_unit: spec::TimeUnit::Millisecond
-            }
-        );
-
-        // TIME(6) -> Time64 Microsecond
-        let proto = crate::spark::connect::DataType {
-            kind: Some(Kind::Time(Time {
-                precision: Some(6),
-                type_variation_reference: 0,
-            })),
-        };
-        assert_eq!(
-            spec::DataType::try_from(proto)?,
-            spec::DataType::Time64 {
-                time_unit: spec::TimeUnit::Microsecond
-            }
-        );
-
-        // TIME(9) -> Time64 Nanosecond
-        let proto = crate::spark::connect::DataType {
-            kind: Some(Kind::Time(Time {
-                precision: Some(9),
-                type_variation_reference: 0,
-            })),
-        };
-        assert_eq!(
-            spec::DataType::try_from(proto)?,
-            spec::DataType::Time64 {
-                time_unit: spec::TimeUnit::Nanosecond
-            }
-        );
+        for precision in 0..=6 {
+            let proto = crate::spark::connect::DataType {
+                kind: Some(Kind::Time(Time {
+                    precision: Some(precision),
+                    type_variation_reference: 0,
+                })),
+            };
+            assert_eq!(
+                spec::DataType::try_from(proto)?,
+                spec::DataType::Time { precision }
+            );
+        }
 
         // TIME (no precision) defaults to TIME(6)
         let proto = crate::spark::connect::DataType {
@@ -488,9 +430,7 @@ mod tests {
         };
         assert_eq!(
             spec::DataType::try_from(proto)?,
-            spec::DataType::Time64 {
-                time_unit: spec::TimeUnit::Microsecond
-            }
+            spec::DataType::Time { precision: 6 }
         );
 
         Ok(())
@@ -500,8 +440,7 @@ mod tests {
     fn test_time_proto_invalid_precision() {
         use crate::spark::connect::data_type::{Kind, Time};
 
-        // Invalid precisions: 1, 2, 4, 5, 7, 8, 10+
-        for precision in [1, 2, 4, 5, 7, 8, 10] {
+        for precision in [i32::MIN, -1, 7, 8, 9, 10, i32::MAX] {
             let proto = crate::spark::connect::DataType {
                 kind: Some(Kind::Time(Time {
                     precision: Some(precision),

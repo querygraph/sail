@@ -144,3 +144,111 @@ fn incompatible(left: &spec::DataType, right: &spec::DataType) -> SparkResult<sp
         "cannot merge incompatible pipeline types {left:?} and {right:?}"
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use datafusion::arrow::datatypes as adt;
+
+    use super::*;
+    use crate::spark::connect::data_type::StructField;
+
+    fn time_field(name: &str, precision: i32, nullable: bool) -> SparkResult<adt::Field> {
+        Ok(adt::Field::new(
+            name,
+            adt::DataType::Time64(adt::TimeUnit::Nanosecond),
+            nullable,
+        )
+        .with_metadata(HashMap::from([(
+            spec::SAIL_SPARK_TIME_METADATA_KEY.to_string(),
+            spec::SparkTimeMetadata::try_new(precision)?.to_json()?,
+        )])))
+    }
+
+    fn fields(field: adt::Field) -> SparkResult<spec::Fields> {
+        // Use the same Arrow -> Connect -> spec normalization as schema::spark_fields.
+        Ok(vec![spec::FieldRef::try_from(StructField::try_from(field)?)?].into())
+    }
+
+    // Spark 4.2.1 StructType.merge preserves equal TIME precision and merges nullability;
+    // different precisions are incompatible despite sharing Arrow nanosecond storage.
+    #[test]
+    fn time_merge_preserves_precision_and_combines_nullability() -> SparkResult<()> {
+        let left = fields(time_field("clock", 3, false)?)?;
+        let right = fields(time_field("clock", 3, true)?)?;
+
+        assert_eq!(merge_fields(&left, &right)?, right);
+        assert_eq!(merge_fields(&right, &left)?, right);
+        assert_eq!(right[0].data_type, spec::DataType::Time { precision: 3 });
+        Ok(())
+    }
+
+    #[test]
+    fn time_merge_rejects_different_precision_with_identical_arrow_storage() -> SparkResult<()> {
+        for (left_precision, right_precision) in [(0, 3), (3, 6), (1, 2)] {
+            let left = time_field("clock", left_precision, false)?;
+            let right = time_field("clock", right_precision, true)?;
+            assert_eq!(left.data_type(), right.data_type());
+
+            let left = fields(left)?;
+            let right = fields(right)?;
+            assert!(merge_fields(&left, &right).is_err());
+            assert!(merge_fields(&right, &left).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn time_merge_rejects_nested_precision_changes() -> SparkResult<()> {
+        fn containers(precision: i32) -> SparkResult<[adt::DataType; 3]> {
+            Ok([
+                adt::DataType::List(Arc::new(time_field(
+                    spec::SAIL_LIST_FIELD_NAME,
+                    precision,
+                    true,
+                )?)),
+                adt::DataType::Struct(vec![time_field("clock", precision, true)?].into()),
+                adt::DataType::Map(
+                    Arc::new(adt::Field::new(
+                        spec::SAIL_MAP_FIELD_NAME,
+                        adt::DataType::Struct(
+                            vec![
+                                adt::Field::new(
+                                    spec::SAIL_MAP_KEY_FIELD_NAME,
+                                    adt::DataType::Utf8,
+                                    false,
+                                ),
+                                time_field(spec::SAIL_MAP_VALUE_FIELD_NAME, precision, true)?,
+                            ]
+                            .into(),
+                        ),
+                        false,
+                    )),
+                    false,
+                ),
+            ])
+        }
+
+        for (left_type, right_type) in containers(3)?.into_iter().zip(containers(6)?) {
+            let left = fields(adt::Field::new("nested", left_type, true))?;
+            let right = fields(adt::Field::new("nested", right_type, true))?;
+            assert!(
+                merge_fields(&left, &right).is_err(),
+                "{left:?} vs {right:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn time_merge_keeps_different_precisions_in_distinct_fields() -> SparkResult<()> {
+        let left = fields(time_field("seconds", 0, false)?)?;
+        let right = fields(time_field("micros", 6, true)?)?;
+        let merged = merge_fields(&left, &right)?;
+        let expected: spec::Fields = vec![Arc::clone(&left[0]), Arc::clone(&right[0])].into();
+
+        assert_eq!(merged, expected);
+        assert_eq!(merged[0].data_type, spec::DataType::Time { precision: 0 });
+        assert_eq!(merged[1].data_type, spec::DataType::Time { precision: 6 });
+        Ok(())
+    }
+}

@@ -25,6 +25,78 @@ fn spark_time(precision: i32) -> DataType {
 }
 
 #[test]
+fn spark_time_schema_round_trip_preserves_scalar_and_nested_precision() -> SparkResult<()> {
+    use datafusion::prelude::SessionContext;
+    use sail_plan::config::PlanConfig;
+    use sail_plan::resolver::PlanResolver;
+
+    let context = SessionContext::new();
+    let resolver = PlanResolver::new(&context, Arc::new(PlanConfig::default()));
+    for precision in 0..=6 {
+        let mut scalar = time_field("clock", precision, false)?;
+        scalar.metadata_mut().insert(
+            spec::SPARK_METADATA_JSON_KEY.to_string(),
+            r#"{"comment":"declared precision"}"#.to_string(),
+        );
+        let element = Arc::new(time_field(spec::SAIL_LIST_FIELD_NAME, precision, false)?);
+        let entries = adt::DataType::Struct(
+            vec![
+                time_field(spec::SAIL_MAP_KEY_FIELD_NAME, precision, false)?,
+                time_field(spec::SAIL_MAP_VALUE_FIELD_NAME, precision, true)?,
+            ]
+            .into(),
+        );
+        let original = adt::DataType::Struct(
+            vec![
+                scalar,
+                adt::Field::new("clocks", adt::DataType::List(element), true),
+                adt::Field::new(
+                    "nested",
+                    adt::DataType::Struct(vec![time_field("clock", precision, true)?].into()),
+                    true,
+                ),
+                adt::Field::new(
+                    "lookup",
+                    adt::DataType::Map(
+                        Arc::new(adt::Field::new(spec::SAIL_MAP_FIELD_NAME, entries, false)),
+                        false,
+                    ),
+                    true,
+                ),
+            ]
+            .into(),
+        );
+        let proto = DataType::try_from(original.clone())?;
+        let logical = spec::DataType::try_from(proto.clone())?;
+        let restored = resolver.resolve_data_type_for_plan(&logical)?;
+        assert_eq!(restored, original, "TIME({precision})");
+        assert_eq!(DataType::try_from(restored)?, proto);
+    }
+    Ok(())
+}
+
+#[test]
+fn spark_time_connect_typed_null_retains_precision() -> SparkResult<()> {
+    use crate::spark::connect::expression::Literal;
+    use crate::spark::connect::expression::literal::LiteralType;
+
+    for precision in 0..=6 {
+        let literal = spec::Literal::try_from(Literal {
+            data_type: None,
+            literal_type: Some(LiteralType::Null(spark_time(precision))),
+        })?;
+        assert_eq!(
+            literal,
+            spec::Literal::Time {
+                nanoseconds: None,
+                precision
+            }
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn spark_time_metadata_controls_declared_precision_without_leaking() -> SparkResult<()> {
     for precision in 0..=6 {
         let field = time_field("clock", precision, false)?;
