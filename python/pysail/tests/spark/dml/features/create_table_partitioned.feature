@@ -66,3 +66,94 @@ Feature: CREATE TABLE with PARTITIONED BY clause
       LOCATION {{ location.sql }}
       PARTITIONED BY (part INT)
       """
+
+  Scenario Outline: Invalid partition fields are rejected before creating a table
+    Given final statement
+      """
+      DROP TABLE IF EXISTS invalid_partition
+      """
+    Given final statement
+      """
+      RESET spark.sql.caseSensitive
+      """
+    Given statement
+      """
+      SET spark.sql.caseSensitive = <sensitive>
+      """
+    Given statement with error <condition>
+      """
+      CREATE TABLE invalid_partition(id BIGINT, payload STRING)
+      USING parquet PARTITIONED BY (<partition>)
+      """
+    When query
+      """
+      SELECT * FROM invalid_partition
+      """
+    Then query error TABLE_OR_VIEW_NOT_FOUND
+
+    Examples:
+      | sensitive | partition | condition                   |
+      | false     | missing   | COLUMN_NOT_DEFINED_IN_TABLE |
+      | false     | id, id    | COLUMN_ALREADY_EXISTS       |
+      | true      | ID        | COLUMN_NOT_DEFINED_IN_TABLE |
+
+  Scenario Outline: Partition fields use canonical and quoted schema names
+    Given final statement
+      """
+      DROP TABLE IF EXISTS valid_partition
+      """
+    Given final statement
+      """
+      RESET spark.sql.caseSensitive
+      """
+    Given statement
+      """
+      SET spark.sql.caseSensitive = false
+      """
+    Given statement
+      """
+      CREATE TABLE valid_partition(<column> BIGINT, payload STRING)
+      USING parquet PARTITIONED BY (<partition>)
+      """
+    Given statement
+      """
+      INSERT INTO valid_partition (<column>, payload) VALUES (1, 'a')
+      """
+    When query
+      """
+      SELECT <column> AS key, payload FROM valid_partition
+      """
+    Then query result
+      | key | payload |
+      | 1   | a       |
+
+    Examples:
+      | column | partition |
+      | id     | ID        |
+      | `a.b`  | `a.b`     |
+
+  Scenario: Typed partition columns respect case-sensitive field identity
+    Given final statement
+      """
+      DROP TABLE IF EXISTS typed_partition_case
+      """
+    Given final statement
+      """
+      RESET spark.sql.caseSensitive
+      """
+    Given statement
+      """
+      SET spark.sql.caseSensitive = true
+      """
+    Given statement
+      """
+      CREATE TABLE typed_partition_case(id BIGINT, payload STRING)
+      USING parquet PARTITIONED BY (ID BIGINT)
+      """
+    When query
+      """
+      DESCRIBE typed_partition_case
+      """
+    Then query result row where "col_name" is "id" has "data_type" equal to "bigint"
+    Then query result row where "col_name" is "ID" has "data_type" equal to "bigint"
+    Then query result row where "col_name" is "payload" has "data_type" equal to "string"

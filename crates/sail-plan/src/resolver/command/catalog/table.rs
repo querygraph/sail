@@ -280,10 +280,11 @@ impl PlanResolver<'_> {
                 }
                 spec::PartitionColumn::Definition(column) => {
                     let resolved = self.resolve_table_columns(vec![column], state)?.one()?;
-                    if let Some(existing) = columns
-                        .iter()
-                        .find(|c| c.name.eq_ignore_ascii_case(&resolved.name))
-                    {
+                    if let Some(existing) = columns.iter().find(|c| {
+                        c.name == resolved.name
+                            || (!self.config.case_sensitive
+                                && c.name.eq_ignore_ascii_case(&resolved.name))
+                    }) {
                         if existing.data_type != resolved.data_type {
                             return Err(PlanError::invalid(format!(
                                 "partition column '{}' has incompatible type: \
@@ -298,6 +299,34 @@ impl PlanResolver<'_> {
                         column: resolved.name,
                         transform: None,
                     });
+                }
+            }
+        }
+        // Known schemas can be checked before any catalog provider sees the
+        // create command. Schema-less external tables retain provider inference.
+        if !columns.is_empty() {
+            for partition in &mut result {
+                let column = columns
+                    .iter()
+                    .find(|column| {
+                        column.name == partition.column
+                            || (!self.config.case_sensitive
+                                && column.name.eq_ignore_ascii_case(&partition.column))
+                    })
+                    .ok_or_else(|| {
+                        PlanError::analysis(format!(
+                            "[COLUMN_NOT_DEFINED_IN_TABLE] partition column `{}` is not defined in the table",
+                            partition.column
+                        ))
+                    })?;
+                partition.column = column.name.clone();
+            }
+            for (index, partition) in result.iter().enumerate() {
+                if result[..index].contains(partition) {
+                    return Err(PlanError::analysis(format!(
+                        "[COLUMN_ALREADY_EXISTS] partition column `{}` already exists",
+                        partition.column
+                    )));
                 }
             }
         }
