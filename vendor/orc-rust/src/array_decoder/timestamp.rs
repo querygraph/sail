@@ -42,6 +42,7 @@ use super::{
     decimal::DecimalArrayDecoder, ArrayBatchDecoder, PresentDecoder, PrimitiveArrayDecoder,
 };
 use crate::error::UnsupportedTypeVariantSnafu;
+use crate::timestamp::TimestampReadOptions;
 
 const NANOSECONDS_IN_SECOND: i128 = 1_000_000_000;
 const NANOSECOND_DIGITS: i8 = 9;
@@ -54,6 +55,7 @@ fn get_inner_timestamp_decoder<T: ArrowTimestampType + Send>(
     column: &Column,
     stripe: &Stripe,
     seconds_since_unix_epoch: i64,
+    options: TimestampReadOptions,
 ) -> PrimitiveArrayDecoder<T> {
     let data = stripe.stream_map().get(column, Kind::Data);
     let data = get_signed_int_decoder(data, column.rle_version());
@@ -63,11 +65,9 @@ fn get_inner_timestamp_decoder<T: ArrowTimestampType + Send>(
 
     let present = PresentDecoder::from_stripe(stripe, column);
 
-    let iter = Box::new(TimestampDecoder::<T>::new(
-        seconds_since_unix_epoch,
-        data,
-        secondary,
-    ));
+    let iter = Box::new(
+        TimestampDecoder::<T>::new(seconds_since_unix_epoch, data, secondary).with_options(options),
+    );
     PrimitiveArrayDecoder::<T>::new(iter, present)
 }
 
@@ -76,7 +76,12 @@ fn get_timestamp_decoder<T: ArrowTimestampType + Send>(
     stripe: &Stripe,
     seconds_since_unix_epoch: i64,
 ) -> Box<dyn ArrayBatchDecoder> {
-    let inner = get_inner_timestamp_decoder::<T>(column, stripe, seconds_since_unix_epoch);
+    let inner = get_inner_timestamp_decoder::<T>(
+        column,
+        stripe,
+        seconds_since_unix_epoch,
+        stripe.timestamp_read_options(),
+    );
     match stripe.writer_tz() {
         Some(writer_tz) => Box::new(TimestampOffsetArrayDecoder { inner, writer_tz }),
         None => Box::new(inner),
@@ -88,8 +93,12 @@ fn get_timestamp_instant_decoder<T: ArrowTimestampType + Send>(
     stripe: &Stripe,
 ) -> Box<dyn ArrayBatchDecoder> {
     // TIMESTAMP_INSTANT is encoded as UTC so we don't check writer timezone in stripe
-    let inner =
-        get_inner_timestamp_decoder::<T>(column, stripe, ORC_EPOCH_UTC_SECONDS_SINCE_UNIX_EPOCH);
+    let inner = get_inner_timestamp_decoder::<T>(
+        column,
+        stripe,
+        ORC_EPOCH_UTC_SECONDS_SINCE_UNIX_EPOCH,
+        stripe.timestamp_read_options(),
+    );
     Box::new(TimestampInstantArrayDecoder(inner))
 }
 

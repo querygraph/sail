@@ -103,6 +103,7 @@ impl<R: AsyncChunkReader + 'static> StripeFactory<R> {
             info,
         )
         .await
+        .map(|stripe| stripe.with_timestamp_read_options(inner.timestamp_read_options))
     }
 
     /// Read the next stripe from the file.
@@ -318,6 +319,7 @@ impl<R: AsyncChunkReader + 'static> ArrowReaderBuilder<R> {
             file_metadata: self.file_metadata.clone(),
             projected_data_type,
             stripe_index: 0,
+            timestamp_read_options: self.timestamp_read_options,
             file_byte_range: self.file_byte_range,
         };
         ArrowStreamReader::new(

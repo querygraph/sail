@@ -122,6 +122,7 @@ pub struct Stripe {
     stream_map: StreamMap,
     number_of_rows: usize,
     tz: Option<chrono_tz::Tz>,
+    timestamp_read_options: crate::timestamp::TimestampReadOptions,
 }
 
 impl Stripe {
@@ -178,6 +179,7 @@ impl Stripe {
             },
             number_of_rows: info.number_of_rows() as usize,
             tz,
+            timestamp_read_options: Default::default(),
         })
     }
 
@@ -241,11 +243,24 @@ impl Stripe {
             },
             number_of_rows: info.number_of_rows() as usize,
             tz,
+            timestamp_read_options: Default::default(),
         })
     }
 
     pub fn number_of_rows(&self) -> usize {
         self.number_of_rows
+    }
+
+    pub(crate) fn with_timestamp_read_options(
+        mut self,
+        options: crate::timestamp::TimestampReadOptions,
+    ) -> Self {
+        self.timestamp_read_options = options;
+        self
+    }
+
+    pub(crate) fn timestamp_read_options(&self) -> crate::timestamp::TimestampReadOptions {
+        self.timestamp_read_options
     }
 
     pub fn stream_map(&self) -> &StreamMap {

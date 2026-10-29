@@ -35,6 +35,7 @@ use crate::row_group_filter::evaluate_predicate;
 use crate::row_selection::RowSelection;
 use crate::schema::{ArrowSchemaOptions, RootDataType, TimestampPrecision};
 use crate::stripe::{Stripe, StripeMetadata};
+use crate::timestamp::TimestampReadOptions;
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
 
@@ -47,6 +48,7 @@ pub struct ArrowReaderBuilder<R> {
     pub(crate) file_byte_range: Option<Range<usize>>,
     pub(crate) row_selection: Option<RowSelection>,
     pub(crate) timestamp_precision: TimestampPrecision,
+    pub(crate) timestamp_read_options: TimestampReadOptions,
     pub(crate) predicate: Option<Predicate>,
 }
 
@@ -65,6 +67,7 @@ impl<R> ArrowReaderBuilder<R> {
             file_byte_range: None,
             row_selection: None,
             timestamp_precision: TimestampPrecision::default(),
+            timestamp_read_options: TimestampReadOptions::default(),
             predicate: None,
         }
     }
@@ -140,6 +143,12 @@ impl<R> ArrowReaderBuilder<R> {
     /// ```
     pub fn with_timestamp_precision(mut self, precision: TimestampPrecision) -> Self {
         self.timestamp_precision = precision;
+        self
+    }
+
+    /// Configure handling of fractional precision. The default rejects precision loss.
+    pub fn with_timestamp_read_options(mut self, options: TimestampReadOptions) -> Self {
+        self.timestamp_read_options = options;
         self
     }
 
@@ -228,6 +237,7 @@ impl<R: ChunkReader> ArrowReaderBuilder<R> {
             file_metadata: self.file_metadata,
             projected_data_type,
             stripe_index: 0,
+            timestamp_read_options: self.timestamp_read_options,
             file_byte_range: self.file_byte_range,
         };
         ArrowReader {
@@ -363,6 +373,7 @@ pub(crate) struct Cursor<R> {
     pub file_metadata: Arc<FileMetadata>,
     pub projected_data_type: RootDataType,
     pub stripe_index: usize,
+    pub timestamp_read_options: TimestampReadOptions,
     pub file_byte_range: Option<Range<usize>>,
 }
 
@@ -398,7 +409,7 @@ impl<R: ChunkReader> Iterator for Cursor<R> {
                     info,
                 );
                 self.stripe_index += 1;
-                stripe
+                stripe.map(|stripe| stripe.with_timestamp_read_options(self.timestamp_read_options))
             })
     }
 }

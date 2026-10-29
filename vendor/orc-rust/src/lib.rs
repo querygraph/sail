@@ -72,6 +72,7 @@ pub mod row_selection;
 pub mod schema;
 pub mod statistics;
 pub mod stripe;
+pub mod timestamp;
 mod writer;
 
 pub use arrow_reader::{ArrowReader, ArrowReaderBuilder};
@@ -81,3 +82,4 @@ pub use async_arrow_reader::ArrowStreamReader;
 pub use predicate::{ComparisonOp, Predicate, PredicateValue};
 pub use row_selection::{RowSelection, RowSelector};
 pub use schema::{ArrowSchemaOptions, TimestampPrecision};
+pub use timestamp::{TimestampPrecisionLoss, TimestampReadOptions};

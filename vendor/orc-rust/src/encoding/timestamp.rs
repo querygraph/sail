@@ -124,6 +124,7 @@ pub struct TimestampDecoder<T: ArrowTimestampType> {
     base_from_epoch: i64,
     data: Box<dyn PrimitiveValueDecoder<i64> + Send>,
     secondary: Box<dyn PrimitiveValueDecoder<i64> + Send>,
+    options: crate::timestamp::TimestampReadOptions,
     _marker: PhantomData<T>,
 }
 
@@ -137,8 +138,14 @@ impl<T: ArrowTimestampType> TimestampDecoder<T> {
             base_from_epoch,
             data,
             secondary,
+            options: Default::default(),
             _marker: PhantomData,
         }
+    }
+
+    pub(crate) fn with_options(mut self, options: crate::timestamp::TimestampReadOptions) -> Self {
+        self.options = options;
+        self
     }
 }
 
@@ -158,8 +165,16 @@ impl<T: ArrowTimestampType> PrimitiveValueDecoder<T::Native> for TimestampDecode
         for (index, (&seconds_since_orc_base, &nanoseconds)) in
             data.iter().zip(secondary.iter()).enumerate()
         {
-            out[index] =
-                decode_timestamp::<T>(self.base_from_epoch, seconds_since_orc_base, nanoseconds)?;
+            out[index] = if self.options == crate::timestamp::TimestampReadOptions::default() {
+                decode_timestamp::<T>(self.base_from_epoch, seconds_since_orc_base, nanoseconds)?
+            } else {
+                self.options.decode(
+                    self.base_from_epoch,
+                    seconds_since_orc_base,
+                    nanoseconds,
+                    T::UNIT,
+                )?
+            };
         }
         Ok(())
     }
