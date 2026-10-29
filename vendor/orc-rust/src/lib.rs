@@ -73,6 +73,7 @@ pub mod schema;
 pub mod statistics;
 pub mod stripe;
 pub mod timestamp;
+pub mod timestamp_timezone;
 mod writer;
 
 pub use arrow_reader::{ArrowReader, ArrowReaderBuilder};
@@ -83,3 +84,6 @@ pub use predicate::{ComparisonOp, Predicate, PredicateValue};
 pub use row_selection::{RowSelection, RowSelector};
 pub use schema::{ArrowSchemaOptions, TimestampPrecision};
 pub use timestamp::{TimestampPrecisionLoss, TimestampReadOptions};
+pub use timestamp_timezone::{
+    TimestampTimeZone, TimestampTimeZoneOptions, TimestampTimeZoneResolver,
+};

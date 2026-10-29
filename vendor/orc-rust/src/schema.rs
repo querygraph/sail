@@ -43,6 +43,7 @@ pub enum TimestampPrecision {
 #[derive(Debug, Clone)]
 pub struct ArrowSchemaOptions {
     timestamp_precision: TimestampPrecision,
+    timestamp_as_instant: bool,
 }
 
 impl Default for ArrowSchemaOptions {
@@ -57,6 +58,7 @@ impl ArrowSchemaOptions {
     pub fn new() -> Self {
         Self {
             timestamp_precision: TimestampPrecision::default(),
+            timestamp_as_instant: false,
         }
     }
 
@@ -75,6 +77,11 @@ impl ArrowSchemaOptions {
     /// Get the timestamp precision
     fn timestamp_precision(&self) -> TimestampPrecision {
         self.timestamp_precision
+    }
+
+    pub(crate) fn with_timestamp_as_instant(mut self, enabled: bool) -> Self {
+        self.timestamp_as_instant = enabled;
+        self
     }
 }
 
@@ -540,7 +547,10 @@ impl DataType {
             DataType::Decimal {
                 precision, scale, ..
             } => ArrowDataType::Decimal128(*precision as u8, *scale as i8), // TODO: safety of cast?
-            DataType::Timestamp { .. } => ArrowDataType::Timestamp(time_unit, None),
+            DataType::Timestamp { .. } => ArrowDataType::Timestamp(
+                time_unit,
+                options.timestamp_as_instant.then(|| "UTC".into()),
+            ),
             DataType::TimestampWithLocalTimezone { .. } => {
                 ArrowDataType::Timestamp(time_unit, Some("UTC".into()))
             }

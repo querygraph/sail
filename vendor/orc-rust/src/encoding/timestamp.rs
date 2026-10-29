@@ -125,6 +125,7 @@ pub struct TimestampDecoder<T: ArrowTimestampType> {
     data: Box<dyn PrimitiveValueDecoder<i64> + Send>,
     secondary: Box<dyn PrimitiveValueDecoder<i64> + Send>,
     options: crate::timestamp::TimestampReadOptions,
+    time_zone: Option<crate::timestamp_timezone::TimestampTimeZoneConversion>,
     _marker: PhantomData<T>,
 }
 
@@ -139,12 +140,21 @@ impl<T: ArrowTimestampType> TimestampDecoder<T> {
             data,
             secondary,
             options: Default::default(),
+            time_zone: None,
             _marker: PhantomData,
         }
     }
 
     pub(crate) fn with_options(mut self, options: crate::timestamp::TimestampReadOptions) -> Self {
         self.options = options;
+        self
+    }
+
+    pub(crate) fn with_time_zone(
+        mut self,
+        time_zone: crate::timestamp_timezone::TimestampTimeZoneConversion,
+    ) -> Self {
+        self.time_zone = Some(time_zone);
         self
     }
 }
@@ -165,7 +175,14 @@ impl<T: ArrowTimestampType> PrimitiveValueDecoder<T::Native> for TimestampDecode
         for (index, (&seconds_since_orc_base, &nanoseconds)) in
             data.iter().zip(secondary.iter()).enumerate()
         {
-            out[index] = if self.options == crate::timestamp::TimestampReadOptions::default() {
+            out[index] = if let Some(time_zone) = &self.time_zone {
+                let nanos = crate::timestamp::decode_nanos(
+                    self.base_from_epoch,
+                    seconds_since_orc_base,
+                    nanoseconds,
+                )?;
+                self.options.convert(time_zone.convert(nanos)?, T::UNIT)?
+            } else if self.options == crate::timestamp::TimestampReadOptions::default() {
                 decode_timestamp::<T>(self.base_from_epoch, seconds_since_orc_base, nanoseconds)?
             } else {
                 self.options.decode(

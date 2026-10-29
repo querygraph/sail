@@ -122,7 +122,9 @@ pub struct Stripe {
     stream_map: StreamMap,
     number_of_rows: usize,
     tz: Option<chrono_tz::Tz>,
+    writer_timezone_name: Option<String>,
     timestamp_read_options: crate::timestamp::TimestampReadOptions,
+    timestamp_time_zone: Option<crate::timestamp_timezone::TimestampTimeZoneConversion>,
 }
 
 impl Stripe {
@@ -131,6 +133,16 @@ impl Stripe {
         file_metadata: &FileMetadata,
         projected_data_type: &RootDataType,
         info: &StripeMetadata,
+    ) -> Result<Self> {
+        Self::new_with_timestamp_time_zone(reader, file_metadata, projected_data_type, info, false)
+    }
+
+    pub(crate) fn new_with_timestamp_time_zone<R: ChunkReader>(
+        reader: &mut R,
+        file_metadata: &FileMetadata,
+        projected_data_type: &RootDataType,
+        info: &StripeMetadata,
+        custom_time_zone: bool,
     ) -> Result<Self> {
         let footer = reader
             .get_bytes(info.footer_offset(), info.footer_length())
@@ -165,11 +177,15 @@ impl Stripe {
             stream_offset += length;
         }
 
-        let tz = footer
-            .writer_timezone
-            .as_ref()
-            // TODO: make this return error
-            .map(|a| a.parse::<chrono_tz::Tz>().unwrap());
+        let tz = if custom_time_zone {
+            None
+        } else {
+            footer
+                .writer_timezone
+                .as_ref()
+                // TODO: make this return error
+                .map(|a| a.parse::<chrono_tz::Tz>().unwrap())
+        };
 
         Ok(Self {
             columns,
@@ -179,7 +195,9 @@ impl Stripe {
             },
             number_of_rows: info.number_of_rows() as usize,
             tz,
+            writer_timezone_name: footer.writer_timezone.clone(),
             timestamp_read_options: Default::default(),
+            timestamp_time_zone: None,
         })
     }
 
@@ -190,6 +208,24 @@ impl Stripe {
         file_metadata: &FileMetadata,
         projected_data_type: &RootDataType,
         info: &StripeMetadata,
+    ) -> Result<Self> {
+        Self::new_async_with_timestamp_time_zone(
+            reader,
+            file_metadata,
+            projected_data_type,
+            info,
+            false,
+        )
+        .await
+    }
+
+    #[cfg(feature = "async")]
+    pub(crate) async fn new_async_with_timestamp_time_zone<R: crate::reader::AsyncChunkReader>(
+        reader: &mut R,
+        file_metadata: &FileMetadata,
+        projected_data_type: &RootDataType,
+        info: &StripeMetadata,
+        custom_time_zone: bool,
     ) -> Result<Self> {
         let footer = reader
             .get_bytes(info.footer_offset(), info.footer_length())
@@ -229,11 +265,15 @@ impl Stripe {
             stream_offset += length;
         }
 
-        let tz = footer
-            .writer_timezone
-            .as_ref()
-            // TODO: make this return error
-            .map(|a| a.parse::<chrono_tz::Tz>().unwrap());
+        let tz = if custom_time_zone {
+            None
+        } else {
+            footer
+                .writer_timezone
+                .as_ref()
+                // TODO: make this return error
+                .map(|a| a.parse::<chrono_tz::Tz>().unwrap())
+        };
 
         Ok(Self {
             columns,
@@ -243,7 +283,9 @@ impl Stripe {
             },
             number_of_rows: info.number_of_rows() as usize,
             tz,
+            writer_timezone_name: footer.writer_timezone.clone(),
             timestamp_read_options: Default::default(),
+            timestamp_time_zone: None,
         })
     }
 
@@ -263,6 +305,25 @@ impl Stripe {
         self.timestamp_read_options
     }
 
+    pub(crate) fn with_timestamp_time_zone(
+        mut self,
+        conversion: crate::timestamp_timezone::TimestampTimeZoneConversion,
+    ) -> Self {
+        self.timestamp_time_zone = Some(conversion);
+        self
+    }
+
+    pub(crate) fn timestamp_time_zone(
+        &self,
+    ) -> Option<&crate::timestamp_timezone::TimestampTimeZoneConversion> {
+        self.timestamp_time_zone.as_ref()
+    }
+
+    /// Original writer timezone metadata, before any name resolution.
+    pub fn writer_timezone_name(&self) -> Option<&str> {
+        self.writer_timezone_name.as_deref()
+    }
+
     pub fn stream_map(&self) -> &StreamMap {
         &self.stream_map
     }
@@ -271,6 +332,7 @@ impl Stripe {
         &self.columns
     }
 
+    /// Chrono writer timezone for the default reader; absent with custom timezone rules.
     pub fn writer_tz(&self) -> Option<chrono_tz::Tz> {
         self.tz
     }

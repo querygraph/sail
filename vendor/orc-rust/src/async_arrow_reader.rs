@@ -96,11 +96,12 @@ impl<R: AsyncChunkReader + 'static> StripeFactory<R> {
 
         inner.stripe_index += 1;
 
-        Stripe::new_async(
+        Stripe::new_async_with_timestamp_time_zone(
             &mut inner.reader,
             &inner.file_metadata,
             &inner.projected_data_type,
             info,
+            inner.timestamp_time_zone_state.is_some(),
         )
         .await
         .map(|stripe| stripe.with_timestamp_read_options(inner.timestamp_read_options))
@@ -199,7 +200,11 @@ impl<R: AsyncChunkReader + 'static> ArrowStreamReader<R> {
 
                         // Evaluate predicate if present
                         let mut stripe_selection: Option<RowSelection> = None;
-                        if let Some(ref predicate) = self.predicate {
+                        if let Some(predicate) = self.predicate.as_ref().filter(|_| {
+                            self.factory.as_ref().is_some_and(|factory| {
+                                factory.inner.timestamp_time_zone_state.is_none()
+                            })
+                        }) {
                             // Try to read row indexes for this stripe
                             match stripe.read_row_indexes(&self.file_metadata) {
                                 Ok(row_index) => {
@@ -252,6 +257,23 @@ impl<R: AsyncChunkReader + 'static> ArrowStreamReader<R> {
                             }
                         }
 
+                        let factory = self.factory.as_mut().expect("lost factory");
+                        if factory.inner.timestamp_time_zone_state.is_some()
+                            && (stripe_rows == 0
+                                || final_selection
+                                    .as_ref()
+                                    .is_some_and(|selection| !selection.selects_any()))
+                        {
+                            self.state = StreamState::Init;
+                            continue;
+                        }
+                        let stripe = match factory.inner.start_stripe(stripe) {
+                            Ok(stripe) => stripe,
+                            Err(error) => {
+                                self.state = StreamState::Error;
+                                return Poll::Ready(Some(Err(error)));
+                            }
+                        };
                         match NaiveStripeDecoder::new_with_selection(
                             stripe,
                             self.schema_ref.clone(),
@@ -320,6 +342,9 @@ impl<R: AsyncChunkReader + 'static> ArrowReaderBuilder<R> {
             projected_data_type,
             stripe_index: 0,
             timestamp_read_options: self.timestamp_read_options,
+            timestamp_time_zone_state: self
+                .timestamp_time_zone_options
+                .map(crate::timestamp_timezone::TimestampTimeZoneState::new),
             file_byte_range: self.file_byte_range,
         };
         ArrowStreamReader::new(

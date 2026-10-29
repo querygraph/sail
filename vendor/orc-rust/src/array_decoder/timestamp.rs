@@ -43,6 +43,7 @@ use super::{
 };
 use crate::error::UnsupportedTypeVariantSnafu;
 use crate::timestamp::TimestampReadOptions;
+use crate::timestamp_timezone::TimestampTimeZoneConversion;
 
 const NANOSECONDS_IN_SECOND: i128 = 1_000_000_000;
 const NANOSECOND_DIGITS: i8 = 9;
@@ -56,6 +57,7 @@ fn get_inner_timestamp_decoder<T: ArrowTimestampType + Send>(
     stripe: &Stripe,
     seconds_since_unix_epoch: i64,
     options: TimestampReadOptions,
+    time_zone: Option<&TimestampTimeZoneConversion>,
 ) -> PrimitiveArrayDecoder<T> {
     let data = stripe.stream_map().get(column, Kind::Data);
     let data = get_signed_int_decoder(data, column.rle_version());
@@ -65,10 +67,13 @@ fn get_inner_timestamp_decoder<T: ArrowTimestampType + Send>(
 
     let present = PresentDecoder::from_stripe(stripe, column);
 
-    let iter = Box::new(
-        TimestampDecoder::<T>::new(seconds_since_unix_epoch, data, secondary).with_options(options),
-    );
-    PrimitiveArrayDecoder::<T>::new(iter, present)
+    let iter =
+        TimestampDecoder::<T>::new(seconds_since_unix_epoch, data, secondary).with_options(options);
+    let iter = match time_zone {
+        Some(conversion) => iter.with_time_zone(conversion.clone()),
+        None => iter,
+    };
+    PrimitiveArrayDecoder::<T>::new(Box::new(iter), present)
 }
 
 fn get_timestamp_decoder<T: ArrowTimestampType + Send>(
@@ -81,6 +86,7 @@ fn get_timestamp_decoder<T: ArrowTimestampType + Send>(
         stripe,
         seconds_since_unix_epoch,
         stripe.timestamp_read_options(),
+        None,
     );
     match stripe.writer_tz() {
         Some(writer_tz) => Box::new(TimestampOffsetArrayDecoder { inner, writer_tz }),
@@ -98,8 +104,28 @@ fn get_timestamp_instant_decoder<T: ArrowTimestampType + Send>(
         stripe,
         ORC_EPOCH_UTC_SECONDS_SINCE_UNIX_EPOCH,
         stripe.timestamp_read_options(),
+        None,
     );
-    Box::new(TimestampInstantArrayDecoder(inner))
+    Box::new(TimestampInstantArrayDecoder {
+        inner,
+        timezone: Some("UTC".into()),
+    })
+}
+
+fn get_converted_timestamp_decoder<T: ArrowTimestampType + Send>(
+    column: &Column,
+    stripe: &Stripe,
+    conversion: &TimestampTimeZoneConversion,
+    timezone: Option<Arc<str>>,
+) -> Box<dyn ArrayBatchDecoder> {
+    let inner = get_inner_timestamp_decoder::<T>(
+        column,
+        stripe,
+        conversion.orc_epoch_seconds(),
+        stripe.timestamp_read_options(),
+        Some(conversion),
+    );
+    Box::new(TimestampInstantArrayDecoder { inner, timezone })
 }
 
 fn decimal128_decoder(
@@ -139,6 +165,35 @@ pub fn new_timestamp_decoder(
     field_type: ArrowDataType,
     stripe: &Stripe,
 ) -> Result<Box<dyn ArrayBatchDecoder>> {
+    if let Some(conversion) = stripe.timestamp_time_zone() {
+        return match field_type {
+            ArrowDataType::Timestamp(TimeUnit::Second, timezone) => {
+                Ok(get_converted_timestamp_decoder::<TimestampSecondType>(
+                    column, stripe, conversion, timezone,
+                ))
+            }
+            ArrowDataType::Timestamp(TimeUnit::Millisecond, timezone) => {
+                Ok(get_converted_timestamp_decoder::<TimestampMillisecondType>(
+                    column, stripe, conversion, timezone,
+                ))
+            }
+            ArrowDataType::Timestamp(TimeUnit::Microsecond, timezone) => {
+                Ok(get_converted_timestamp_decoder::<TimestampMicrosecondType>(
+                    column, stripe, conversion, timezone,
+                ))
+            }
+            ArrowDataType::Timestamp(TimeUnit::Nanosecond, timezone) => {
+                Ok(get_converted_timestamp_decoder::<TimestampNanosecondType>(
+                    column, stripe, conversion, timezone,
+                ))
+            }
+            _ => MismatchedSchemaSnafu {
+                orc_type: column.data_type().clone(),
+                arrow_type: field_type,
+            }
+            .fail(),
+        };
+    }
     let seconds_since_unix_epoch = match stripe.writer_tz() {
         Some(writer_tz) => {
             // If writer timezone exists then we must take the ORC epoch according
@@ -299,9 +354,11 @@ impl<T: ArrowTimestampType> ArrayBatchDecoder for TimestampOffsetArrayDecoder<T>
     }
 }
 
-/// Wrapper around PrimitiveArrayDecoder to allow specifying the timezone of the output
-/// timestamp array as UTC.
-struct TimestampInstantArrayDecoder<T: ArrowTimestampType>(PrimitiveArrayDecoder<T>);
+/// Attaches an output label without changing the decoded timestamp values.
+struct TimestampInstantArrayDecoder<T: ArrowTimestampType> {
+    inner: PrimitiveArrayDecoder<T>,
+    timezone: Option<Arc<str>>,
+}
 
 impl<T: ArrowTimestampType> ArrayBatchDecoder for TimestampInstantArrayDecoder<T> {
     fn next_batch(
@@ -310,15 +367,15 @@ impl<T: ArrowTimestampType> ArrayBatchDecoder for TimestampInstantArrayDecoder<T
         parent_present: Option<&NullBuffer>,
     ) -> Result<ArrayRef> {
         let array = self
-            .0
+            .inner
             .next_primitive_batch(batch_size, parent_present)?
-            .with_timezone("UTC");
+            .with_timezone_opt(self.timezone.clone());
         let array = Arc::new(array) as ArrayRef;
         Ok(array)
     }
 
     fn skip_values(&mut self, n: usize, parent_present: Option<&NullBuffer>) -> Result<()> {
-        self.0.skip_values(n, parent_present)
+        self.inner.skip_values(n, parent_present)
     }
 }
 

@@ -36,6 +36,9 @@ use crate::row_selection::RowSelection;
 use crate::schema::{ArrowSchemaOptions, RootDataType, TimestampPrecision};
 use crate::stripe::{Stripe, StripeMetadata};
 use crate::timestamp::TimestampReadOptions;
+use crate::timestamp_timezone::{
+    contains_timestamp, TimestampTimeZoneOptions, TimestampTimeZoneState,
+};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
 
@@ -49,6 +52,7 @@ pub struct ArrowReaderBuilder<R> {
     pub(crate) row_selection: Option<RowSelection>,
     pub(crate) timestamp_precision: TimestampPrecision,
     pub(crate) timestamp_read_options: TimestampReadOptions,
+    pub(crate) timestamp_time_zone_options: Option<TimestampTimeZoneOptions>,
     pub(crate) predicate: Option<Predicate>,
 }
 
@@ -68,6 +72,7 @@ impl<R> ArrowReaderBuilder<R> {
             row_selection: None,
             timestamp_precision: TimestampPrecision::default(),
             timestamp_read_options: TimestampReadOptions::default(),
+            timestamp_time_zone_options: None,
             predicate: None,
         }
     }
@@ -152,6 +157,21 @@ impl<R> ArrowReaderBuilder<R> {
         self
     }
 
+    /// Convert ordinary timestamps using explicit reader and writer timezone rules.
+    ///
+    /// This is opt-in and independent of precision handling. Missing or empty
+    /// writer names retain the most recently started stripe's writer timezone,
+    /// initially the reader timezone. Stripes outside the byte range or wholly
+    /// excluded by row selection do not change this state. Inferred timestamp
+    /// fields use UTC labels; explicit schema labels do not select reader rules.
+    /// Predicate-based row-group pruning is disabled in this mode because stored
+    /// timestamp statistics do not bound converted values. Manual row selection
+    /// remains available; callers must still apply their predicate to output rows.
+    pub fn with_timestamp_time_zone_options(mut self, options: TimestampTimeZoneOptions) -> Self {
+        self.timestamp_time_zone_options = Some(options);
+        self
+    }
+
     /// Set a predicate for row group filtering
     ///
     /// The predicate will be evaluated against row group statistics to automatically
@@ -206,8 +226,9 @@ impl<R> ArrowReaderBuilder<R> {
             .map(|(key, value)| (key.clone(), String::from_utf8_lossy(value).to_string()))
             .collect::<HashMap<_, _>>();
         self.schema_ref.clone().unwrap_or_else(|| {
-            let options =
-                ArrowSchemaOptions::new().with_timestamp_precision(self.timestamp_precision);
+            let options = ArrowSchemaOptions::new()
+                .with_timestamp_precision(self.timestamp_precision)
+                .with_timestamp_as_instant(self.timestamp_time_zone_options.is_some());
             Arc::new(projected_data_type.create_arrow_schema_with_options(&metadata, options))
         })
     }
@@ -238,6 +259,9 @@ impl<R: ChunkReader> ArrowReaderBuilder<R> {
             projected_data_type,
             stripe_index: 0,
             timestamp_read_options: self.timestamp_read_options,
+            timestamp_time_zone_state: self
+                .timestamp_time_zone_options
+                .map(TimestampTimeZoneState::new),
             file_byte_range: self.file_byte_range,
         };
         ArrowReader {
@@ -277,7 +301,11 @@ impl<R: ChunkReader> ArrowReader<R> {
 
                 // Evaluate predicate if present
                 let mut stripe_selection: Option<RowSelection> = None;
-                if let Some(ref predicate) = self.predicate {
+                if let Some(predicate) = self
+                    .predicate
+                    .as_ref()
+                    .filter(|_| self.cursor.timestamp_time_zone_state.is_none())
+                {
                     // Try to read row indexes for this stripe
                     match stripe.read_row_indexes(&self.cursor.file_metadata) {
                         Ok(row_index) => {
@@ -329,6 +357,15 @@ impl<R: ChunkReader> ArrowReader<R> {
                     }
                 }
 
+                if self.cursor.timestamp_time_zone_state.is_some()
+                    && (stripe_rows == 0
+                        || final_selection
+                            .as_ref()
+                            .is_some_and(|selection| !selection.selects_any()))
+                {
+                    return self.next().transpose();
+                }
+                let stripe = self.cursor.start_stripe(stripe)?;
                 let decoder = NaiveStripeDecoder::new_with_selection(
                     stripe,
                     self.schema_ref.clone(),
@@ -374,7 +411,28 @@ pub(crate) struct Cursor<R> {
     pub projected_data_type: RootDataType,
     pub stripe_index: usize,
     pub timestamp_read_options: TimestampReadOptions,
+    pub timestamp_time_zone_state: Option<TimestampTimeZoneState>,
     pub file_byte_range: Option<Range<usize>>,
+}
+
+impl<R> Cursor<R> {
+    pub(crate) fn start_stripe(&mut self, stripe: Stripe) -> Result<Stripe> {
+        let has_timestamp = stripe
+            .columns()
+            .iter()
+            .any(|column| contains_timestamp(column.data_type()));
+        match self
+            .timestamp_time_zone_state
+            .as_mut()
+            .filter(|_| has_timestamp)
+        {
+            Some(state) => {
+                let conversion = state.start_stripe(stripe.writer_timezone_name())?;
+                Ok(stripe.with_timestamp_time_zone(conversion))
+            }
+            None => Ok(stripe),
+        }
+    }
 }
 
 impl<R: ChunkReader> Cursor<R> {
@@ -402,11 +460,12 @@ impl<R: ChunkReader> Iterator for Cursor<R> {
         self.get_stripe_metadatas()
             .get(self.stripe_index)
             .map(|info| {
-                let stripe = Stripe::new(
+                let stripe = Stripe::new_with_timestamp_time_zone(
                     &mut self.reader,
                     &self.file_metadata,
                     &self.projected_data_type.clone(),
                     info,
+                    self.timestamp_time_zone_state.is_some(),
                 );
                 self.stripe_index += 1;
                 stripe.map(|stripe| stripe.with_timestamp_read_options(self.timestamp_read_options))

@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/datafusion-contrib/orc-rust",
-  "commit": "579c04b3aedefc007f09371894f01c90ef9e75c2",
+  "commit": "0653cb2287e6bdb8352aeafbaa816ff25da72f76",
   "source_kind": "Locally patched upstream package; patch revisions have not been published to the upstream repository.",
   "upstream_tag": "v0.9.0",
   "upstream_commit": "d21a6e4d2f8b5f4465fa5c0cad046c7ec2284307",
@@ -32,11 +32,19 @@
     {
       "commit": "579c04b3aedefc007f09371894f01c90ef9e75c2",
       "subject": "feat: opt into checked timestamp precision truncation"
+    },
+    {
+      "commit": "ed6e9acf4fe9dbe0f3a22adef3da027a1c263bf6",
+      "subject": "feat: opt into caller-supplied ORC timestamp timezone rules"
+    },
+    {
+      "commit": "0653cb2287e6bdb8352aeafbaa816ff25da72f76",
+      "subject": "test: qualify ORC timezone inheritance and reader pruning boundaries"
     }
   ],
   "package": {
     "command": "cargo +1.98.1 package --locked --no-verify",
-    "sha256": "31eec632b1bc620a3da3dad31b94c1c46b3cb5666ba7b9233ebaa9e522d57a01",
+    "sha256": "2b02ad3d62af0cd96084c546217c124364ac0ce09ca088f9b5c0281ec3a6f731",
     "excluded_files": [
       "Cargo.lock"
     ],
@@ -46,7 +54,7 @@
     "note": "Cargo-normalized manifest; upstream package omits integration fixtures and benchmarks. Source tests were run in the full detached source checkout."
   },
   "files_sha256": {
-    ".cargo_vcs_info.json": "13f295c623e827cdbd14d4f6c0443ceadd85ba959ba3339116087d45ceafc205",
+    ".cargo_vcs_info.json": "1833f70a29919d079e673aaaf57e6baf73e315b7c06c9c9422f57ce4dda3aad5",
     "Cargo.toml": "0a69cbe6449e27e1be0f020c1f0e9393a135b99fa00a115e45a0e7e7b8726385",
     "Cargo.toml.orig": "58ccc950aa988bb2c70c7850de74c1ac9ad182773452dc9a08a0b25cceeb7874",
     "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
@@ -57,11 +65,11 @@
     "src/array_decoder/mod.rs": "fbfd44cc35d0df82355f5d28a52d965394d6636d0c311b6c8a61a9f016d00e57",
     "src/array_decoder/string.rs": "04b6244c315100525c9a7d37bc7e1537be699070522393772ddf2c203e49f2d3",
     "src/array_decoder/struct_decoder.rs": "521c29e4ef19fa36a1c301a6214b69c851496f535b2f0666205e6731b49a97a2",
-    "src/array_decoder/timestamp.rs": "32d2ecaf13bb2282e2e5957aa1609822ea1aaca96c5f0b781b6c7a724336b369",
+    "src/array_decoder/timestamp.rs": "97fa9d02382de00cb16b813fef94e9bc7b0cf92236d5e20ddd90a803be2a5496",
     "src/array_decoder/union.rs": "461b9b9ab606f34b83e877fabe3eaae1c0ab9c1db15a4af8aa80b9724909f953",
-    "src/arrow_reader.rs": "1dd3dd2ae1468dce214db6f8f8dfb0de4a79e287336acb908f03eec6047ea17e",
+    "src/arrow_reader.rs": "dbe5bd1be2aa240bd57ec009a4e6991d3951f2e41e2c1c8b36e0e4f6c787a97d",
     "src/arrow_writer.rs": "51cef8ce0fdf27d3b11eeb01d86d6a3f529fa8cee9387ac3b60a983c418d3711",
-    "src/async_arrow_reader.rs": "d26b305858c9a155fe9adea44b5352e2bcb0b5acc8c09f3b1e6020aca29e69b7",
+    "src/async_arrow_reader.rs": "fa78ffe94c35532df8c433d66834ca377a761368a6178cf307e2b20595a0752a",
     "src/bin/orc/bloom.rs": "74a3b31909802030a2c1a53a9fc081f39515701236e6222431a86761367529dd",
     "src/bin/orc/common.rs": "02c348b38c209e5cd28916b41976ac19737cd310ca0acef78d5af79575458977",
     "src/bin/orc/export.rs": "ead4b01058a54b7d884887ee4464f7672c28f9abf1a9f8b5553953accffd39a3",
@@ -88,27 +96,29 @@
     "src/encoding/integer/util.rs": "aaef853e1e62d45b69daf37c324631d30c308e34c277109cc1a188c1bf8674e0",
     "src/encoding/mod.rs": "49e0af9060eedc9747d6d6c9c685b0a15d91373e5bceb1f66406ae002bd308ad",
     "src/encoding/rle.rs": "aed6ecbf30d3f71c2d13c3757e6b16cde01e3207445e0f7652cae65009088f21",
-    "src/encoding/timestamp.rs": "028a2b457d871215d42bdd51f0be4137a6e8346182cd9351ce9b02d42daa7bac",
+    "src/encoding/timestamp.rs": "f0328b85dcef963e72e7b8e11c4e5bf0c2f0b5670145f1fee001dc161a497f6e",
     "src/encoding/util.rs": "6c0b71288029a1ff7e6a08421a7ab182ad1f3c9bdd595af12d07809ef762aede",
     "src/error.rs": "5f3b4b8535e0e3caac75070061527de767e7b54df531c7054b622b2ddb9a78a2",
-    "src/lib.rs": "5a7a695dd7135fbdd7c6dcea1e8f1017b45ccf082366d15066547481451a155a",
+    "src/lib.rs": "fdec2af92747841367f4e0ba086a82dbca0e8b44bc6776a1b278ab18195efd08",
     "src/memory.rs": "64a767aae7c852523cfa9f31db4e71f1d8558aeea83874d465bedd1b21f3febb",
     "src/predicate.rs": "8701c1280b7bd56b77f5d02138c07de9c6b091180e2c02edb580fcd1dbd9efca",
     "src/projection.rs": "9302c5cb0613dbb75eb11fc604b835f85484119b3e31fa0ad4dd0f2f13e71fd4",
     "src/proto.rs": "d13325a41f781118f06b7e856983339212c015ef82e34f9c7fca9154070a4f0a",
-    "src/reader/metadata/tests.rs": "0d139122e7cc3fb3454ed33b0d2a1a09551a3ae8852830e7d3088ff72c671bd8",
     "src/reader/metadata.rs": "bedde03fd3e056a51065d4123693845f090d4dc5780272429936ca5625df5d09",
+    "src/reader/metadata/tests.rs": "0d139122e7cc3fb3454ed33b0d2a1a09551a3ae8852830e7d3088ff72c671bd8",
     "src/reader/mod.rs": "358c472597d505087ff9d5e65d6fb586899e47ec1e1ca282f6098612c02fa72a",
     "src/row_group_filter.rs": "48f3ba71650f6543ce1993bdccfaf125d71deb2687a3038e763754a31133bfc0",
     "src/row_index.rs": "2c47e86cf094f719f24c20c3134b51e4233069906e433880784be84ef6da9017",
     "src/row_selection.rs": "82d2ef55fabf790a865e3336e46ff1f5d52e71e7b1624223c414f204e8a7dc0e",
-    "src/schema/validation/tests.rs": "aa234f3f9b5f7724ac94cba90e993570502a7cb2344f4f352829f8a4d88da6c7",
+    "src/schema.rs": "bb7cf829fb770989b68030080036f37ea74efcf07219867047e45fa360c2ac09",
     "src/schema/validation.rs": "aec9a39d24d077b87a9ba05c3b01c4302281de02efe47c1f38f3907d9f131d1b",
-    "src/schema.rs": "d7e873f9d2eceaccfbd7c2febd1d7b4380b6f9b3f25ea9704f3e6f20ec801300",
+    "src/schema/validation/tests.rs": "aa234f3f9b5f7724ac94cba90e993570502a7cb2344f4f352829f8a4d88da6c7",
     "src/statistics.rs": "0e937e6c5f97ca6cfd837107c13e38b1b96a063b3cb9b66f16ffd06eb21d0ae0",
-    "src/stripe.rs": "16e4b5f3dee06e02729f3d27a095119c8ddae238ae51728d083c4d05c27e8559",
-    "src/timestamp.rs": "febabd1e581ee48d4b3664140bcd4e385213d1c96efd3f538716c4c6b5f77342",
+    "src/stripe.rs": "7bd940d2b01e9cd0f1c3eada9abe05ef8b2b9da5ba7dfac87369dcf6aee820d4",
+    "src/timestamp.rs": "41d8b452a28e1750ce5102178bc212d683f1858704c6ba464976a64bba2e2c40",
     "src/timestamp_tests.rs": "fd0208a7622926ba66207227fb90b5a7cacf15170d0290cdacfa7000ba8a37eb",
+    "src/timestamp_timezone.rs": "91d7259666176a49039e93dc37ea336b18cdbe8c86ff5b1731a4d5a7e3f506fb",
+    "src/timestamp_timezone_tests.rs": "136a62dde6947cf7d6102243ddf9fac77450840cbe37df65f8ce8f23004eda26",
     "src/writer/column.rs": "6fd1b0903ebff69f9d4debe1b6fb169e9b91050b14585137c1b8dab3a5ccad6e",
     "src/writer/mod.rs": "58f92fcec92c29bd47a9660452542b7dacc2d4bd0eb8ae0246c1d4e1e3019af7",
     "src/writer/stripe.rs": "6c76d30deb39f9242121aab8084ec7b0458d989a14de34081ca81544c07da924"
