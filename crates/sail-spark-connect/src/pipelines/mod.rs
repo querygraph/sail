@@ -9,6 +9,7 @@ mod selection;
 mod sql;
 mod topology;
 
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 use datafusion::prelude::SessionContext;
@@ -16,7 +17,7 @@ pub(crate) use graph::PipelineGraph;
 use sail_catalog::manager::CatalogManager;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 
-use crate::error::{ProtoFieldExt, SparkError, SparkResult};
+use crate::error::{ProtoFieldExt, SparkError, SparkResult, StructuredSparkError};
 use crate::executor::{Executor, ExecutorBatch, ExecutorMetadata, ExecutorOutput};
 use crate::service::ExecutePlanResponseStream;
 use crate::session::SparkSession;
@@ -96,6 +97,20 @@ pub(crate) async fn handle_command(
             }
         }
         pc::CommandType::DefineFlow(command) => {
+            // Spark rejects an explicitly supplied once option before graph lookup.
+            if command.once.is_some() {
+                let name = command.flow_name.as_deref().unwrap_or_default();
+                return Err(Box::new(StructuredSparkError {
+                    class: "org.apache.spark.sql.AnalysisException",
+                    condition: "DEFINE_FLOW_ONCE_OPTION_NOT_SUPPORTED",
+                    sql_state: "0A000",
+                    message: format!(
+                        "Defining a one-time flow {name} with the 'once' option is not supported."
+                    ),
+                    parameters: HashMap::from([("flowName".into(), name.into())]),
+                })
+                .into());
+            }
             let id = command
                 .dataflow_graph_id
                 .as_deref()

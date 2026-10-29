@@ -164,9 +164,6 @@ impl PipelineGraph {
     pub(super) fn define_flow(&mut self, definition: pc::DefineFlow) -> SparkResult<Name> {
         self.ensure_idle()?;
         let raw_name = definition.flow_name.as_deref().required("flow name")?;
-        if definition.once.is_some() {
-            return Err(analysis("DEFINE_FLOW_ONCE_OPTION_NOT_SUPPORTED", raw_name));
-        }
         let raw_target = definition
             .target_dataset_name
             .as_deref()
