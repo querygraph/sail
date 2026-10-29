@@ -96,7 +96,8 @@ pub enum Statement {
     SetCatalog {
         set: Set,
         catalog: Catalog,
-        name: Either<Ident, StringLiteral>,
+        #[parser(function = |(_, _, e, _), _| e)]
+        name: Expr,
     },
     UseCatalog {
         r#use: Use,

@@ -246,6 +246,10 @@ impl PipelineGraph {
 impl GraphDefinition {
     pub(super) fn qualify(&self, name: &[String]) -> SparkResult<Name> {
         match name {
+            [_] if self.database.is_empty() => Err(SparkError::AnalysisError(
+                "The current pipeline database is unset; use USE or qualify the name explicitly"
+                    .into(),
+            )),
             [table] => Ok(vec![
                 self.catalog.clone(),
                 self.database.clone(),

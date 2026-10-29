@@ -211,12 +211,8 @@ fn from_ast_statement_impl(
             catalog: _,
             name,
         } => {
-            let name = match name {
-                Either::Left(x) => x.value,
-                Either::Right(x) => from_ast_string(x)?,
-            };
-            let node = spec::CommandNode::SetCurrentCatalog {
-                catalog: name.into(),
+            let node = spec::CommandNode::SetCurrentCatalogExpression {
+                catalog: from_ast_expression(name)?,
             };
             Ok(spec::Plan::Command(spec::CommandPlan::new(node)))
         }
