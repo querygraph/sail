@@ -152,8 +152,12 @@ Feature: CREATE TABLE with PARTITIONED BY clause
       """
     When query
       """
-      DESCRIBE typed_partition_case
+      SELECT * FROM typed_partition_case
       """
-    Then query result row where "col_name" is "id" has "data_type" equal to "bigint"
-    Then query result row where "col_name" is "ID" has "data_type" equal to "bigint"
-    Then query result row where "col_name" is "payload" has "data_type" equal to "string"
+    Then query schema
+      """
+      root
+       |-- id: long (nullable = true)
+       |-- payload: string (nullable = true)
+       |-- ID: long (nullable = true)
+      """

@@ -629,6 +629,7 @@ pub fn create_sort_order(
 
 /// Given a schema and a list of partition column names, returns the partition fields
 /// and a schema with the partition columns removed.
+/// Exact names take precedence over the unique case-insensitive fallback.
 pub fn get_partition_columns_and_file_schema(
     schema: &Schema,
     partition_by: Vec<String>,
@@ -636,10 +637,10 @@ pub fn get_partition_columns_and_file_schema(
     let partition_fields = partition_by
         .into_iter()
         .map(|col| {
-            let mut candidates = schema
-                .fields()
-                .iter()
-                .filter(|f| f.name().eq_ignore_ascii_case(&col));
+            let has_exact = schema.fields().iter().any(|field| field.name() == &col);
+            let mut candidates = schema.fields().iter().filter(|field| {
+                field.name() == &col || (!has_exact && field.name().eq_ignore_ascii_case(&col))
+            });
             match (candidates.next(), candidates.next()) {
                 (Some(field), None) => Ok(field.clone()),
                 _ => {
@@ -651,11 +652,7 @@ pub fn get_partition_columns_and_file_schema(
     let file_schema_fields = schema
         .fields()
         .iter()
-        .filter(|f| {
-            !partition_fields
-                .iter()
-                .any(|p| f.name().eq_ignore_ascii_case(p.name()))
-        })
+        .filter(|f| !partition_fields.iter().any(|p| f.name() == p.name()))
         .cloned()
         .collect::<Vec<_>>();
     let file_schema = Schema::new(file_schema_fields);
@@ -665,8 +662,55 @@ pub fn get_partition_columns_and_file_schema(
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
+    use datafusion::arrow::datatypes::{DataType, Field};
 
     use super::*;
+
+    #[test]
+    fn partition_lookup_preserves_case_distinct_file_fields() -> Result<()> {
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, true),
+            Field::new("ID", DataType::Int64, true),
+            Field::new("payload", DataType::Boolean, true),
+        ]);
+        let (partition, file) = get_partition_columns_and_file_schema(&schema, vec!["ID".into()])?;
+        assert_eq!(partition, vec![schema.fields()[1].clone()]);
+        assert_eq!(
+            file.fields(),
+            &vec![schema.fields()[0].clone(), schema.fields()[2].clone()].into()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn partition_lookup_retains_unique_case_insensitive_fallback() -> Result<()> {
+        let schema = Schema::new(vec![Field::new("PaRt", DataType::Int32, false)]);
+        let (partition, file) =
+            get_partition_columns_and_file_schema(&schema, vec!["part".into()])?;
+        assert_eq!(partition, vec![schema.fields()[0].clone()]);
+        assert!(file.fields().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn partition_lookup_rejects_ambiguous_fallback() {
+        let schema = Schema::new(vec![
+            Field::new("Id", DataType::Int64, true),
+            Field::new("iD", DataType::Int64, true),
+        ]);
+        assert!(get_partition_columns_and_file_schema(&schema, vec!["id".into()]).is_err());
+    }
+
+    #[test]
+    fn partition_lookup_rejects_missing_and_duplicate_exact_fields() {
+        let schema = Schema::new(vec![
+            Field::new("p", DataType::Int64, true),
+            Field::new("p", DataType::Int64, true),
+        ]);
+        for name in ["missing", "p"] {
+            assert!(get_partition_columns_and_file_schema(&schema, vec![name.into()]).is_err());
+        }
+    }
 
     #[test]
     fn row_level_operation_type_decodes_typed_values() {
