@@ -346,10 +346,19 @@ impl GraphDefinition {
         }
         for output in &self.outputs {
             let Some(flows) = producers.get(&output.name) else {
-                return Err(analysis(
-                    "PIPELINE_DATASET_WITHOUT_FLOW",
-                    quoted(&output.name),
-                ));
+                let name = quoted(&output.name);
+                return Err(Box::new(StructuredSparkError {
+                    class: "org.apache.spark.sql.AnalysisException",
+                    condition: "PIPELINE_DATASET_WITHOUT_FLOW",
+                    sql_state: "0A000",
+                    message: format!(
+                        "Pipeline dataset {name} does not have any defined flows. Please attach a query \
+                         with the dataset's definition, or explicitly define at least one flow that \
+                         writes to the dataset."
+                    ),
+                    parameters: HashMap::from([("identifier".into(), name)]),
+                })
+                .into());
             };
             if output.kind == sc::OutputType::MaterializedView && flows.len() != 1 {
                 return Err(analysis(

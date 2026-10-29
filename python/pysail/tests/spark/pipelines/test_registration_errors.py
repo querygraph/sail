@@ -2,6 +2,7 @@
 
 import pytest
 from pyspark.errors.exceptions.connect import AnalysisException
+from pyspark.sql.connect import proto as pb
 
 pytest.importorskip("pyspark.pipelines")
 
@@ -95,3 +96,40 @@ def test_duplicate_outputs_have_structured_types(pipeline_spark, pipeline, tmp_p
     }
     assert not pipeline_spark.catalog.tableExists("valid_output")
     assert not pipeline_spark.catalog.tableExists("duplicate")
+
+
+@pytest.mark.parametrize("dry", [False, True])
+def test_sql_dataset_without_flow_has_structured_error(pipeline_spark, pipeline, tmp_path, dry):
+    _, registry, run = pipeline
+    registry.register_sql("CREATE STREAMING TABLE st", tmp_path / "empty_table.sql")
+    with pytest.raises(AnalysisException) as error:
+        run(dry=dry)
+    assert error.value.getCondition() == "PIPELINE_DATASET_WITHOUT_FLOW"
+    assert error.value.getSqlState() == "0A000"
+    assert error.value.getMessageParameters() == {
+        "identifier": f"`{pipeline_spark.catalog.currentCatalog()}`.`{pipeline_spark.catalog.currentDatabase()}`.`st`"
+    }
+    assert not pipeline_spark.catalog.tableExists("st")
+
+
+@pytest.mark.parametrize("dry", [False, True])
+@pytest.mark.parametrize("kind", [pb.TABLE, pb.MATERIALIZED_VIEW, pb.TEMPORARY_VIEW])
+def test_protocol_dataset_without_flow_preserves_identifier(pipeline_spark, pipeline, tmp_path, kind, dry):
+    graph_id, registry, run = pipeline
+    registry.register_sql("CREATE MATERIALIZED VIEW independent AS SELECT 1 AS value", tmp_path / "independent.sql")
+    name = "`output``with.dot`"
+    command = pb.Command()
+    command.pipeline_command.define_output.CopyFrom(
+        pb.PipelineCommand.DefineOutput(dataflow_graph_id=graph_id, output_name=name, output_type=kind)
+    )
+    pipeline_spark.client.execute_command(command)
+    with pytest.raises(AnalysisException) as error:
+        run(dry=dry)
+    identifier = name
+    if kind != pb.TEMPORARY_VIEW:
+        identifier = f"`{pipeline_spark.catalog.currentCatalog()}`.`{pipeline_spark.catalog.currentDatabase()}`.{name}"
+    assert error.value.getCondition() == "PIPELINE_DATASET_WITHOUT_FLOW"
+    assert error.value.getSqlState() == "0A000"
+    assert error.value.getMessageParameters() == {"identifier": identifier}
+    assert not pipeline_spark.catalog.tableExists("independent")
+    assert not pipeline_spark.catalog.tableExists(name)
