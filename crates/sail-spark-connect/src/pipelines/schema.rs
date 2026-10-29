@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
@@ -87,6 +89,88 @@ fn spark_fields(schema: &Schema) -> SparkResult<spec::Fields> {
         .iter()
         .map(|field| spec::FieldRef::try_from(StructField::try_from(field.as_ref().clone())?))
         .collect()
+}
+
+pub(super) fn table_columns(
+    output: &Output,
+    inferred: &Schema,
+) -> SparkResult<Vec<spec::TableColumnDefinition>> {
+    let fields = match &output.schema {
+        Some(schema) => schema.fields.clone(),
+        None => nullable_fields(&spark_fields(inferred)?),
+    };
+    fields
+        .iter()
+        .map(|field| {
+            let metadata = field
+                .metadata
+                .iter()
+                .find(|(key, _)| key == spec::SPARK_METADATA_JSON_KEY)
+                .map(|(_, value)| serde_json::from_str::<serde_json::Value>(value))
+                .transpose()?;
+            let comment = metadata
+                .as_ref()
+                .and_then(|value| value.get("comment"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            Ok(spec::TableColumnDefinition {
+                name: field.name.clone(),
+                data_type: field.data_type.clone(),
+                nullable: field.nullable,
+                comment,
+                default: None,
+                generated_always_as: None,
+                identity: None,
+            })
+        })
+        .collect()
+}
+
+fn nullable_fields(fields: &spec::Fields) -> spec::Fields {
+    fields
+        .iter()
+        .map(|field| {
+            let mut field = field.as_ref().clone();
+            field.nullable = true;
+            field.data_type = nullable_type(&field.data_type);
+            Arc::new(field)
+        })
+        .collect()
+}
+
+fn nullable_type(data_type: &spec::DataType) -> spec::DataType {
+    let mut data_type = data_type.clone();
+    match &mut data_type {
+        spec::DataType::Struct { fields } => *fields = nullable_fields(fields),
+        spec::DataType::List {
+            data_type,
+            nullable,
+        }
+        | spec::DataType::LargeList {
+            data_type,
+            nullable,
+        }
+        | spec::DataType::FixedSizeList {
+            data_type,
+            nullable,
+            ..
+        } => {
+            **data_type = nullable_type(data_type);
+            *nullable = true;
+        }
+        spec::DataType::Map {
+            key_type,
+            value_type,
+            value_type_nullable,
+            ..
+        } => {
+            **key_type = nullable_type(key_type);
+            **value_type = nullable_type(value_type);
+            *value_type_nullable = true;
+        }
+        _ => {}
+    }
+    data_type
 }
 
 fn arrow_schema(resolver: &PlanResolver<'_>, fields: spec::Fields) -> SparkResult<Schema> {

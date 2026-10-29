@@ -126,15 +126,21 @@ Feature: Declarative pipeline SQL
       | 3     |
     Then pipeline dataset ordinary is not published
 
-  Scenario: Publication validation precedes dependency-ordered writes
+  Scenario: Table materialization errors precede data writes
     Given pipeline SQL file invalid_format.sql
       """
       CREATE MATERIALIZED VIEW a_valid AS SELECT * FROM range(2);
       CREATE MATERIALIZED VIEW z_invalid USING missing_format AS SELECT * FROM a_valid;
       """
     When the pipeline fails with No data source found for: missing_format
-    Then pipeline dataset a_valid is not published
     Then pipeline dataset z_invalid is not published
+    When query
+      """
+      SELECT count(*) AS rows FROM a_valid
+      """
+    Then query result
+      | rows |
+      | 0    |
 
   Scenario: Dry run validates the graph without planning publication
     Given pipeline SQL file invalid_format.sql
@@ -205,6 +211,31 @@ Feature: Declarative pipeline SQL
       DESCRIBE EXTENDED output
       """
     Then query result row where "col_name" is "Comment" has "data_type" equal to "daily summary"
+
+  Scenario: Declared columns are published with their order and comments
+    Given pipeline SQL file columns.sql
+      """
+      CREATE MATERIALIZED VIEW output (
+        second BIGINT COMMENT 'two', first BIGINT COMMENT 'one'
+      ) AS SELECT id AS first, id + 10 AS second FROM range(2);
+      """
+    When the pipeline runs
+    When query
+      """
+      SELECT * FROM output ORDER BY first
+      """
+    Then query result ordered
+      | second | first |
+      | 10     | 0     |
+      | 11     | 1     |
+    When query
+      """
+      DESCRIBE output
+      """
+    Then query result
+      | col_name | data_type | comment |
+      | second   | bigint    | two     |
+      | first    | bigint    | one     |
 
   Scenario: Streaming table definitions require a producer
     Given pipeline SQL file empty.sql

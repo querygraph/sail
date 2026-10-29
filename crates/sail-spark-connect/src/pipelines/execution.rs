@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
@@ -7,8 +7,10 @@ use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_common_datafusion::session::job::JobService;
+use sail_plan::config::PlanConfig;
 use sail_plan::resolve_and_execute_plan_with_scope;
 use sail_plan::resolver::PlanResolver;
+use sail_plan::resolver::scope::RelationScope;
 
 use super::analysis::{AnalyzedGraph, GraphScope};
 use super::graph::{Flow, GraphDefinition, Output, analysis};
@@ -16,41 +18,6 @@ use super::selection::Selection;
 use crate::error::{SparkError, SparkResult};
 use crate::session::SparkSession;
 use crate::spark::connect::{OutputType, pipeline_command as pc};
-
-pub(super) async fn validate_publication(
-    ctx: &SessionContext,
-    graph: &GraphDefinition,
-    analyzed: &AnalyzedGraph,
-) -> SparkResult<()> {
-    let spark = ctx.extension::<SparkSession>()?;
-    for output in &graph.outputs {
-        if output.kind != OutputType::MaterializedView {
-            continue;
-        }
-        let flow = graph
-            .flows
-            .iter()
-            .find(|x| x.target == output.name)
-            .ok_or_else(|| analysis("PIPELINE_DATASET_WITHOUT_FLOW", output.name.join(".")))?;
-        let scope = GraphScope {
-            graph,
-            resolved: &analyzed.relations,
-            reads: Mutex::default(),
-            flow,
-        };
-        let config = spark.plan_config_with_overrides(flow.sql_conf.clone())?;
-        // Resolve catalog preconditions and writer options against analyzed
-        // placeholders. Executing these plans here would publish output during
-        // dry runs or before the remaining writers have been validated.
-        PlanResolver::new(ctx, config)
-            .with_relation_scope(&scope)
-            .resolve_named_plan(spec::Plan::Command(spec::CommandPlan::new(
-                publication_command(output, flow),
-            )))
-            .await?;
-    }
-    Ok(())
-}
 
 pub(super) async fn execute(
     ctx: &SessionContext,
@@ -68,14 +35,9 @@ pub(super) async fn execute(
         return Err(SparkError::unsupported("incremental pipeline execution"));
     }
     let spark = ctx.extension::<SparkSession>()?;
-    let service = ctx.extension::<JobService>()?;
+    super::materialize::tables(ctx, graph, &analyzed, &selection).await?;
     let mut resolved = BTreeMap::new();
     for output in &graph.outputs {
-        if output.schema.is_some() {
-            return Err(SparkError::unsupported(
-                "declared pipeline schema publication",
-            ));
-        }
         if output.kind != OutputType::TemporaryView
             && !selection.runs(&output.name)
             && selection.required.contains(&output.name)
@@ -121,19 +83,30 @@ pub(super) async fn execute(
             resolved.insert(name, plan);
             continue;
         }
-        let (physical, _) = resolve_and_execute_plan_with_scope(
-            ctx,
-            config,
-            spec::Plan::Command(spec::CommandPlan::new(publication_command(output, flow))),
-            Some(&scope),
-        )
-        .await?;
-        let mut stream = service.runner().execute(ctx, physical).await?;
-        while stream.try_next().await?.is_some() {}
+        run_command(ctx, config, publication_command(output, flow), Some(&scope)).await?;
         // Downstream flows scan the newly committed table. They must not inline
         // and recompute the producer's definition, especially for nondeterminism.
         resolved.insert(name.clone(), read_output(ctx, name).await?);
     }
+    Ok(())
+}
+
+pub(super) async fn run_command(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    command: spec::CommandNode,
+    scope: Option<&dyn RelationScope>,
+) -> SparkResult<()> {
+    let (physical, _) = resolve_and_execute_plan_with_scope(
+        ctx,
+        config,
+        spec::Plan::Command(spec::CommandPlan::new(command)),
+        scope,
+    )
+    .await?;
+    let service = ctx.extension::<JobService>()?;
+    let mut stream = service.runner().execute(ctx, physical).await?;
+    while stream.try_next().await?.is_some() {}
     Ok(())
 }
 
@@ -154,7 +127,7 @@ fn publication_command(output: &Output, flow: &Flow) -> spec::CommandNode {
         input: Box::new(flow.query.clone()),
         provider: details.format,
         table: output.name.clone().into(),
-        mode: spec::WriteToMode::CreateOrReplace,
+        mode: spec::WriteToMode::Append,
         partitioning_columns: details
             .partition_cols
             .into_iter()
@@ -170,8 +143,8 @@ fn publication_command(output: &Output, flow: &Flow) -> spec::CommandNode {
             .map(Into::into)
             .collect(),
         options: vec![],
-        table_properties: details.table_properties.into_iter().collect(),
-        table_comment: output.definition.comment.clone(),
+        table_properties: vec![],
+        table_comment: None,
     })
 }
 

@@ -1,6 +1,7 @@
 mod analysis;
 mod execution;
 mod graph;
+mod materialize;
 mod schema;
 mod schema_merge;
 mod selection;
@@ -141,7 +142,6 @@ pub(crate) async fn handle_command(
                     let analyzed = analysis::analyze(&ctx, &definition).await?;
                     let selection = selection.with_dependencies(&definition, &analyzed);
                     if !command.dry.unwrap_or(false) {
-                        execution::validate_publication(&ctx, &definition, &analyzed).await?;
                         execution::execute(&ctx, &definition, analyzed, selection).await?;
                     }
                     Ok::<_, SparkError>(())
