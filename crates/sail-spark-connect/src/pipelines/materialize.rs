@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use datafusion::prelude::SessionContext;
@@ -41,7 +40,8 @@ pub(super) async fn tables(
             Some(pc::define_output::Details::TableDetails(details)) => details.clone(),
             _ => pc::define_output::TableDetails::default(),
         };
-        let mut properties: BTreeMap<_, _> = details.table_properties.into_iter().collect();
+        let mut properties =
+            super::properties::canonicalize(details.table_properties.into_iter().collect())?;
         for (key, value) in [
             ("comment", output.definition.comment.as_ref()),
             ("provider", details.format.as_ref()),

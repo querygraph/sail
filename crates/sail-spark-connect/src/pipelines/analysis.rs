@@ -15,6 +15,7 @@ use super::graph::{Flow, GraphDefinition, Name, analysis, quoted};
 use crate::error::SparkResult;
 use crate::session::SparkSession;
 use crate::spark::connect::OutputType;
+use crate::spark::connect::pipeline_command::define_output;
 
 /// All declared outputs are known before analysis starts. An unresolved local
 /// name must never fall through to a stale table from a previous pipeline run.
@@ -173,6 +174,13 @@ pub(super) async fn analyze(
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(analysis("PIPELINE_CIRCULAR_DEPENDENCY", pending));
+        }
+    }
+    for output in &graph.outputs {
+        if let Some(define_output::Details::TableDetails(details)) = &output.definition.details {
+            super::properties::validate_reset(
+                details.table_properties.get("pipelines.reset.allowed"),
+            )?;
         }
     }
     Ok(AnalyzedGraph {
