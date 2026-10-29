@@ -4,22 +4,25 @@ use arrow::array::{Array, ArrayRef, ListArray, MapArray, StructArray};
 use arrow::compute::{CastOptions, cast_with_options};
 use arrow::datatypes::{DataType, Field, SchemaRef, TimeUnit};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
-use datafusion_common::{Result, exec_datafusion_err, exec_err};
+use datafusion_common::{Result, exec_datafusion_err, exec_err, plan_err};
+use orc_rust::projection::ProjectionMask;
 use orc_rust::reader::metadata::FileMetadata;
 use orc_rust::schema::{ArrowSchemaOptions, TimestampPrecision};
+use orc_rust::{ArrowReaderBuilder, TimestampPrecisionLoss, TimestampReadOptions};
 use sail_common_datafusion::array::record_batch::cast_array_recursively;
 
 use super::schema::infer_schema;
+use super::timezone::OrcJavaTimeZoneConfig;
 
 /// The native decoding schema and Spark-facing schema for one validated ORC file.
 /// Native readers must decode with microsecond timestamp precision. Logical type
 /// conversion happens after decoding; an integer decoder must not receive a
 /// timestamp field merely because the ORC type has a Spark annotation.
 ///
-/// This bridge does not configure timestamp timezone rules or register a file
-/// source. Ordinary ORC TIMESTAMP columns remain guarded during adaptation until
-/// a qualified reader-timezone provider is wired into Sail; TIMESTAMP_INSTANT
-/// already carries an instant and can be relabeled with the session timezone.
+/// [`Self::try_new_reader`] configures the native timestamp conversion and pairs
+/// its decoding schema with this bridge. Ordinary ORC TIMESTAMP columns from
+/// [`Self::try_new`] remain guarded during adaptation. Neither path registers a
+/// file source or implements requested-schema evolution.
 #[derive(Debug, Clone)]
 pub struct OrcSchemaBridge {
     physical: SchemaRef,
@@ -36,6 +39,71 @@ impl OrcSchemaBridge {
             ArrowSchemaOptions::new().with_timestamp_precision(TimestampPrecision::Microsecond),
         ));
         Ok(Self { physical, logical })
+    }
+
+    /// Configure a native reader and its matching physical-to-logical bridge.
+    ///
+    /// `metadata` must describe the same immutable file as `reader`, and should
+    /// have been read with explicit metadata/depth limits. The complete logical
+    /// schema is validated before selecting columns or creating a native schema.
+    /// Reader timezone rules select numeric conversion; `session_timezone` only
+    /// labels the logical output. Precision is microseconds with checked truncation.
+    ///
+    /// `projection` contains strictly increasing, unique top-level field ordinals;
+    /// `None` selects all fields and `Some(&[])` selects none. Final request order
+    /// and duplicate columns belong to the caller's subsequent output projection.
+    ///
+    /// Callers may set execution controls such as batch size, byte range and row
+    /// selection on the returned builder. They must not replace its schema,
+    /// projection, precision or timezone options: the returned bridge is paired
+    /// with this exact configuration. Field checks cannot detect a replacement
+    /// timezone policy that happens to produce the same physical schema.
+    pub fn try_new_reader<R>(
+        reader: R,
+        metadata: Arc<FileMetadata>,
+        session_timezone: &str,
+        reader_timezone: &OrcJavaTimeZoneConfig,
+        projection: Option<&[usize]>,
+    ) -> Result<(ArrowReaderBuilder<R>, Self)> {
+        let logical = infer_schema(&metadata, session_timezone)?;
+        let (logical, mask) = match projection {
+            Some(indices) => {
+                if let Some(index) = indices
+                    .iter()
+                    .find(|&&index| index >= logical.fields().len())
+                {
+                    return plan_err!(
+                        "ORC physical projection index {index} is out of bounds for {} fields",
+                        logical.fields().len()
+                    );
+                }
+                if indices.windows(2).any(|pair| pair[0] >= pair[1]) {
+                    return plan_err!(
+                        "ORC physical projection must contain strictly increasing, unique top-level field indices"
+                    );
+                }
+                let root = metadata.root_data_type();
+                let mask = ProjectionMask::roots(
+                    root,
+                    indices
+                        .iter()
+                        .map(|&index| root.children()[index].data_type().column_index()),
+                );
+                (Arc::new(logical.project(indices)?), Some(mask))
+            }
+            None => (logical, None),
+        };
+        let mut builder = ArrowReaderBuilder::new_with_metadata(reader, metadata)
+            .with_timestamp_precision(TimestampPrecision::Microsecond)
+            .with_timestamp_read_options(
+                TimestampReadOptions::new().with_precision_loss(TimestampPrecisionLoss::Truncate),
+            )
+            .with_timestamp_time_zone_options(reader_timezone.native_options()?);
+        if let Some(mask) = mask {
+            builder = builder.with_projection(mask);
+        }
+        let physical = builder.schema();
+        Ok((builder, Self { physical, logical }))
     }
 
     pub fn physical_schema(&self) -> &SchemaRef {
@@ -158,3 +226,7 @@ fn adapt_array(array: &ArrayRef, target: &Field) -> Result<ArrayRef> {
 #[cfg(test)]
 #[path = "metadata_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "reader_factory_tests.rs"]
+mod reader_factory_tests;
