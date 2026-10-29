@@ -4,6 +4,10 @@ import pytest
 from pysail.testing.spark.session import spark_session_factory
 
 
+def pytest_configure(config):
+    config.pluginmanager.import_plugin("pysail.testing.spark.steps.pipelines")
+
+
 @pytest.fixture
 def pipeline_spark(remote, tmp_path):
     # A separate session keeps pipeline catalogs, registrations, and SQL defaults

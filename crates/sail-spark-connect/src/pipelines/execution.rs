@@ -36,6 +36,9 @@ pub(super) async fn execute(
     let service = ctx.extension::<JobService>()?;
     let mut resolved = BTreeMap::new();
     for output in &graph.outputs {
+        if output.view.is_some() {
+            return Err(SparkError::unsupported("persisted pipeline view execution"));
+        }
         if output.schema.is_some() || output.definition.comment.is_some() {
             return Err(SparkError::unsupported(
                 "declared pipeline schema or comment publication",

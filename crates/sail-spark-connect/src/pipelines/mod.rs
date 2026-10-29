@@ -3,6 +3,7 @@ mod execution;
 mod graph;
 mod schema;
 mod selection;
+mod sql;
 mod topology;
 
 use std::time::SystemTime;
@@ -157,8 +158,15 @@ pub(crate) async fn handle_command(
                 rx,
             ));
         }
-        pc::CommandType::DefineSqlGraphElements(_) => {
-            return Err(SparkError::unsupported("pipeline SQL definitions"));
+        pc::CommandType::DefineSqlGraphElements(command) => {
+            let graph = spark.pipeline(
+                command
+                    .dataflow_graph_id
+                    .as_deref()
+                    .required("dataflow graph id")?,
+            )?;
+            sql::register(&mut *graph.lock()?, command)?;
+            sc::PipelineCommandResult::default()
         }
         _ => return Err(SparkError::unsupported("pipeline command")),
     };

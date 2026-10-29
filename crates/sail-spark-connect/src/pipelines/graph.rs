@@ -52,6 +52,7 @@ pub(super) struct Output {
     pub kind: sc::OutputType,
     pub definition: pc::DefineOutput,
     pub schema: Option<spec::Schema>,
+    pub view: Option<spec::ViewDefinition>,
 }
 
 #[derive(Clone)]
@@ -138,6 +139,7 @@ impl PipelineGraph {
             name: name.clone(),
             kind,
             schema: super::schema::declared_schema(&definition)?,
+            view: None,
             definition,
         });
         Ok(name)
