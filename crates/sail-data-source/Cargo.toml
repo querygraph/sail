@@ -25,6 +25,7 @@ datafusion-datasource-json = { workspace = true }
 datafusion-expr = { workspace = true }
 datafusion-session = { workspace = true }
 object_store = { workspace = true }
+orc-rust = { workspace = true }
 chumsky = { workspace = true }
 glob = { workspace = true }
 url = { workspace = true }

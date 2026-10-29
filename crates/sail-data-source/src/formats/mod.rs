@@ -5,6 +5,7 @@ pub mod console;
 pub mod csv;
 pub mod json;
 pub mod noop;
+pub mod orc;
 pub mod parquet;
 pub mod python;
 pub mod rate;
