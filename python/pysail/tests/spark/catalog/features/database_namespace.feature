@@ -1,5 +1,30 @@
 Feature: Database, schema, and namespace aliases
 
+  Scenario: USE can omit the database keyword
+    Given final statement
+      """
+      DROP DATABASE IF EXISTS bare_use_namespace
+      """
+    Given final statement
+      """
+      USE DATABASE default
+      """
+    Given statement
+      """
+      CREATE DATABASE bare_use_namespace
+      """
+    Given statement
+      """
+      USE bare_use_namespace
+      """
+    When query
+      """
+      SELECT current_database() AS database
+      """
+    Then query result
+      | database           |
+      | bare_use_namespace |
+
   Scenario Outline: Database, schema, and namespace keywords are interchangeable
     Given statement
       """

@@ -98,15 +98,15 @@ pub enum Statement {
         catalog: Catalog,
         name: Either<Ident, StringLiteral>,
     },
-    UseDatabase {
-        r#use: Use,
-        database: DatabaseKeyword,
-        name: ObjectName,
-    },
     UseCatalog {
         r#use: Use,
         catalog: Catalog,
         name: Ident,
+    },
+    UseDatabase {
+        r#use: Use,
+        database: Option<DatabaseKeyword>,
+        name: ObjectName,
     },
     CreateDatabase {
         create: Create,
