@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/datafusion-contrib/orc-rust",
-  "commit": "056c06617384ba409d035c66f04aff39d14a10bb",
+  "commit": "2ecec391db0699019b55f731fc9eefd8971b3802",
   "source_kind": "Locally patched upstream package; patch revisions have not been published to the upstream repository.",
   "upstream_tag": "v0.9.0",
   "upstream_commit": "d21a6e4d2f8b5f4465fa5c0cad046c7ec2284307",
@@ -48,11 +48,15 @@
     {
       "commit": "056c06617384ba409d035c66f04aff39d14a10bb",
       "subject": "feat: bound decoded ORC stripe footers per reader"
+    },
+    {
+      "commit": "2ecec391db0699019b55f731fc9eefd8971b3802",
+      "subject": "fix: validate ORC stripe and stream arithmetic before reads"
     }
   ],
   "package": {
     "command": "cargo +1.98.1 package --locked --no-verify",
-    "sha256": "90fa2a0ae69ade6f2460a73808b5ccbd8b38326a49c945e998c8adc0d2578646",
+    "sha256": "ee7f7a1875d595fb3f9c3daa3a97a42c9e20de23bfd5c280da9c2bf8387a1f5f",
     "excluded_files": [
       "Cargo.lock"
     ],
@@ -62,7 +66,7 @@
     "note": "Cargo-normalized manifest; upstream package omits integration fixtures and benchmarks. Source tests were run in the full detached source checkout."
   },
   "files_sha256": {
-    ".cargo_vcs_info.json": "cf511949e9281347d00380d167a316ac7b56d981e851927e8ba1966d6d7d9e2c",
+    ".cargo_vcs_info.json": "596cc87fb1dc181ded0de2120159beccbbb9cb5c46da5b85a0f90d97717afaa1",
     "Cargo.toml": "0a69cbe6449e27e1be0f020c1f0e9393a135b99fa00a115e45a0e7e7b8726385",
     "Cargo.toml.orig": "58ccc950aa988bb2c70c7850de74c1ac9ad182773452dc9a08a0b25cceeb7874",
     "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
@@ -122,7 +126,8 @@
     "src/schema/validation.rs": "aec9a39d24d077b87a9ba05c3b01c4302281de02efe47c1f38f3907d9f131d1b",
     "src/schema/validation/tests.rs": "aa234f3f9b5f7724ac94cba90e993570502a7cb2344f4f352829f8a4d88da6c7",
     "src/statistics.rs": "0e937e6c5f97ca6cfd837107c13e38b1b96a063b3cb9b66f16ffd06eb21d0ae0",
-    "src/stripe.rs": "88e7501b104985efb0210fee5a2a7b65f7e81668b219f708697f13475ff4efbc",
+    "src/stripe.rs": "f318bcc422865e884dd540226fc6675b65aadf936464f4bbf70ce44d0e760645",
+    "src/stripe_bounds_tests.rs": "47558b1d360389623565c9a147411f254ce3f02d2ee7dda613974abf5965935e",
     "src/stripe_footer_bounds_tests.rs": "76ce7925486e59eb22ce0c8cf22bef30df34fa71a3c625a7ed347b71fbc09e02",
     "src/timestamp.rs": "41d8b452a28e1750ce5102178bc212d683f1858704c6ba464976a64bba2e2c40",
     "src/timestamp_tests.rs": "fd0208a7622926ba66207227fb90b5a7cacf15170d0290cdacfa7000ba8a37eb",

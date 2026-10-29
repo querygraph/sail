@@ -19,12 +19,12 @@ use std::{collections::HashMap, io::Read, sync::Arc};
 
 use bytes::Bytes;
 use prost::Message;
-use snafu::ResultExt;
+use snafu::{ensure, OptionExt, ResultExt};
 
 use crate::{
     column::Column,
     compression::{Compression, Decompressor},
-    error::{self, IoSnafu, Result},
+    error::{self, IoSnafu, OutOfSpecSnafu, Result},
     proto::{self, stream::Kind, StripeFooter},
     reader::{metadata::FileMetadata, ChunkReader},
     schema::RootDataType,
@@ -46,6 +46,8 @@ pub struct StripeMetadata {
     data_length: u64,
     /// Byte length of footer section
     footer_length: u64,
+    /// Checked sum of the immutable stripe offset, index length and data length.
+    footer_offset: u64,
     /// Number of rows in the stripe
     number_of_rows: u64,
 }
@@ -76,7 +78,29 @@ impl StripeMetadata {
     }
 
     pub fn footer_offset(&self) -> u64 {
-        self.offset + self.index_length + self.data_length
+        self.footer_offset
+    }
+
+    fn checked_row_count(&self) -> Result<usize> {
+        usize::try_from(self.number_of_rows).map_err(|_| {
+            OutOfSpecSnafu {
+                msg: "Stripe row count does not fit usize",
+            }
+            .build()
+        })
+    }
+
+    fn checked_stream_end(&self, offset: u64, length: u64) -> Result<u64> {
+        let end = offset.checked_add(length).context(OutOfSpecSnafu {
+            msg: "Stripe stream end overflows u64",
+        })?;
+        ensure!(
+            end <= self.footer_offset,
+            OutOfSpecSnafu {
+                msg: "Stripe stream exceeds the declared index and data sections"
+            }
+        );
+        Ok(end)
     }
 }
 
@@ -90,14 +114,9 @@ impl TryFrom<(&proto::StripeInformation, &proto::StripeStatistics)> for StripeMe
             .iter()
             .map(TryFrom::try_from)
             .collect::<Result<Vec<_>>>()?;
-        Ok(Self {
-            column_statistics,
-            offset: info.offset(),
-            index_length: info.index_length(),
-            data_length: info.data_length(),
-            footer_length: info.footer_length(),
-            number_of_rows: info.number_of_rows(),
-        })
+        let mut stripe = Self::try_from(info)?;
+        stripe.column_statistics = column_statistics;
+        Ok(stripe)
     }
 }
 
@@ -105,12 +124,25 @@ impl TryFrom<&proto::StripeInformation> for StripeMetadata {
     type Error = error::OrcError;
 
     fn try_from(value: &proto::StripeInformation) -> Result<Self> {
+        let footer_offset = value
+            .offset()
+            .checked_add(value.index_length())
+            .and_then(|offset| offset.checked_add(value.data_length()))
+            .context(OutOfSpecSnafu {
+                msg: "Stripe footer offset overflows u64",
+            })?;
+        footer_offset
+            .checked_add(value.footer_length())
+            .context(OutOfSpecSnafu {
+                msg: "Stripe footer end overflows u64",
+            })?;
         Ok(Self {
             column_statistics: vec![],
             offset: value.offset(),
             index_length: value.index_length(),
             data_length: value.data_length(),
             footer_length: value.footer_length(),
+            footer_offset,
             number_of_rows: value.number_of_rows(),
         })
     }
@@ -152,6 +184,8 @@ impl Stripe {
         custom_time_zone: bool,
         max_decoded_footer_bytes: Option<usize>,
     ) -> Result<Self> {
+        let number_of_rows = info.checked_row_count()?;
+        check_buffer_length(info.footer_length())?;
         let footer = reader
             .get_bytes(info.footer_offset(), info.footer_length())
             .context(IoSnafu)?;
@@ -177,13 +211,15 @@ impl Stripe {
         let mut stream_offset = info.offset();
         for stream in &footer.streams {
             let length = stream.length();
+            let stream_end = info.checked_stream_end(stream_offset, length)?;
             let column_id = stream.column();
             if projected_data_type.contains_column_index(column_id as usize) {
+                check_buffer_length(length)?;
                 let kind = stream.kind();
                 let data = reader.get_bytes(stream_offset, length).context(IoSnafu)?;
                 stream_map.insert((column_id, kind), data);
             }
-            stream_offset += length;
+            stream_offset = stream_end;
         }
 
         let tz = if custom_time_zone {
@@ -202,7 +238,7 @@ impl Stripe {
                 inner: stream_map,
                 compression: file_metadata.compression(),
             },
-            number_of_rows: info.number_of_rows() as usize,
+            number_of_rows,
             tz,
             writer_timezone_name: footer.writer_timezone.clone(),
             timestamp_read_options: Default::default(),
@@ -238,6 +274,8 @@ impl Stripe {
         custom_time_zone: bool,
         max_decoded_footer_bytes: Option<usize>,
     ) -> Result<Self> {
+        let number_of_rows = info.checked_row_count()?;
+        check_buffer_length(info.footer_length())?;
         let footer = reader
             .get_bytes(info.footer_offset(), info.footer_length())
             .await
@@ -264,8 +302,10 @@ impl Stripe {
         let mut stream_offset = info.offset();
         for stream in &footer.streams {
             let length = stream.length();
+            let stream_end = info.checked_stream_end(stream_offset, length)?;
             let column_id = stream.column();
             if projected_data_type.contains_column_index(column_id as usize) {
+                check_buffer_length(length)?;
                 let kind = stream.kind();
                 let data = reader
                     .get_bytes(stream_offset, length)
@@ -274,7 +314,7 @@ impl Stripe {
                 stream_map.insert((column_id, kind), data);
             }
 
-            stream_offset += length;
+            stream_offset = stream_end;
         }
 
         let tz = if custom_time_zone {
@@ -293,7 +333,7 @@ impl Stripe {
                 inner: stream_map,
                 compression: file_metadata.compression(),
             },
-            number_of_rows: info.number_of_rows() as usize,
+            number_of_rows,
             tz,
             writer_timezone_name: footer.writer_timezone.clone(),
             timestamp_read_options: Default::default(),
@@ -397,6 +437,18 @@ impl Stripe {
     }
 }
 
+// Encoded footers and selected streams are each materialized as one Bytes buffer.
+// This is an addressability check, not a configurable limit on stripe size.
+fn check_buffer_length(length: u64) -> Result<()> {
+    ensure!(
+        length <= isize::MAX as u64,
+        OutOfSpecSnafu {
+            msg: "Stripe buffer length exceeds addressable memory"
+        }
+    );
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct StreamMap {
     /// <(ColumnId, Kind), Bytes>
@@ -437,3 +489,7 @@ fn deserialize_stripe_footer(
     decoder.read_to_end(&mut buffer).context(error::IoSnafu)?;
     StripeFooter::decode(buffer.as_slice()).context(error::DecodeProtoSnafu)
 }
+
+#[cfg(test)]
+#[path = "stripe_bounds_tests.rs"]
+mod stripe_bounds_tests;
