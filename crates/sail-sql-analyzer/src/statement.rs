@@ -111,6 +111,9 @@ fn from_ast_describe_function_name(name: DescribeFunctionName) -> SqlResult<spec
 /// Converts a parsed SQL AST statement into a spec plan (either a query or a command).
 pub fn from_ast_statement(statement: Statement) -> SqlResult<spec::Plan> {
     match statement {
+        Statement::CreatePipelineDataset(_) | Statement::CreatePipelineFlow { .. } => Err(
+            SqlError::unsupported("pipeline declarations require a pipeline registration context"),
+        ),
         Statement::Query(query) => {
             let plan = from_ast_query(query)?;
             Ok(spec::Plan::Query(plan))

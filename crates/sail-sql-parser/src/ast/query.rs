@@ -291,6 +291,11 @@ pub struct TableWithJoins {
 #[derive(Debug, Clone, TreeParser, TreeSyntax, TreeText)]
 #[parser(dependency = "(Query, Expr, TableWithJoins)")]
 pub enum TableFactor {
+    Stream {
+        stream: crate::ast::keywords::Stream,
+        name: Either<(LeftParenthesis, ObjectName, RightParenthesis), ObjectName>,
+        alias: Option<AliasClause>,
+    },
     Values {
         #[parser(function = |(_, e, _), o| compose(e, o))]
         values: ValuesClause,

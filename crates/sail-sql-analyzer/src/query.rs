@@ -490,6 +490,21 @@ pub fn from_ast_table_factor_with_joins(
 
 fn from_ast_table_factor(table: TableFactor) -> SqlResult<spec::QueryPlan> {
     match table {
+        TableFactor::Stream { name, alias, .. } => {
+            let name = match name {
+                Either::Left((_, name, _)) | Either::Right(name) => name,
+            };
+            let plan = spec::QueryPlan::new(spec::QueryNode::Read {
+                is_streaming: true,
+                read_type: spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
+                    name: from_ast_object_name(name)?,
+                    temporal: None,
+                    sample: None,
+                    options: vec![],
+                })),
+            });
+            query_plan_with_table_alias(plan, alias)
+        }
         TableFactor::Name {
             name,
             temporal,

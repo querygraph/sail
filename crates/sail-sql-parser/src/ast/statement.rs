@@ -36,6 +36,7 @@ use crate::ast::operator::{
     LessThan, LessThanEquals, LessThanGreaterThan, Minus, NotEquals, Percent, Plus,
     RightParenthesis, Semicolon, Slash, Spaceship, Tilde, TripleGreaterThan, VerticalBar,
 };
+use crate::ast::pipeline::CreatePipelineDataset;
 use crate::ast::query::{AliasClause, IdentList, Query, WhereClause, WithClause};
 use crate::combinator::{boxed, compose, sequence, unit};
 use crate::common::Sequence;
@@ -60,6 +61,18 @@ where
 #[derive(Debug, Clone, TreeParser, TreeSyntax, TreeText)]
 #[parser(dependency = "(Statement, Query, Expr, DataType)", label = TokenLabel::Statement)]
 pub enum Statement {
+    CreatePipelineDataset(
+        #[parser(function = |(_, q, e, d), o| compose((q, e, d), o))] CreatePipelineDataset,
+    ),
+    CreatePipelineFlow {
+        create: Create,
+        flow: crate::ast::keywords::Flow,
+        name: ObjectName,
+        comment: Option<(Comment, StringLiteral)>,
+        r#as: As,
+        #[parser(function = |(s, _, _, _), _| boxed(s))]
+        statement: Box<Statement>,
+    },
     Query(#[parser(function = |(_, q, _, _), _| q)] Query),
     CallProcedure {
         call: Call,

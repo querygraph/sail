@@ -3,6 +3,7 @@ pub mod error;
 pub mod expression;
 pub mod literal;
 pub mod parser;
+pub mod pipeline;
 pub mod query;
 pub mod statement;
 mod value;
