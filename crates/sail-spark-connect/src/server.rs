@@ -109,7 +109,9 @@ async fn handle_command(
         }
         CommandType::MlCommand(_) => Err(SparkError::todo("ml command")),
         CommandType::ExecuteExternalCommand(_) => Err(SparkError::todo("execute external command")),
-        CommandType::PipelineCommand(_) => Err(SparkError::todo("pipeline command")),
+        CommandType::PipelineCommand(command) => {
+            crate::pipelines::handle_command(ctx, command, metadata).await
+        }
         CommandType::Extension(_) => Err(SparkError::todo("command extension")),
     }
 }

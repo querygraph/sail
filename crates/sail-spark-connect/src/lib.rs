@@ -3,6 +3,7 @@ mod debug;
 pub mod entrypoint;
 mod error;
 mod executor;
+mod pipelines;
 mod proto;
 mod schema;
 pub mod server;

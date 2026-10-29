@@ -244,7 +244,7 @@ fn analyze_is_streaming(plan: sc::Plan) -> SparkResult<bool> {
     }
 }
 
-fn is_streaming_query_plan(plan: &spec::QueryPlan) -> bool {
+pub(crate) fn is_streaming_query_plan(plan: &spec::QueryPlan) -> bool {
     is_streaming_query_node(&plan.node)
 }
 

@@ -8,7 +8,9 @@ rust-version = { workspace = true }
 workspace = true
 
 [dependencies]
+grust-topology = { path = "../../vendor/grust-topology" }
 sail-cache = { path = "../sail-cache" }
+sail-catalog = { path = "../sail-catalog" }
 sail-common = { path = "../sail-common" }
 sail-common-datafusion = { path = "../sail-common-datafusion" }
 sail-data-source = { path = "../sail-data-source" }

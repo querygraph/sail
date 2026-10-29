@@ -12,6 +12,7 @@ use sail_plan::config::PlanConfig;
 use crate::config::{ConfigKeyValue, SparkRuntimeConfig};
 use crate::error::{SparkError, SparkResult, SparkThrowable};
 use crate::executor::Executor;
+use crate::pipelines::PipelineGraph;
 use crate::spark::config::SparkConfigKey;
 use crate::streaming::{
     StreamingQuery, StreamingQueryAwaitHandle, StreamingQueryAwaitHandleSet, StreamingQueryId,
@@ -85,6 +86,44 @@ impl SparkSession {
         let mut config = PlanConfig::try_from(&state.config)?;
         config.session_user_id = self.user_id().to_string();
         Ok(Arc::new(config))
+    }
+
+    pub(crate) fn plan_config_with_overrides(
+        &self,
+        overrides: impl IntoIterator<Item = (String, String)>,
+    ) -> SparkResult<Arc<PlanConfig>> {
+        let mut runtime = self.state.lock()?.config.clone();
+        for (key, value) in overrides {
+            runtime.set(key, value)?;
+        }
+        let mut config = PlanConfig::try_from(&runtime)?;
+        config.session_user_id = self.user_id().to_string();
+        Ok(Arc::new(config))
+    }
+
+    pub(crate) fn add_pipeline(&self, graph: PipelineGraph) -> SparkResult<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.state
+            .lock()?
+            .pipelines
+            .insert(id.clone(), Arc::new(Mutex::new(graph)));
+        Ok(id)
+    }
+
+    pub(crate) fn pipeline(&self, id: &str) -> SparkResult<Arc<Mutex<PipelineGraph>>> {
+        self.state
+            .lock()?
+            .pipelines
+            .get(id)
+            .cloned()
+            .ok_or_else(|| SparkError::invalid(format!("Dataflow graph {id} does not exist")))
+    }
+
+    pub(crate) fn drop_pipeline(&self, id: &str) -> SparkResult<()> {
+        if let Some(graph) = self.state.lock()?.pipelines.remove(id) {
+            graph.lock()?.cancel();
+        }
+        Ok(())
     }
 
     pub(crate) fn get_config(&self, keys: Vec<String>) -> SparkResult<Vec<ConfigKeyValue>> {
@@ -330,6 +369,7 @@ struct SparkSessionState {
     native_config_keys: BTreeSet<String>,
     executors: HashMap<String, Arc<Executor>>,
     streaming_queries: StreamingQueryManager,
+    pipelines: HashMap<String, Arc<Mutex<PipelineGraph>>>,
 }
 
 impl SparkSessionState {
@@ -339,6 +379,7 @@ impl SparkSessionState {
             native_config_keys: BTreeSet::new(),
             executors: HashMap::new(),
             streaming_queries: StreamingQueryManager::new(),
+            pipelines: HashMap::new(),
         })
     }
 }
