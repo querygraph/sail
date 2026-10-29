@@ -3,9 +3,10 @@ use std::hash::Hash;
 
 use datafusion::arrow::array::Array;
 use datafusion::arrow::array::timezone::Tz;
-use datafusion::arrow::datatypes::{DataType, IntervalUnit, TimeUnit};
-use datafusion_common::{Result, ScalarValue, not_impl_err, plan_err};
+use datafusion::arrow::datatypes::{DataType, Field, IntervalUnit, TimeUnit};
+use datafusion_common::{Result, ScalarValue, not_impl_err, plan_datafusion_err, plan_err};
 use half::f16;
+use sail_common::spec::{SAIL_SPARK_TIME_METADATA_KEY, SparkTimeMetadata};
 use sail_common_datafusion::display::{spark_f32_to_string, spark_f64_to_string};
 use sail_common_datafusion::formatter::{
     Date32Formatter, Date64Formatter, DurationMicrosecondFormatter, DurationMillisecondFormatter,
@@ -22,6 +23,18 @@ use sail_common_datafusion::utils::items::ItemTaker;
 pub struct SparkPlanFormatter;
 
 impl SparkPlanFormatter {
+    fn field_data_type_to_simple_string(&self, field: &Field) -> Result<String> {
+        if let Some(metadata) = field.metadata().get(SAIL_SPARK_TIME_METADATA_KEY) {
+            if field.data_type() != &DataType::Time64(TimeUnit::Nanosecond) {
+                return plan_err!("Spark TIME metadata requires Arrow Time64(Nanosecond)");
+            }
+            let metadata = SparkTimeMetadata::from_json(metadata)
+                .map_err(|error| plan_datafusion_err!("{error}"))?;
+            return Ok(format!("time({})", metadata.precision()));
+        }
+        self.data_type_to_simple_string(field.data_type())
+    }
+
     fn time_unit_to_simple_string(unit: &TimeUnit) -> &'static str {
         match unit {
             TimeUnit::Second => "second",
@@ -86,7 +99,7 @@ impl PlanFormatter for SparkPlanFormatter {
             | DataType::ListView(field)
             | DataType::LargeListView(field) => Ok(format!(
                 "array<{}>",
-                self.data_type_to_simple_string(field.data_type())?
+                self.field_data_type_to_simple_string(field)?
             )),
             DataType::Struct(fields) => {
                 let fields = fields
@@ -95,7 +108,7 @@ impl PlanFormatter for SparkPlanFormatter {
                         Ok(format!(
                             "{}:{}",
                             field.name(),
-                            self.data_type_to_simple_string(field.data_type())?
+                            self.field_data_type_to_simple_string(field)?
                         ))
                     })
                     .collect::<Result<Vec<String>>>()?;
@@ -110,8 +123,8 @@ impl PlanFormatter for SparkPlanFormatter {
                 };
                 Ok(format!(
                     "map<{},{}>",
-                    self.data_type_to_simple_string(key_field.data_type())?,
-                    self.data_type_to_simple_string(value_field.data_type())?
+                    self.field_data_type_to_simple_string(key_field)?,
+                    self.field_data_type_to_simple_string(value_field)?
                 ))
             }
             DataType::Union(_union_fields, _union_mode) => {

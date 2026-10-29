@@ -21,6 +21,7 @@ use sail_function::scalar::datetime::timestamp_cast::{
 use sail_function::scalar::spark_ansi_string_cast::SparkAnsiStringCast;
 use sail_function::scalar::spark_cast_string_to_int32::SparkCastStringToInt32;
 use sail_function::scalar::spark_struct_rename::SparkStructRename;
+use sail_function::scalar::spark_time_precision_cast::SparkTimePrecisionCast;
 use sail_function::scalar::spark_to_string::{SparkToLargeUtf8, SparkToUtf8, SparkToUtf8View};
 use sail_function::scalar::variant::spark_cast_to_variant::SparkCastToVariant;
 use sail_function::scalar::variant::spark_variant_get::SparkVariantGet;
@@ -113,17 +114,31 @@ impl PlanResolver<'_> {
                 .transpose()?,
             _ => None,
         };
+        let spark_time_metadata = match &cast_to_type {
+            spec::DataType::Time { precision } => {
+                Some(spec::SparkTimeMetadata::try_new(*precision)?)
+            }
+            _ => None,
+        };
         let cast_to_type = self.resolve_data_type(&cast_to_type, state)?;
         let NamedExpr { expr, name, .. } =
             self.resolve_named_expression(expr, schema, state).await?;
         let expr_field = expr.to_field(schema)?.1;
         let expr_type = expr_field.data_type().clone();
+        let source_time_precision = if spark_time_metadata.is_some() {
+            time_cast_source_precision(expr_field.as_ref())?
+        } else {
+            None
+        };
         let expr_is_variant = is_variant_storage_field(expr_field.as_ref());
         let name = if need_rename_cast(&expr) {
             let service = self.ctx.extension::<PlanService>()?;
-            let data_type_string = service
-                .plan_formatter()
-                .data_type_to_simple_string(&cast_to_type)?;
+            let data_type_string = match spark_time_metadata {
+                Some(metadata) => format!("time({})", metadata.precision()),
+                None => service
+                    .plan_formatter()
+                    .data_type_to_simple_string(&cast_to_type)?,
+            };
             vec![format!(
                 "{}CAST({} AS {})",
                 if is_try { "TRY_" } else { "" },
@@ -132,6 +147,31 @@ impl PlanResolver<'_> {
             )]
         } else {
             name
+        };
+        // TIME precision is part of the Spark leaf type, even though every
+        // precision uses the same Arrow storage. Transform those leaves before
+        // the ordinary cast handles other types and positional struct renaming.
+        let (expr, expr_type) = if matches!(
+            expr_type,
+            DataType::Struct(_)
+                | DataType::List(_)
+                | DataType::LargeList(_)
+                | DataType::FixedSizeList(_, _)
+                | DataType::Map(_, _)
+        ) {
+            let target = Arc::new(Field::new("", cast_to_type.clone(), true));
+            let transform = SparkTimePrecisionCast::try_new(Arc::clone(&expr_field), target)?;
+            if transform.is_needed() {
+                let data_type = transform.output_field().data_type().clone();
+                (
+                    ScalarUDF::new_from_impl(transform).call(vec![expr]),
+                    data_type,
+                )
+            } else {
+                (expr, expr_type)
+            }
+        } else {
+            (expr, expr_type)
         };
         let override_string_cast = matches!(
             expr_type,
@@ -153,6 +193,23 @@ impl PlanResolver<'_> {
         // Spark renders TIMESTAMP in the session time zone, whatever zone labels the values.
         let session_timezone = self.config.session_timezone_label();
         let expr = match (expr_type, cast_to_type.clone(), is_try) {
+            (DataType::Time32(_) | DataType::Time64(_), _, _) if spark_time_metadata.is_some() => {
+                let target_precision = spark_time_metadata
+                    .ok_or_else(|| PlanError::internal("missing TIME cast precision"))?
+                    .precision();
+                let nanos = cast(expr, DataType::Time64(TimeUnit::Nanosecond));
+                if source_time_precision == Some(target_precision) {
+                    // Spark's identity cast retains sub-precision bits. Declared
+                    // precision alone does not constrain the stored value.
+                    nanos
+                } else {
+                    let factor = 10_i64.pow(9 - target_precision as u32);
+                    let truncated = cast(nanos, DataType::Int64)
+                        .div(lit(factor))
+                        .mul(lit(factor));
+                    cast(truncated, cast_to_type)
+                }
+            }
             (
                 DataType::Timestamp(_, None),
                 DataType::Timestamp(TimeUnit::Microsecond, Some(timezone)),
@@ -337,34 +394,68 @@ impl PlanResolver<'_> {
             (_, to, true) => try_cast(expr, to),
             (_, to, _) => cast(expr, to),
         };
-        Ok(match spark_interval_metadata {
-            Some(metadata) => {
-                // Nested expressions consume the Expr without its NamedExpr metadata.
-                // Keep the target qualifier on the cast field as well as the projection.
-                let field = expr.to_field(schema)?.1;
-                let mut field_metadata = field.metadata().clone();
-                field_metadata.insert(
-                    spec::SAIL_SPARK_INTERVAL_METADATA_KEY.to_string(),
-                    metadata.clone(),
-                );
-                let field = Arc::new(field.as_ref().clone().with_metadata(field_metadata));
-                let expr = match expr {
-                    expr::Expr::Cast(cast) => {
-                        expr::Expr::Cast(expr::Cast::new_from_field(cast.expr, field))
-                    }
-                    expr::Expr::TryCast(cast) => {
-                        expr::Expr::TryCast(expr::TryCast::new_from_field(cast.expr, field))
-                    }
-                    expr => expr::Expr::Cast(expr::Cast::new_from_field(Box::new(expr), field)),
-                };
-                NamedExpr::new(name, expr).with_metadata(vec![(
-                    spec::SAIL_SPARK_INTERVAL_METADATA_KEY.to_string(),
-                    metadata,
-                )])
+        let mut target_metadata = vec![];
+        if let Some(metadata) = spark_interval_metadata {
+            target_metadata.push((spec::SAIL_SPARK_INTERVAL_METADATA_KEY.to_string(), metadata));
+        }
+        if let Some(metadata) = spark_time_metadata {
+            target_metadata.push((
+                spec::SAIL_SPARK_TIME_METADATA_KEY.to_string(),
+                metadata.to_json()?,
+            ));
+        }
+        if target_metadata.is_empty()
+            && !expr_field
+                .metadata()
+                .contains_key(spec::SAIL_SPARK_TIME_METADATA_KEY)
+        {
+            return Ok(NamedExpr::new(name, expr));
+        }
+        let field = expr.to_field(schema)?.1;
+        let mut field_metadata = field.metadata().clone();
+        // A type-only Arrow cast inherits source metadata. TIME describes the
+        // target Spark type, so replacing it also removes it when casting away.
+        field_metadata.remove(spec::SAIL_SPARK_TIME_METADATA_KEY);
+        field_metadata.extend(target_metadata.iter().cloned());
+        let expr = if field_metadata != *field.metadata() || !target_metadata.is_empty() {
+            // Nested expressions consume the Expr without its NamedExpr metadata.
+            // Keep the target metadata on the cast field as well as the projection.
+            let field = Arc::new(field.as_ref().clone().with_metadata(field_metadata));
+            match expr {
+                expr::Expr::Cast(cast) => {
+                    expr::Expr::Cast(expr::Cast::new_from_field(cast.expr, field))
+                }
+                expr::Expr::TryCast(cast) => {
+                    expr::Expr::TryCast(expr::TryCast::new_from_field(cast.expr, field))
+                }
+                expr => expr::Expr::Cast(expr::Cast::new_from_field(Box::new(expr), field)),
             }
-            None => NamedExpr::new(name, expr),
-        })
+        } else {
+            expr
+        };
+        Ok(NamedExpr::new(name, expr).with_metadata(target_metadata))
     }
+}
+
+fn time_cast_source_precision(field: &Field) -> PlanResult<Option<i32>> {
+    if let Some(metadata) = field.metadata().get(spec::SAIL_SPARK_TIME_METADATA_KEY) {
+        let metadata = spec::SparkTimeMetadata::from_json(metadata)?;
+        if field.data_type() != &DataType::Time64(TimeUnit::Nanosecond) {
+            return Err(PlanError::invalid(
+                "Spark TIME metadata requires Arrow Time64(Nanosecond)",
+            ));
+        }
+        return Ok(Some(metadata.precision()));
+    }
+    // Keep the existing raw Arrow TIME unit semantics when the input has no
+    // Spark annotation. Only the target is converted to the semantic type.
+    Ok(match field.data_type() {
+        DataType::Time32(TimeUnit::Second) => Some(0),
+        DataType::Time32(TimeUnit::Millisecond) => Some(3),
+        DataType::Time64(TimeUnit::Microsecond) => Some(6),
+        DataType::Time64(TimeUnit::Nanosecond) => Some(9),
+        _ => None,
+    })
 }
 
 fn decimal_cast_can_overflow(from: &DataType, precision: u8, scale: i8) -> bool {

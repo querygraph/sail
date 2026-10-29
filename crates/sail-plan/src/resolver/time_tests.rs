@@ -16,6 +16,9 @@ use crate::config::PlanConfig;
 use crate::error::{PlanError, PlanResult};
 use crate::formatter::SparkPlanFormatter;
 
+mod casts;
+mod nested_casts;
+
 fn context() -> SessionContext {
     SessionContext::new_with_config(SessionConfig::new().with_extension(Arc::new(
         PlanService::new(
