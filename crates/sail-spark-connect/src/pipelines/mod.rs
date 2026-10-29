@@ -104,9 +104,9 @@ pub(crate) async fn handle_command(
             if command.once.is_some() {
                 let name = command.flow_name.as_deref().unwrap_or_default();
                 return Err(Box::new(StructuredSparkError {
-                    class: "org.apache.spark.sql.AnalysisException",
-                    condition: "DEFINE_FLOW_ONCE_OPTION_NOT_SUPPORTED",
-                    sql_state: "0A000",
+                    class: "org.apache.spark.sql.AnalysisException".into(),
+                    condition: "DEFINE_FLOW_ONCE_OPTION_NOT_SUPPORTED".into(),
+                    sql_state: "0A000".into(),
                     message: format!(
                         "Defining a one-time flow {name} with the 'once' option is not supported."
                     ),

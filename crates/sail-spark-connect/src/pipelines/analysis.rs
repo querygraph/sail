@@ -138,9 +138,9 @@ pub(super) async fn analyze(
                 })
             {
                 return Err(Box::new(StructuredSparkError {
-                    class: "org.apache.spark.sql.AnalysisException",
-                    condition: "INVALID_TEMP_OBJ_REFERENCE",
-                    sql_state: "42K0F",
+                    class: "org.apache.spark.sql.AnalysisException".into(),
+                    condition: "INVALID_TEMP_OBJ_REFERENCE".into(),
+                    sql_state: "42K0F".into(),
                     message: format!(
                         "view {} references temporary view {}",
                         quoted(&output.name),

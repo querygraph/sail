@@ -158,9 +158,9 @@ fn registration_error(
         .map(|file| format!("Query defined at {file}:{}", origin.line))
         .unwrap_or_default();
     StructuredSparkError {
-        class: "org.apache.spark.sql.AnalysisException",
-        condition: "PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR",
-        sql_state: "42000",
+        class: "org.apache.spark.sql.AnalysisException".into(),
+        condition: "PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR".into(),
+        sql_state: "42000".into(),
         message: format!("{message}\n{offending_query}\n{code_location}"),
         parameters: HashMap::from([
             ("message".into(), message),

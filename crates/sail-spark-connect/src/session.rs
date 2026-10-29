@@ -118,9 +118,9 @@ impl SparkSession {
             .cloned()
             .ok_or_else(|| {
                 Box::new(StructuredSparkError {
-                    class: "org.apache.spark.SparkException",
-                    condition: "DATAFLOW_GRAPH_NOT_FOUND",
-                    sql_state: "KD011",
+                    class: "org.apache.spark.SparkException".into(),
+                    condition: "DATAFLOW_GRAPH_NOT_FOUND".into(),
+                    sql_state: "KD011".into(),
                     message: format!("Dataflow graph with id {id} could not be found"),
                     parameters: HashMap::from([("graphId".into(), id.into())]),
                 })

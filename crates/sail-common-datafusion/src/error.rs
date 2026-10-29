@@ -1,3 +1,5 @@
+mod structured;
+
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Formatter;
@@ -5,6 +7,7 @@ use std::fmt::Formatter;
 use datafusion::arrow::error::ArrowError;
 use datafusion_common::DataFusionError;
 use serde::{Deserialize, Serialize};
+pub use structured::StructuredSparkError;
 use thiserror::Error;
 
 /// An error with a cause received from a remote worker.

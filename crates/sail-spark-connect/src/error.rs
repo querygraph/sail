@@ -22,7 +22,7 @@ use tonic::{Code, Status};
 use tonic_types::{ErrorDetails, StatusExt};
 
 mod structured;
-pub use structured::StructuredSparkError;
+pub use sail_common_datafusion::error::StructuredSparkError;
 
 pub type SparkResult<T> = Result<T, SparkError>;
 
@@ -470,7 +470,7 @@ impl From<SparkError> for Status {
             }
             SparkError::AnalysisError(s) => SparkThrowable::AnalysisException(s).into(),
             SparkError::ParseError(s) => SparkThrowable::ParseException(s).into(),
-            SparkError::Structured(error) => (*error).into(),
+            SparkError::Structured(error) => structured::into_status(*error),
             e @ SparkError::SendError(_) => {
                 Status::cancelled(truncate_grpc_message(&e.to_string()))
             }

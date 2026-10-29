@@ -148,9 +148,9 @@ impl PipelineGraph {
         // failure. A refresh registers a new graph, even after a dry run.
         if self.active.is_some() {
             return Err(Box::new(StructuredSparkError {
-                class: "org.apache.spark.SparkIllegalStateException",
-                condition: "SPARK_CONNECT_ILLEGAL_STATE.EXECUTION_STATE_EXECUTE_HOLDER_ALREADY_EXISTS_GRAPH",
-                sql_state: "XXSC0",
+                class: "org.apache.spark.SparkIllegalStateException".into(),
+                condition: "SPARK_CONNECT_ILLEGAL_STATE.EXECUTION_STATE_EXECUTE_HOLDER_ALREADY_EXISTS_GRAPH".into(),
+                sql_state: "XXSC0".into(),
                 message: format!(
                     "Spark Connect encountered an illegal state condition. Pipeline execution for graph ID {graph_id} already exists. Stop the existing execution before starting a new one."
                 ),
@@ -277,9 +277,9 @@ impl GraphDefinition {
             .any(|x| x.kind != sc::OutputType::TemporaryView)
         {
             return Err(Box::new(StructuredSparkError {
-                class: "org.apache.spark.sql.AnalysisException",
-                condition: "RUN_EMPTY_PIPELINE",
-                sql_state: "42617",
+                class: "org.apache.spark.sql.AnalysisException".into(),
+                condition: "RUN_EMPTY_PIPELINE".into(),
+                sql_state: "42617".into(),
                 message: concat!(
                     "Pipelines are expected to have at least one non-temporary dataset defined ",
                     "(tables, persisted views) but no non-temporary datasets were found in your pipeline. ",
@@ -303,9 +303,9 @@ impl GraphDefinition {
                 types.sort_unstable();
                 let [first, second] = types;
                 return Err(Box::new(StructuredSparkError {
-                    class: "org.apache.spark.sql.AnalysisException",
-                    condition: "PIPELINE_DUPLICATE_IDENTIFIERS.OUTPUT",
-                    sql_state: "42710",
+                    class: "org.apache.spark.sql.AnalysisException".into(),
+                    condition: "PIPELINE_DUPLICATE_IDENTIFIERS.OUTPUT".into(),
+                    sql_state: "42710".into(),
                     message: format!(
                         "A duplicate identifier was found for elements registered in the pipeline's dataflow graph. \
                          Attempted to register a {first} with identifier {name}, but a {second} has already \
@@ -340,9 +340,9 @@ impl GraphDefinition {
                 format!("{},{}", quoted(first), quoted(second))
             };
             return Err(Box::new(StructuredSparkError {
-                class: "org.apache.spark.sql.AnalysisException",
-                condition: "PIPELINE_DUPLICATE_IDENTIFIERS.FLOW",
-                sql_state: "42710",
+                class: "org.apache.spark.sql.AnalysisException".into(),
+                condition: "PIPELINE_DUPLICATE_IDENTIFIERS.FLOW".into(),
+                sql_state: "42710".into(),
                 message: format!(
                     "A duplicate identifier was found for elements registered in the pipeline's dataflow graph. \
                      Flow {name} was found in multiple datasets: {datasets}"
@@ -376,9 +376,9 @@ impl GraphDefinition {
             let Some(flows) = producers.get(&output.name) else {
                 let name = quoted(&output.name);
                 return Err(Box::new(StructuredSparkError {
-                    class: "org.apache.spark.sql.AnalysisException",
-                    condition: "PIPELINE_DATASET_WITHOUT_FLOW",
-                    sql_state: "0A000",
+                    class: "org.apache.spark.sql.AnalysisException".into(),
+                    condition: "PIPELINE_DATASET_WITHOUT_FLOW".into(),
+                    sql_state: "0A000".into(),
                     message: format!(
                         "Pipeline dataset {name} does not have any defined flows. Please attach a query \
                          with the dataset's definition, or explicitly define at least one flow that \
