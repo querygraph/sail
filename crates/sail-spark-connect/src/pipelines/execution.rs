@@ -36,28 +36,30 @@ pub(super) async fn execute(
     }
     let spark = ctx.extension::<SparkSession>()?;
     super::materialize::tables(ctx, graph, &analyzed, &selection).await?;
+    super::materialize::views(ctx, graph, &analyzed).await?;
     let mut resolved = BTreeMap::new();
-    for output in &graph.outputs {
-        if output.kind != OutputType::TemporaryView
-            && !selection.runs(&output.name)
-            && selection.required.contains(&output.name)
-        {
-            resolved.insert(
-                output.name.clone(),
-                read_output(ctx, output.name.clone()).await?,
-            );
-        }
-    }
     for name in analyzed.order {
         let output = graph
             .outputs
             .iter()
             .find(|x| x.name == name)
             .ok_or_else(|| SparkError::internal("analyzed output missing"))?;
-        if !selection.required.contains(&name)
+        if output.view.is_some()
+            || !selection.required.contains(&name)
             || (output.kind != OutputType::TemporaryView && !selection.runs(&name))
         {
             continue;
+        }
+        // Read catalog inputs only when a query consumes them, after selected
+        // upstream tables have been written. A view-only refresh does no reads.
+        for input in analyzed.dependencies.get(&name).into_iter().flatten() {
+            if graph.outputs.iter().any(|output| {
+                &output.name == input
+                    && output.kind != OutputType::TemporaryView
+                    && (output.view.is_some() || !resolved.contains_key(input))
+            }) {
+                resolved.insert(input.clone(), read_output(ctx, input.clone()).await?);
+            }
         }
         let flow = graph
             .flows
@@ -83,7 +85,7 @@ pub(super) async fn execute(
             resolved.insert(name, plan);
             continue;
         }
-        run_command(ctx, config, publication_command(output, flow), Some(&scope)).await?;
+        run_command(ctx, config, table_write_command(output, flow), Some(&scope)).await?;
         // Downstream flows scan the newly committed table. They must not inline
         // and recompute the producer's definition, especially for nondeterminism.
         resolved.insert(name.clone(), read_output(ctx, name).await?);
@@ -110,15 +112,7 @@ pub(super) async fn run_command(
     Ok(())
 }
 
-fn publication_command(output: &Output, flow: &Flow) -> spec::CommandNode {
-    if let Some(mut definition) = output.view.clone() {
-        definition.replace = true;
-        definition.if_not_exists = false;
-        return spec::CommandNode::CreateView {
-            view: output.name.clone().into(),
-            definition,
-        };
-    }
+fn table_write_command(output: &Output, flow: &Flow) -> spec::CommandNode {
     let details = match &output.definition.details {
         Some(pc::define_output::Details::TableDetails(details)) => details.clone(),
         _ => pc::define_output::TableDetails::default(),

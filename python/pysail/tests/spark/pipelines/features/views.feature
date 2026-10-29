@@ -136,3 +136,84 @@ Feature: Persistent pipeline views
       """
     When the pipeline is validated
     Then pipeline dataset output is not published
+
+  Scenario: Persistent views are published outside a table refresh selection
+    Given pipeline SQL file selection.sql
+      """
+      CREATE MATERIALIZED VIEW chosen AS SELECT 1 AS value;
+      CREATE VIEW output AS SELECT 2 AS value;
+      """
+    When the pipeline refreshes chosen
+    When query
+      """
+      SELECT * FROM output
+      """
+    Then query result
+      | value |
+      | 2     |
+    When query
+      """
+      SELECT * FROM chosen
+      """
+    Then query result
+      | value |
+      | 1     |
+
+  Scenario: Persistent views are published before a table write fails
+    Given pipeline SQL file failure.sql
+      """
+      CREATE MATERIALIZED VIEW raw(id BIGINT, missing STRING) AS SELECT * FROM range(2);
+      CREATE VIEW output AS SELECT * FROM raw;
+      """
+    When the pipeline fails with input schema for INSERT has 1 fields, but table schema has 2 fields
+    When query
+      """
+      SELECT count(*) AS rows FROM output
+      """
+    Then query result
+      | rows |
+      | 0    |
+
+  Scenario: Selected tables read fresh data through an unselected persistent view
+    Given pipeline SQL file chain.sql
+      """
+      CREATE MATERIALIZED VIEW raw AS SELECT * FROM range(1, 4);
+      CREATE VIEW output AS SELECT * FROM raw;
+      CREATE MATERIALIZED VIEW chosen AS SELECT sum(id) AS value FROM output;
+      """
+    When the pipeline refreshes raw, chosen
+    When query
+      """
+      SELECT * FROM chosen
+      """
+    Then query result
+      | value |
+      | 6     |
+
+  Scenario: Persistent view metadata does not require an excluded upstream table
+    Given pipeline SQL file excluded.sql
+      """
+      CREATE MATERIALIZED VIEW raw AS SELECT * FROM range(2);
+      CREATE VIEW output AS SELECT * FROM raw;
+      CREATE MATERIALIZED VIEW chosen AS SELECT 1 AS value;
+      """
+    When the pipeline refreshes chosen
+    Then pipeline dataset output is published
+    Then pipeline dataset raw is not published
+    When query
+      """
+      SELECT * FROM chosen
+      """
+    Then query result
+      | value |
+      | 1     |
+
+  Scenario: Refreshing a persistent view does not read its excluded upstream table
+    Given pipeline SQL file view_only.sql
+      """
+      CREATE MATERIALIZED VIEW raw AS SELECT * FROM range(2);
+      CREATE VIEW output AS SELECT * FROM raw;
+      """
+    When the pipeline refreshes output
+    Then pipeline dataset output is published
+    Then pipeline dataset raw is not published

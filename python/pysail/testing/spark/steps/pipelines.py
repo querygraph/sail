@@ -29,6 +29,12 @@ def run_pipeline(pipeline):
     run()
 
 
+@when(parsers.parse("the pipeline refreshes {names}"))
+def refresh_pipeline(names, pipeline):
+    _, _, run = pipeline
+    run(refresh=[name.strip() for name in names.split(",")])
+
+
 @when("the pipeline is validated")
 def validate_pipeline(pipeline):
     _, _, run = pipeline
@@ -52,3 +58,8 @@ def pipeline_sql_file_with_error(name, condition, docstring, pipeline):
 @then(parsers.parse("pipeline dataset {name} is not published"))
 def dataset_not_published(name, pipeline_spark):
     assert not pipeline_spark.catalog.tableExists(name)
+
+
+@then(parsers.parse("pipeline dataset {name} is published"))
+def dataset_published(name, pipeline_spark):
+    assert pipeline_spark.catalog.tableExists(name)

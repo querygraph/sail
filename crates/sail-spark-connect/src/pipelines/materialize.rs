@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 
 use datafusion::prelude::SessionContext;
 use sail_catalog::error::{CatalogError, CatalogObject};
@@ -9,7 +10,7 @@ use sail_common_datafusion::datasource::DataSourceRegistry;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_plan::error::PlanError;
 
-use super::analysis::AnalyzedGraph;
+use super::analysis::{AnalyzedGraph, GraphScope};
 use super::execution::run_command;
 use super::graph::{GraphDefinition, analysis, quoted};
 use super::selection::Selection;
@@ -237,6 +238,50 @@ pub(super) async fn tables(
             )
             .await?;
         }
+    }
+    Ok(())
+}
+
+/// Publish every persisted view from its analyzed definition, regardless of
+/// table refresh selection. An excluded upstream table need not exist yet.
+pub(super) async fn views(
+    ctx: &SessionContext,
+    graph: &GraphDefinition,
+    analyzed: &AnalyzedGraph,
+) -> SparkResult<()> {
+    let spark = ctx.extension::<SparkSession>()?;
+    for name in &analyzed.order {
+        let output = graph
+            .outputs
+            .iter()
+            .find(|output| &output.name == name)
+            .ok_or_else(|| SparkError::internal("analyzed output missing"))?;
+        let Some(mut definition) = output.view.clone() else {
+            continue;
+        };
+        let flow = graph
+            .flows
+            .iter()
+            .find(|flow| &flow.target == name)
+            .ok_or_else(|| analysis("PIPELINE_DATASET_WITHOUT_FLOW", quoted(name)))?;
+        let scope = GraphScope {
+            graph,
+            resolved: &analyzed.relations,
+            reads: Mutex::default(),
+            flow,
+        };
+        definition.replace = true;
+        definition.if_not_exists = false;
+        run_command(
+            ctx,
+            spark.plan_config_with_overrides(flow.sql_conf.clone())?,
+            spec::CommandNode::CreateView {
+                view: name.clone().into(),
+                definition,
+            },
+            Some(&scope),
+        )
+        .await?;
     }
     Ok(())
 }
