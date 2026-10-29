@@ -17,7 +17,7 @@ use sail_plan::catalog::SparkCatalogObjectDisplay;
 use sail_plan::formatter::SparkPlanFormatter;
 use sail_plan::resolver::PlanResolver;
 
-use super::{PipelineGraph, register};
+use super::{PipelineGraph, register, registration_error};
 use crate::error::{SparkError, SparkResult};
 use crate::session::{SparkSession, SparkSessionOptions};
 use crate::spark::connect::{OutputType, pipeline_command as pc};
@@ -39,6 +39,38 @@ fn register_sql(graph: &mut PipelineGraph, sql: &str, file: &str) -> SparkResult
 
 fn name(table: &str) -> Vec<String> {
     vec!["test_catalog".into(), "test_db".into(), table.into()]
+}
+
+#[test]
+fn sql_registration_errors_have_origin_parameters_with_optional_paths() {
+    let origin = sail_sql_analyzer::source::StatementOrigin {
+        text: "SELECT '雪;' -- tail\n",
+        line: 3,
+    };
+    for file in [Some("é;origin.sql"), None] {
+        let error = registration_error("unsupported statement".into(), origin, file);
+        assert_eq!(error.class, "org.apache.spark.sql.AnalysisException");
+        assert_eq!(
+            error.condition,
+            "PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR"
+        );
+        assert_eq!(error.sql_state, "42000");
+        assert_eq!(
+            error.parameters,
+            HashMap::from([
+                ("message".into(), "unsupported statement".into()),
+                (
+                    "offendingQuery".into(),
+                    "\nOffending query:\nSELECT '雪;' -- tail\n\n".into()
+                ),
+                (
+                    "codeLocation".into(),
+                    file.map(|file| format!("Query defined at {file}:3"))
+                        .unwrap_or_default()
+                ),
+            ])
+        );
+    }
 }
 
 #[test]

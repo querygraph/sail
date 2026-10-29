@@ -1,11 +1,12 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use sail_common::spec;
 use sail_sql_analyzer::pipeline::{PipelineStatement, from_ast_pipeline_statement_with_source};
-use sail_sql_analyzer::source::SqlSource;
+use sail_sql_analyzer::source::{SqlSource, StatementOrigin};
 
 use super::graph::{Flow, PipelineGraph, analysis, quoted};
-use crate::error::{ProtoFieldExt, SparkError, SparkResult};
+use crate::error::{ProtoFieldExt, SparkError, SparkResult, StructuredSparkError};
 use crate::spark::connect::{OutputType, pipeline_command as pc};
 
 pub(super) fn register(
@@ -21,18 +22,17 @@ pub(super) fn register(
     );
     draft.definition = graph.definition.clone();
     let source = SqlSource::new(&text)?;
-    for statement in source.parse_statements()? {
+    for (statement, span) in source.parse_statements_with_spans()? {
         let result = from_ast_pipeline_statement_with_source(statement, &source)
             .map_err(SparkError::from)
             .and_then(|statement| register_statement(&mut draft, statement));
         if let Err(error) = result {
-            return Err(analysis(
-                "PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR",
-                format!(
-                    "{}: {error}",
-                    command.sql_file_path.as_deref().unwrap_or("<sql>")
-                ),
-            ));
+            return Err(Box::new(registration_error(
+                error.to_string(),
+                source.statement_origin(span)?,
+                command.sql_file_path.as_deref(),
+            ))
+            .into());
         }
     }
     // USE and SET apply to this SQL file. Each flow keeps its own captured
@@ -51,6 +51,28 @@ pub(super) fn register(
         .clone_from(&graph.definition.sql_conf);
     graph.definition = draft.definition;
     Ok(())
+}
+
+fn registration_error(
+    message: String,
+    origin: StatementOrigin<'_>,
+    file: Option<&str>,
+) -> StructuredSparkError {
+    let offending_query = format!("\nOffending query:\n{}\n", origin.text);
+    let code_location = file
+        .map(|file| format!("Query defined at {file}:{}", origin.line))
+        .unwrap_or_default();
+    StructuredSparkError {
+        class: "org.apache.spark.sql.AnalysisException",
+        condition: "PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR",
+        sql_state: "42000",
+        message: format!("{message}\n{offending_query}\n{code_location}"),
+        parameters: HashMap::from([
+            ("message".into(), message),
+            ("offendingQuery".into(), offending_query),
+            ("codeLocation".into(), code_location),
+        ]),
+    }
 }
 
 fn register_statement(graph: &mut PipelineGraph, statement: PipelineStatement) -> SparkResult<()> {
