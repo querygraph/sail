@@ -247,6 +247,7 @@ fn derive_present_vec(
     // omit the null buffer if there are no nulls
     match present {
         Some(Ok(present)) if present.null_count() > 0 => Some(Ok(present)),
+        Some(Err(error)) => Some(Err(error)),
         _ => None,
     }
 }
@@ -363,6 +364,9 @@ impl NaiveStripeDecoder {
         }
     }
 }
+
+#[cfg(test)]
+mod present_tests;
 
 impl Iterator for NaiveStripeDecoder {
     type Item = Result<RecordBatch>;

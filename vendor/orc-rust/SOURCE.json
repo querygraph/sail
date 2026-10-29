@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/datafusion-contrib/orc-rust",
-  "commit": "2ecec391db0699019b55f731fc9eefd8971b3802",
+  "commit": "bc0c0cef83ba4bb297aaf6941ba0f328a95a2663",
   "source_kind": "Locally patched upstream package; patch revisions have not been published to the upstream repository.",
   "upstream_tag": "v0.9.0",
   "upstream_commit": "d21a6e4d2f8b5f4465fa5c0cad046c7ec2284307",
@@ -52,11 +52,15 @@
     {
       "commit": "2ecec391db0699019b55f731fc9eefd8971b3802",
       "subject": "fix: validate ORC stripe and stream arithmetic before reads"
+    },
+    {
+      "commit": "bc0c0cef83ba4bb297aaf6941ba0f328a95a2663",
+      "subject": "fix: propagate ORC PRESENT stream decoding failures"
     }
   ],
   "package": {
     "command": "cargo +1.98.1 package --locked --no-verify",
-    "sha256": "ee7f7a1875d595fb3f9c3daa3a97a42c9e20de23bfd5c280da9c2bf8387a1f5f",
+    "sha256": "320b85b9897547def241efb25fa4c1b875c3e586d361503ddc8ff90c87ae3194",
     "excluded_files": [
       "Cargo.lock"
     ],
@@ -66,7 +70,7 @@
     "note": "Cargo-normalized manifest; upstream package omits integration fixtures and benchmarks. Source tests were run in the full detached source checkout."
   },
   "files_sha256": {
-    ".cargo_vcs_info.json": "596cc87fb1dc181ded0de2120159beccbbb9cb5c46da5b85a0f90d97717afaa1",
+    ".cargo_vcs_info.json": "2187ccf2f5a593acb73e642487384f13068c1b7bddac37b774504a16073c8d45",
     "Cargo.toml": "0a69cbe6449e27e1be0f020c1f0e9393a135b99fa00a115e45a0e7e7b8726385",
     "Cargo.toml.orig": "58ccc950aa988bb2c70c7850de74c1ac9ad182773452dc9a08a0b25cceeb7874",
     "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
@@ -74,7 +78,8 @@
     "src/array_decoder/decimal.rs": "dc5f37e42304a4ac84d521ab5c0c1823f55a49549f225d5c27995f0bcbcf540d",
     "src/array_decoder/list.rs": "f2bcb848b3b188147cc488cbe26c13f8a99a7fb3e320410ee716c1758f012ce8",
     "src/array_decoder/map.rs": "24bef4f153ed5a52a4b23742edf006078313e818d56e8c086198341329f69daf",
-    "src/array_decoder/mod.rs": "7cadad17e516a5ae2d4828a386e11d5dc1ff7736c41b9680f4ed5ca47757e5b6",
+    "src/array_decoder/mod.rs": "570f6f3d90cd70336b7b6268a680fce45a465406fe42a6358ffb8f2dbcdfb837",
+    "src/array_decoder/present_tests.rs": "149a1a6241c7db44e90777fd2ee62756a393270bece8ff756c034f4f940e7cf7",
     "src/array_decoder/string.rs": "04b6244c315100525c9a7d37bc7e1537be699070522393772ddf2c203e49f2d3",
     "src/array_decoder/struct_decoder.rs": "521c29e4ef19fa36a1c301a6214b69c851496f535b2f0666205e6731b49a97a2",
     "src/array_decoder/timestamp.rs": "97fa9d02382de00cb16b813fef94e9bc7b0cf92236d5e20ddd90a803be2a5496",
