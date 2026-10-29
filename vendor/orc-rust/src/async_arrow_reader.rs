@@ -96,12 +96,13 @@ impl<R: AsyncChunkReader + 'static> StripeFactory<R> {
 
         inner.stripe_index += 1;
 
-        Stripe::new_async_with_timestamp_time_zone(
+        Stripe::new_async_with_options(
             &mut inner.reader,
             &inner.file_metadata,
             &inner.projected_data_type,
             info,
             inner.timestamp_time_zone_state.is_some(),
+            inner.max_decoded_stripe_footer_bytes,
         )
         .await
         .map(|stripe| stripe.with_timestamp_read_options(inner.timestamp_read_options))
@@ -342,6 +343,7 @@ impl<R: AsyncChunkReader + 'static> ArrowReaderBuilder<R> {
             projected_data_type,
             stripe_index: 0,
             timestamp_read_options: self.timestamp_read_options,
+            max_decoded_stripe_footer_bytes: self.max_decoded_stripe_footer_bytes,
             timestamp_time_zone_state: self
                 .timestamp_time_zone_options
                 .map(crate::timestamp_timezone::TimestampTimeZoneState::new),

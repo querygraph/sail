@@ -53,6 +53,7 @@ pub struct ArrowReaderBuilder<R> {
     pub(crate) timestamp_precision: TimestampPrecision,
     pub(crate) timestamp_read_options: TimestampReadOptions,
     pub(crate) timestamp_time_zone_options: Option<TimestampTimeZoneOptions>,
+    pub(crate) max_decoded_stripe_footer_bytes: Option<usize>,
     pub(crate) predicate: Option<Predicate>,
 }
 
@@ -73,6 +74,7 @@ impl<R> ArrowReaderBuilder<R> {
             timestamp_precision: TimestampPrecision::default(),
             timestamp_read_options: TimestampReadOptions::default(),
             timestamp_time_zone_options: None,
+            max_decoded_stripe_footer_bytes: None,
             predicate: None,
         }
     }
@@ -83,6 +85,18 @@ impl<R> ArrowReaderBuilder<R> {
 
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
+        self
+    }
+
+    /// Limit the decoded bytes of each stripe footer before protobuf parsing.
+    ///
+    /// The default is unrestricted. This limit is independent of file-tail
+    /// [`MetadataReadOptions`] and does not limit column data or encoded reads.
+    /// Streaming codecs may decode one extra byte to detect an exceeded limit.
+    /// This is not a total memory limit: protobuf objects, codec history, and
+    /// allocator capacity also consume memory. A zero limit permits empty footers.
+    pub fn with_max_decoded_stripe_footer_bytes(mut self, limit: usize) -> Self {
+        self.max_decoded_stripe_footer_bytes = Some(limit);
         self
     }
 
@@ -259,6 +273,7 @@ impl<R: ChunkReader> ArrowReaderBuilder<R> {
             projected_data_type,
             stripe_index: 0,
             timestamp_read_options: self.timestamp_read_options,
+            max_decoded_stripe_footer_bytes: self.max_decoded_stripe_footer_bytes,
             timestamp_time_zone_state: self
                 .timestamp_time_zone_options
                 .map(TimestampTimeZoneState::new),
@@ -411,6 +426,7 @@ pub(crate) struct Cursor<R> {
     pub projected_data_type: RootDataType,
     pub stripe_index: usize,
     pub timestamp_read_options: TimestampReadOptions,
+    pub max_decoded_stripe_footer_bytes: Option<usize>,
     pub timestamp_time_zone_state: Option<TimestampTimeZoneState>,
     pub file_byte_range: Option<Range<usize>>,
 }
@@ -460,15 +476,20 @@ impl<R: ChunkReader> Iterator for Cursor<R> {
         self.get_stripe_metadatas()
             .get(self.stripe_index)
             .map(|info| {
-                let stripe = Stripe::new_with_timestamp_time_zone(
+                let stripe = Stripe::new_with_options(
                     &mut self.reader,
                     &self.file_metadata,
                     &self.projected_data_type.clone(),
                     info,
                     self.timestamp_time_zone_state.is_some(),
+                    self.max_decoded_stripe_footer_bytes,
                 );
                 self.stripe_index += 1;
                 stripe.map(|stripe| stripe.with_timestamp_read_options(self.timestamp_read_options))
             })
     }
 }
+
+#[cfg(test)]
+#[path = "stripe_footer_bounds_tests.rs"]
+mod stripe_footer_bounds_tests;

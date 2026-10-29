@@ -134,15 +134,23 @@ impl Stripe {
         projected_data_type: &RootDataType,
         info: &StripeMetadata,
     ) -> Result<Self> {
-        Self::new_with_timestamp_time_zone(reader, file_metadata, projected_data_type, info, false)
+        Self::new_with_options(
+            reader,
+            file_metadata,
+            projected_data_type,
+            info,
+            false,
+            None,
+        )
     }
 
-    pub(crate) fn new_with_timestamp_time_zone<R: ChunkReader>(
+    pub(crate) fn new_with_options<R: ChunkReader>(
         reader: &mut R,
         file_metadata: &FileMetadata,
         projected_data_type: &RootDataType,
         info: &StripeMetadata,
         custom_time_zone: bool,
+        max_decoded_footer_bytes: Option<usize>,
     ) -> Result<Self> {
         let footer = reader
             .get_bytes(info.footer_offset(), info.footer_length())
@@ -150,6 +158,7 @@ impl Stripe {
         let footer = Arc::new(deserialize_stripe_footer(
             footer,
             file_metadata.compression(),
+            max_decoded_footer_bytes,
         )?);
 
         let columns: Vec<Column> = projected_data_type
@@ -209,23 +218,25 @@ impl Stripe {
         projected_data_type: &RootDataType,
         info: &StripeMetadata,
     ) -> Result<Self> {
-        Self::new_async_with_timestamp_time_zone(
+        Self::new_async_with_options(
             reader,
             file_metadata,
             projected_data_type,
             info,
             false,
+            None,
         )
         .await
     }
 
     #[cfg(feature = "async")]
-    pub(crate) async fn new_async_with_timestamp_time_zone<R: crate::reader::AsyncChunkReader>(
+    pub(crate) async fn new_async_with_options<R: crate::reader::AsyncChunkReader>(
         reader: &mut R,
         file_metadata: &FileMetadata,
         projected_data_type: &RootDataType,
         info: &StripeMetadata,
         custom_time_zone: bool,
+        max_decoded_footer_bytes: Option<usize>,
     ) -> Result<Self> {
         let footer = reader
             .get_bytes(info.footer_offset(), info.footer_length())
@@ -234,6 +245,7 @@ impl Stripe {
         let footer = Arc::new(deserialize_stripe_footer(
             footer,
             file_metadata.compression(),
+            max_decoded_footer_bytes,
         )?);
 
         let columns: Vec<Column> = projected_data_type
@@ -415,10 +427,13 @@ impl StreamMap {
 fn deserialize_stripe_footer(
     bytes: Bytes,
     compression: Option<Compression>,
+    max_decoded_bytes: Option<usize>,
 ) -> Result<StripeFooter> {
     let mut buffer = vec![];
-    Decompressor::new(bytes, compression, vec![])
-        .read_to_end(&mut buffer)
-        .context(error::IoSnafu)?;
+    let mut decoder = match max_decoded_bytes {
+        Some(limit) => Decompressor::new_with_limit(bytes, compression, vec![], limit),
+        None => Decompressor::new(bytes, compression, vec![]),
+    };
+    decoder.read_to_end(&mut buffer).context(error::IoSnafu)?;
     StripeFooter::decode(buffer.as_slice()).context(error::DecodeProtoSnafu)
 }
