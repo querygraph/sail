@@ -15,7 +15,9 @@ import subprocess
 from pathlib import Path
 
 SPARK_COMMIT = "617618396087429b5627a86ce933bb0f5d6645cb"
-CALL = re.compile(r"\b(test|testQuietly|testWithName|registerTest)\s*\(")
+CALL = re.compile(
+    r"\b(test|testQuietly|testWithName|registerTest|gridTest|namedGridTest|booleanGridTest)\s*\("
+)
 
 
 def argument(source: str, start: int) -> tuple[str, int]:
