@@ -16,6 +16,8 @@ use datafusion::prelude::SessionContext;
 pub(crate) use graph::PipelineGraph;
 use sail_catalog::manager::CatalogManager;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
+use sail_sql_analyzer::expression::from_ast_object_name;
+use sail_sql_analyzer::parser::parse_object_name;
 
 use crate::error::{ProtoFieldExt, SparkError, SparkResult, StructuredSparkError};
 use crate::executor::{Executor, ExecutorBatch, ExecutorMetadata, ExecutorOutput};
@@ -71,7 +73,7 @@ pub(crate) async fn handle_command(
                 .set_default_catalog(name.clone())
                 .map_err(|e| SparkError::invalid(e.to_string()))?;
             catalog
-                .set_default_database(vec![database.clone()])
+                .set_default_database(from_ast_object_name(parse_object_name(&database)?)?.into())
                 .await
                 .map_err(|e| SparkError::invalid(e.to_string()))?;
             let id = spark.add_pipeline(PipelineGraph::new(name, database, command.sql_conf))?;
