@@ -165,6 +165,7 @@ pub fn iceberg_field_to_arrow(field: &NestedField) -> Result<ArrowField> {
 
     if let Some(doc) = &field.doc {
         metadata.insert(ICEBERG_ARROW_FIELD_DOC_KEY.to_string(), doc.clone());
+        metadata.insert("comment".to_string(), doc.clone());
     }
 
     if let Some(initial_default) = &field.initial_default {
@@ -973,6 +974,12 @@ mod tests {
 
         let arrow_schema =
             iceberg_schema_to_arrow(&original_schema).expect("Failed to convert to Arrow");
+
+        assert_eq!(
+            arrow_schema.field(0).metadata().get("comment"),
+            Some(&"Primary key".to_string())
+        );
+        assert_eq!(arrow_schema.field(1).metadata().get("comment"), None);
 
         // Verify Arrow schema has metadata with field IDs and docs
         assert_eq!(
