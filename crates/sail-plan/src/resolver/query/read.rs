@@ -97,6 +97,25 @@ impl PlanResolver<'_> {
         }
 
         let reference: Vec<String> = name.clone().into();
+        if let Some(scope) = self.relation_scope
+            && let Some(plan) = scope.resolve(&reference)?
+        {
+            if temporal.is_some() {
+                return Err(PlanError::unsupported("time travel on a scoped relation"));
+            }
+            let names = state.register_fields(plan.schema().inner().fields());
+            let plan = rename_logical_plan(plan, &names)?;
+            let plan = LogicalPlan::SubqueryAlias(SubqueryAlias::try_new(
+                Arc::new(plan),
+                table_reference?,
+            )?);
+            state.register_missing_input_boundary(&plan);
+            return if let Some(table_sample) = sample {
+                self.apply_table_sample(plan, table_sample, state).await
+            } else {
+                Ok(plan)
+            };
+        }
         let manager = self.ctx.extension::<CatalogManager>()?;
         let data_source_registry = self.ctx.extension::<DataSourceRegistry>()?;
         let (status, catalog_reference, lake_relation) =

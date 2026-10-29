@@ -43,6 +43,9 @@ pub enum PlanError {
     InternalError(String),
     #[error("analysis error: {0}")]
     AnalysisError(String),
+    /// A relation owned by the caller's scope has not been resolved yet.
+    #[error("unresolved scoped relation: {0:?}")]
+    UnresolvedRelation(Vec<String>),
     #[error("delta table error: {0}")]
     DeltaTableError(String),
 }
