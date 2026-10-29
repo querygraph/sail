@@ -548,17 +548,11 @@ impl NaiveStripeDecoder {
                 ))
             }
         } else {
-            //TODO(weny): any better way?
-            let fields = self
-                .schema_ref
-                .fields
-                .into_iter()
-                .map(|field| field.name())
-                .zip(fields)
-                .collect::<Vec<_>>();
-
+            // Keep the declared nullability and metadata stable across batches,
+            // including batches that happen to contain no null values.
             Ok(Some(
-                RecordBatch::try_from_iter(fields).context(error::ConvertRecordBatchSnafu)?,
+                RecordBatch::try_new(Arc::clone(&self.schema_ref), fields)
+                    .context(error::ConvertRecordBatchSnafu)?,
             ))
         }
     }

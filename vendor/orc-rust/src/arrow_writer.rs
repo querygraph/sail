@@ -420,7 +420,20 @@ mod tests {
         .unwrap();
 
         let rows = roundtrip(std::slice::from_ref(&batch));
-        assert_eq!(batch, rows[0]);
+        // ORC does not store Arrow non-nullability; inferred fields are nullable.
+        let expected_schema = Arc::new(Schema::new(vec![
+            Field::new("f32", ArrowDataType::Float32, true),
+            Field::new("f64", ArrowDataType::Float64, true),
+            Field::new("int8", ArrowDataType::Int8, true),
+            Field::new("int16", ArrowDataType::Int16, true),
+            Field::new("int32", ArrowDataType::Int32, true),
+            Field::new("int64", ArrowDataType::Int64, true),
+            Field::new("utf8", ArrowDataType::Utf8, true),
+            Field::new("binary", ArrowDataType::Binary, true),
+            Field::new("boolean", ArrowDataType::Boolean, true),
+        ]));
+        let expected = RecordBatch::try_new(expected_schema, batch.columns().to_vec()).unwrap();
+        assert_eq!(expected, rows[0]);
     }
 
     #[test]
@@ -472,9 +485,10 @@ mod tests {
             "".as_bytes(),
             "123".as_bytes(),
         ]));
+        // ORC does not store Arrow non-nullability; inferred fields are nullable.
         let schema = Schema::new(vec![
-            Field::new("large_utf8", ArrowDataType::Utf8, false),
-            Field::new("large_binary", ArrowDataType::Binary, false),
+            Field::new("large_utf8", ArrowDataType::Utf8, true),
+            Field::new("large_binary", ArrowDataType::Binary, true),
         ]);
         let batch = RecordBatch::try_new(Arc::new(schema), vec![utf8_array, binary_array]).unwrap();
         assert_eq!(batch, rows[0]);
@@ -835,6 +849,13 @@ mod tests {
             false,
         )]));
         let batch = RecordBatch::try_new(schema.clone(), vec![array]).unwrap();
+        // ORC does not store Arrow non-nullability; inferred fields are nullable.
+        let expected_schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            ArrowDataType::Utf8,
+            true,
+        )]));
+        let expected = RecordBatch::try_new(expected_schema, batch.columns().to_vec()).unwrap();
 
         for (compression, expected_kind, expected_block_size) in [
             (None, proto::CompressionKind::None, None),
@@ -875,7 +896,7 @@ mod tests {
 
             let reader = ArrowReaderBuilder::try_new(file).unwrap().build();
             let rows = reader.collect::<Result<Vec<_>, _>>().unwrap();
-            assert_eq!(rows, vec![batch.clone()]);
+            assert_eq!(rows, vec![expected.clone()]);
         }
 
         let file = write_file(
