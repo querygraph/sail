@@ -11,8 +11,7 @@ use sail_sql_parser::lexer::create_lexer;
 use sail_sql_parser::options::ParserOptions;
 use sail_sql_parser::parser::{
     create_data_type_parser, create_expression_parser, create_interval_literal_parser,
-    create_named_expression_parser, create_object_name_parser, create_parser,
-    create_qualified_wildcard_parser,
+    create_named_expression_parser, create_object_name_parser, create_qualified_wildcard_parser,
 };
 use sail_sql_parser::token::{Punctuation, Token};
 
@@ -24,13 +23,13 @@ use crate::literal::datetime::{
 };
 use crate::literal::interval::{IntervalValue, parse_unqualified_interval_string};
 
-fn map_parser_input<'a, C>(
+pub(crate) fn map_parser_input<'a, C>(
     (t, s): &'a (Token<'a>, SimpleSpan<usize, C>),
 ) -> (&'a Token<'a>, &'a SimpleSpan<usize, C>) {
     (t, s)
 }
 
-fn tokenize<'a>(
+pub(crate) fn tokenize<'a>(
     input: &'a str,
     options: &ParserOptions,
 ) -> SqlResult<Vec<(Token<'a>, SimpleSpan<usize>)>> {
@@ -107,16 +106,12 @@ pub fn parse_native_config_value(s: &str) -> SqlResult<String> {
 }
 
 pub fn parse_statements(s: &str) -> SqlResult<Vec<Statement>> {
-    parse!(s, create_parser)
+    crate::source::SqlSource::new(s)?.parse_statements()
 }
 
 /// Parses a SQL string containing exactly one statement into an AST.
 pub fn parse_one_statement(s: &str) -> SqlResult<Statement> {
-    let mut plan = parse_statements(s)?;
-    match (plan.pop(), plan.is_empty()) {
-        (Some(x), true) => Ok(x),
-        _ => Err(SqlError::invalid("expected one statement")),
-    }
+    crate::source::SqlSource::new(s)?.parse_one_statement()
 }
 
 pub fn parse_object_name(s: &str) -> SqlResult<ObjectName> {

@@ -5,5 +5,6 @@ pub mod literal;
 pub mod parser;
 pub mod pipeline;
 pub mod query;
+pub mod source;
 pub mod statement;
 mod value;

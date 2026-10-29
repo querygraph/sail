@@ -40,6 +40,7 @@ use crate::expression::{
 use crate::literal::interval::{IntervalValue, from_ast_signed_interval, multi_unit_interval_days};
 use crate::literal::utils::Signed;
 use crate::query::{from_ast_query, from_ast_with_clause};
+use crate::source::SqlSource;
 use crate::value::from_ast_string;
 
 fn from_ast_show_function_scope(scope: Option<ShowFunctionScope>) -> (bool, bool) {
@@ -110,6 +111,21 @@ fn from_ast_describe_function_name(name: DescribeFunctionName) -> SqlResult<spec
 
 /// Converts a parsed SQL AST statement into a spec plan (either a query or a command).
 pub fn from_ast_statement(statement: Statement) -> SqlResult<spec::Plan> {
+    from_ast_statement_impl(statement, None)
+}
+
+/// Lowers an AST parsed from `source`, preserving original persisted-view SQL.
+pub fn from_ast_statement_with_source(
+    statement: Statement,
+    source: &SqlSource<'_>,
+) -> SqlResult<spec::Plan> {
+    from_ast_statement_impl(statement, Some(source))
+}
+
+fn from_ast_statement_impl(
+    statement: Statement,
+    source: Option<&SqlSource<'_>>,
+) -> SqlResult<spec::Plan> {
     match statement {
         Statement::CreatePipelineDataset(_) | Statement::CreatePipelineFlow { .. } => Err(
             SqlError::unsupported("pipeline declarations require a pipeline registration context"),
@@ -520,7 +536,7 @@ pub fn from_ast_statement(statement: Statement) -> SqlResult<spec::Plan> {
                     name,
                     columns,
                     clauses,
-                    r#as: _,
+                    r#as,
                     query,
                 } => {
                     let name = from_ast_object_name(name)?;
@@ -551,7 +567,10 @@ pub fn from_ast_statement(statement: Statement) -> SqlResult<spec::Plan> {
                     let columns = view_columns(columns)
                         .map(from_ast_view_columns)
                         .transpose()?;
-                    let query_text = query.text();
+                    let query_text = match source {
+                        Some(source) => source.view_query(r#as.span)?.to_string(),
+                        None => query.text(),
+                    };
                     let query = from_ast_query(query)?;
                     if let Some(temporary) = temporary {
                         spec::CommandNode::CreateTemporaryView {
@@ -728,7 +747,7 @@ pub fn from_ast_statement(statement: Statement) -> SqlResult<spec::Plan> {
             statement,
         } => {
             let mode = from_ast_explain_format(format)?;
-            let statement = from_ast_statement(*statement)?;
+            let statement = from_ast_statement_impl(*statement, source)?;
             let node = spec::CommandNode::Explain {
                 mode,
                 input: Box::new(statement),
