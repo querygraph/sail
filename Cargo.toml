@@ -3,6 +3,7 @@ members = [
     "crates/*",
     "vendor/grust-topology",
 ]
+exclude = ["vendor/orc-rust"]
 resolver = "2"
 
 [workspace.package]
@@ -24,6 +25,7 @@ dbg_macro = "deny"
 todo = "deny"
 
 [workspace.dependencies]
+orc-rust = { path = "vendor/orc-rust", default-features = false, features = ["async"] }
 thiserror = { version = "2.0.21" }
 tokio = { version = "1.53.2", features = ["full", "test-util"] }
 tokio-util = { version = "0.7.19", features = ["rt"] }
