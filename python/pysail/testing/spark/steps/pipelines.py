@@ -41,11 +41,28 @@ def validate_pipeline(pipeline):
     run(dry=True)
 
 
-@when(parsers.parse("the pipeline fails with {condition}"))
+@when(parsers.parse("the pipeline fails with {condition}"), target_fixture="pipeline_error")
 def run_pipeline_with_error(condition, pipeline):
     _, _, run = pipeline
-    with pytest.raises(AnalysisException, match=condition):
+    with pytest.raises(AnalysisException, match=condition) as error:
         run()
+    return error.value
+
+
+@then(parsers.parse("pipeline error condition is {condition} with SQL state {sql_state}"))
+def pipeline_error_condition(pipeline_error, condition, sql_state):
+    assert pipeline_error.getCondition() == condition
+    assert pipeline_error.getSqlState() == sql_state
+
+
+@then("pipeline error parameters")
+def pipeline_error_parameters(pipeline_error, datatable, pipeline_spark):
+    assert datatable[0] == ["parameter", "value"]
+    # Qualified identifiers use the session catalog: Sail and Spark have
+    # different default catalog names.
+    catalog = pipeline_spark.catalog.currentCatalog().replace("`", "``")
+    expected = {key: value.replace("<current_catalog>", catalog) for key, value in datatable[1:]}
+    assert pipeline_error.getMessageParameters() == expected
 
 
 @given(parsers.parse("pipeline SQL file {name} fails with {condition}"))

@@ -118,6 +118,13 @@ Feature: Persistent pipeline views
       CREATE VIEW output AS SELECT * FROM intermediate;
       """
     When the pipeline fails with INVALID_TEMP_OBJ_REFERENCE
+    Then pipeline error condition is INVALID_TEMP_OBJ_REFERENCE with SQL state 42K0F
+    Then pipeline error parameters
+      | parameter   | value                               |
+      | obj         | view                                |
+      | objName     | `<current_catalog>`.`default`.`output` |
+      | tempObj     | temporary view                      |
+      | tempObjName | `intermediate`                      |
     Then pipeline dataset output is not published
     Then pipeline dataset valid is not published
 

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use datafusion::common::DFSchema;
@@ -12,7 +12,7 @@ use sail_plan::resolver::PlanResolver;
 use sail_plan::resolver::scope::RelationScope;
 
 use super::graph::{Flow, GraphDefinition, Name, analysis, quoted};
-use crate::error::SparkResult;
+use crate::error::{SparkResult, StructuredSparkError};
 use crate::session::SparkSession;
 use crate::spark::connect::OutputType;
 use crate::spark::connect::pipeline_command::define_output;
@@ -137,14 +137,23 @@ pub(super) async fn analyze(
                         && dependencies[&output.name].contains(&candidate.name)
                 })
             {
-                return Err(analysis(
-                    "INVALID_TEMP_OBJ_REFERENCE",
-                    format!(
+                return Err(Box::new(StructuredSparkError {
+                    class: "org.apache.spark.sql.AnalysisException",
+                    condition: "INVALID_TEMP_OBJ_REFERENCE",
+                    sql_state: "42K0F",
+                    message: format!(
                         "view {} references temporary view {}",
                         quoted(&output.name),
                         quoted(&temporary.name)
                     ),
-                ));
+                    parameters: HashMap::from([
+                        ("obj".into(), "view".into()),
+                        ("objName".into(), quoted(&output.name)),
+                        ("tempObj".into(), "temporary view".into()),
+                        ("tempObjName".into(), quoted(&temporary.name)),
+                    ]),
+                })
+                .into());
             }
             let plan = if output.kind == OutputType::TemporaryView {
                 if plans.len() != 1 {
