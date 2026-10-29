@@ -269,6 +269,7 @@ message ExtendedScalarUdf {
     SparkSequenceUdf spark_sequence = 39;
     SparkToStringUdf spark_to_string = 40;
     SparkAnsiStringCastUdf spark_ansi_string_cast = 41;
+    SparkTimePrecisionCastUdf spark_time_precision_cast = 42;
   }
 }
 
@@ -453,6 +454,12 @@ message SparkStructRenameUdf {
   // The target data type (struct or container-of-struct), encoded as Arrow
   // ArrowType protobuf bytes.
   bytes target_type = 1;
+}
+
+message SparkTimePrecisionCastUdf {
+  // Encoded Arrow fields retain logical TIME precision at every nested leaf.
+  bytes source_field = 1;
+  bytes target_field = 2;
 }
 
 message SparkToCsvUdf {

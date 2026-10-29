@@ -240,6 +240,7 @@ use sail_function::scalar::predicate::rewrite_like_pattern::RewriteLikePatternFu
 use sail_function::scalar::spark_ansi_string_cast::SparkAnsiStringCast;
 use sail_function::scalar::spark_cast_string_to_int32::SparkCastStringToInt32;
 use sail_function::scalar::spark_struct_rename::SparkStructRename;
+use sail_function::scalar::spark_time_precision_cast::SparkTimePrecisionCast;
 use sail_function::scalar::spark_to_string::{SparkToLargeUtf8, SparkToUtf8, SparkToUtf8View};
 use sail_function::scalar::string::format_number::FormatNumber;
 use sail_function::scalar::string::levenshtein::Levenshtein;
@@ -3774,6 +3775,20 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                     target_type,
                 ))));
             }
+            UdfKind::SparkTimePrecisionCast(r#gen::SparkTimePrecisionCastUdf {
+                source_field,
+                target_field,
+            }) => {
+                if name != "spark_time_precision_cast" {
+                    return plan_err!(
+                        "TIME precision cast payload has mismatched function name: {name}"
+                    );
+                }
+                return Ok(Arc::new(ScalarUDF::from(SparkTimePrecisionCast::try_new(
+                    try_decode_field_ref(&source_field)?,
+                    try_decode_field_ref(&target_field)?,
+                )?)));
+            }
         };
         match name {
             "array_element" => Ok(Arc::new(ScalarUDF::from(ArrayElement::new()))),
@@ -4349,6 +4364,11 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
         } else if let Some(func) = node.inner().downcast_ref::<SparkStructRename>() {
             let target_type = self.try_encode_data_type(func.target_type())?;
             UdfKind::SparkStructRename(r#gen::SparkStructRenameUdf { target_type })
+        } else if let Some(func) = node.inner().downcast_ref::<SparkTimePrecisionCast>() {
+            UdfKind::SparkTimePrecisionCast(r#gen::SparkTimePrecisionCastUdf {
+                source_field: try_encode_field_ref(func.source_field())?,
+                target_field: try_encode_field_ref(func.target_field())?,
+            })
         } else {
             return Ok(());
         };
@@ -9190,3 +9210,6 @@ mod tests {
 
 #[cfg(test)]
 mod ansi_string_cast_tests;
+
+#[cfg(test)]
+mod time_precision_cast_tests;

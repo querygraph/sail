@@ -18,6 +18,7 @@ pub mod predicate;
 pub mod spark_ansi_string_cast;
 pub mod spark_cast_string_to_int32;
 pub mod spark_struct_rename;
+pub mod spark_time_precision_cast;
 pub mod spark_to_string;
 pub mod string;
 pub mod struct_function;
