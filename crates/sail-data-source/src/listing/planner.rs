@@ -195,6 +195,7 @@ impl ExtensionPlanner for ListingPhysicalPlanner {
                     output_partitioning,
                     schema: source.config().schema.clone(),
                     compression: source.config().compression,
+                    read_case_sensitive: source.config().read_case_sensitive,
                 },
             )
             .await?;

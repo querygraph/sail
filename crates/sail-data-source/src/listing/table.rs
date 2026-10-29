@@ -25,6 +25,8 @@ pub struct ListingTableSourceConfig {
     pub read_format: Arc<dyn ReadFormat>,
     pub path_glob_filter: Option<PathGlobFilter>,
     pub compression: CompressionTypeVariant,
+    /// Captured read policy, retained for per-file schema matching during scan planning.
+    pub read_case_sensitive: bool,
 }
 
 /// A [`TableSource`] that represents reading one or more files via listing.

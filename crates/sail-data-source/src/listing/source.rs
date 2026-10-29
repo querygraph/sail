@@ -126,6 +126,8 @@ pub struct ListingScanInput {
     pub output_partitioning: Option<Partitioning>,
     pub schema: TableSchema,
     pub compression: CompressionTypeVariant,
+    /// Whether this read matches requested columns against file schemas by exact case.
+    pub read_case_sensitive: bool,
 }
 
 /// Configuration for creating a listing-file sink execution plan.
@@ -271,6 +273,7 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
             read_format: Arc::new(read_format),
             path_glob_filter,
             compression,
+            read_case_sensitive,
         })?;
         Ok(Arc::new(source))
     }
@@ -378,3 +381,7 @@ fn reconcile_schema_names_case_insensitive(schema: Schema, physical: &Schema) ->
     }
     Ok(Schema::new_with_metadata(fields, schema.metadata().clone()))
 }
+
+#[cfg(test)]
+#[path = "case_sensitivity_tests.rs"]
+mod case_sensitivity_tests;
