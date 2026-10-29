@@ -76,6 +76,7 @@ impl RelationScope for GraphScope<'_> {
 pub(super) struct AnalyzedGraph {
     pub order: Vec<Name>,
     pub dependencies: BTreeMap<Name, BTreeSet<Name>>,
+    pub relations: BTreeMap<Name, LogicalPlan>,
 }
 
 pub(super) async fn analyze(
@@ -177,5 +178,6 @@ pub(super) async fn analyze(
     Ok(AnalyzedGraph {
         order: super::topology::order(&dependencies)?,
         dependencies,
+        relations: resolved,
     })
 }

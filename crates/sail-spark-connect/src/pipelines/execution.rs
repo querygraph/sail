@@ -17,6 +17,41 @@ use crate::error::{SparkError, SparkResult};
 use crate::session::SparkSession;
 use crate::spark::connect::{OutputType, pipeline_command as pc};
 
+pub(super) async fn validate_publication(
+    ctx: &SessionContext,
+    graph: &GraphDefinition,
+    analyzed: &AnalyzedGraph,
+) -> SparkResult<()> {
+    let spark = ctx.extension::<SparkSession>()?;
+    for output in &graph.outputs {
+        if output.kind != OutputType::MaterializedView {
+            continue;
+        }
+        let flow = graph
+            .flows
+            .iter()
+            .find(|x| x.target == output.name)
+            .ok_or_else(|| analysis("PIPELINE_DATASET_WITHOUT_FLOW", output.name.join(".")))?;
+        let scope = GraphScope {
+            graph,
+            resolved: &analyzed.relations,
+            reads: Mutex::default(),
+            flow,
+        };
+        let config = spark.plan_config_with_overrides(flow.sql_conf.clone())?;
+        // Resolve catalog preconditions and writer options against analyzed
+        // placeholders. Executing these plans here would publish output during
+        // dry runs or before the remaining writers have been validated.
+        PlanResolver::new(ctx, config)
+            .with_relation_scope(&scope)
+            .resolve_named_plan(spec::Plan::Command(spec::CommandPlan::new(
+                publication_command(output, flow),
+            )))
+            .await?;
+    }
+    Ok(())
+}
+
 pub(super) async fn execute(
     ctx: &SessionContext,
     graph: &GraphDefinition,

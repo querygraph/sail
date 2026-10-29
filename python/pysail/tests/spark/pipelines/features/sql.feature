@@ -126,6 +126,26 @@ Feature: Declarative pipeline SQL
       | 3     |
     Then pipeline dataset ordinary is not published
 
+  Scenario: Publication validation precedes dependency-ordered writes
+    Given pipeline SQL file invalid_format.sql
+      """
+      CREATE MATERIALIZED VIEW a_valid AS SELECT * FROM range(2);
+      CREATE MATERIALIZED VIEW z_invalid USING missing_format AS SELECT * FROM a_valid;
+      """
+    When the pipeline fails with No data source found for: missing_format
+    Then pipeline dataset a_valid is not published
+    Then pipeline dataset z_invalid is not published
+
+  Scenario: Publication validation is part of a dry run
+    Given pipeline SQL file invalid_format.sql
+      """
+      CREATE MATERIALIZED VIEW a_valid AS SELECT * FROM range(2);
+      CREATE MATERIALIZED VIEW z_invalid USING missing_format AS SELECT * FROM a_valid;
+      """
+    When pipeline validation fails with No data source found for: missing_format
+    Then pipeline dataset a_valid is not published
+    Then pipeline dataset z_invalid is not published
+
   Scenario: Dataset location is rejected during registration
     Given pipeline SQL file location.sql fails with location.sql
       """
