@@ -1,8 +1,8 @@
 use chumsky::prelude::SimpleSpan;
 
 /// A span in the source code.
-/// The offsets are measured in the number of characters from the beginning of the input,
-/// starting from 0.
+/// When parsing a SQL string, offsets are UTF-8 byte offsets from the beginning of the input,
+/// starting from 0. Both ends lie on character boundaries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TokenSpan {
     /// The start offset of the span.

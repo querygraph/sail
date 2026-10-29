@@ -318,3 +318,23 @@ where
     .collect()
     .then_ignore(end())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn string_input_spans_use_utf8_byte_offsets() -> Result<(), String> {
+        let source = "SELECT 'é' AS 雪";
+        let options = ParserOptions::default();
+        let tokens = create_lexer::<_, chumsky::extra::Err<chumsky::error::Rich<_, _>>>(&options)
+            .parse(source)
+            .into_result()
+            .map_err(|errors| format!("{errors:?}"))?;
+        assert_eq!(tokens[2].1, (7..11).into());
+        assert_eq!(&source[tokens[2].1.start..tokens[2].1.end], "'é'");
+        assert_eq!(tokens[6].1, (15..18).into());
+        assert_eq!(&source[tokens[6].1.start..tokens[6].1.end], "雪");
+        Ok(())
+    }
+}
