@@ -10,3 +10,6 @@ pub use timezone::OrcJavaTimeZoneConfig;
 
 #[cfg(test)]
 mod fixture_tests;
+
+#[cfg(test)]
+mod timestamp_fixture_tests;
