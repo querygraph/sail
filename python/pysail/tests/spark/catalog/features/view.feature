@@ -200,3 +200,75 @@ Feature: Persistent views
       """
     Then query result has row where "col_name" is "# Detailed Table Information"
     And query result row where "col_name" is "Type" has "data_type" equal to "VIEW"
+
+  Scenario: A view retains its creation namespace when the reader changes databases
+    Given final statement
+      """
+      DROP DATABASE IF EXISTS other_view_context CASCADE
+      """
+    Given final statement
+      """
+      USE default
+      """
+    Given statement
+      """
+      CREATE DATABASE other_view_context
+      """
+    Given statement
+      """
+      CREATE TABLE other_view_context.view_customers AS SELECT 9 AS id, 'Other' AS name
+      """
+    Given statement
+      """
+      USE other_view_context
+      """
+    When query
+      """
+      SELECT * FROM default.customer_view ORDER BY id
+      """
+    Then query result ordered
+      | id | name  |
+      | 1  | Alice |
+      | 2  | Bob   |
+      | 3  | Carol |
+
+  Scenario: The creation namespace can differ from the view storage namespace
+    Given final statement
+      """
+      DROP DATABASE IF EXISTS other_view_context CASCADE
+      """
+    Given final statement
+      """
+      DROP VIEW IF EXISTS default.cross_namespace_view
+      """
+    Given final statement
+      """
+      USE default
+      """
+    Given statement
+      """
+      CREATE DATABASE other_view_context
+      """
+    Given statement
+      """
+      CREATE TABLE other_view_context.view_customers AS SELECT 9 AS id, 'Other' AS name
+      """
+    Given statement
+      """
+      USE other_view_context
+      """
+    Given statement
+      """
+      CREATE VIEW default.cross_namespace_view AS SELECT * FROM view_customers
+      """
+    Given statement
+      """
+      USE default
+      """
+    When query
+      """
+      SELECT * FROM cross_namespace_view
+      """
+    Then query result
+      | id | name  |
+      | 9  | Other |

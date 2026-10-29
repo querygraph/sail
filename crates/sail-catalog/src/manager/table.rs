@@ -30,6 +30,15 @@ impl ResolvedCatalogTableReference {
     }
 }
 
+impl From<ResolvedCatalogTableReference> for Vec<String> {
+    fn from(reference: ResolvedCatalogTableReference) -> Self {
+        let mut parts = vec![reference.catalog.to_string()];
+        parts.extend(Vec::<String>::from(reference.database));
+        parts.push(reference.table.to_string());
+        parts
+    }
+}
+
 impl CatalogManager {
     pub async fn rename_table(
         &self,

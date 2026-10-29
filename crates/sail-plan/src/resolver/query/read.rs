@@ -266,15 +266,21 @@ impl PlanResolver<'_> {
                 definition,
                 columns,
                 comment: _,
-                properties: _,
+                properties,
             } => {
                 if temporal.is_some() {
                     return Err(PlanError::unsupported(
                         "SQL time travel is not supported for views",
                     ));
                 }
-                self.resolve_table_view(definition, columns, table_reference.clone(), state)
-                    .await?
+                self.resolve_table_view(
+                    definition,
+                    columns,
+                    properties,
+                    table_reference.clone(),
+                    state,
+                )
+                .await?
             }
             TableKind::TemporaryView { plan, .. } | TableKind::GlobalTemporaryView { plan, .. } => {
                 if temporal.is_some() {
@@ -331,13 +337,28 @@ impl PlanResolver<'_> {
         &self,
         definition: String,
         columns: Vec<TableColumnStatus>,
+        properties: Vec<(String, String)>,
         table_reference: TableReference,
         state: &mut PlanResolverState,
     ) -> PlanResult<LogicalPlan> {
         let ast = sail_sql_analyzer::parser::parse_one_statement(&definition)?;
         let spec_plan = sail_sql_analyzer::statement::from_ast_statement(ast)?;
+        let manager = self.ctx.extension::<CatalogManager>()?;
+        let scope = crate::resolver::scope::ViewScope::from_properties(
+            manager.as_ref(),
+            self.relation_scope,
+            &properties,
+        )?;
         let plan = match spec_plan {
-            spec::Plan::Query(query_plan) => self.resolve_query_plan(query_plan, state).await?,
+            spec::Plan::Query(query_plan) => match scope {
+                Some(scope) => {
+                    PlanResolver::new(self.ctx, self.config.clone())
+                        .with_relation_scope(&scope)
+                        .resolve_query_plan(query_plan, state)
+                        .await?
+                }
+                None => self.resolve_query_plan(query_plan, state).await?,
+            },
             _ => {
                 return Err(PlanError::invalid("view definition must be a query"));
             }

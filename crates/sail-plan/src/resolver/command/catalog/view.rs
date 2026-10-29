@@ -16,6 +16,7 @@ use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 
 use crate::error::{PlanError, PlanResult};
 use crate::resolver::PlanResolver;
+use crate::resolver::scope::{VIEW_NAMESPACE_PART, VIEW_NAMESPACE_SIZE};
 use crate::resolver::state::PlanResolverState;
 
 impl PlanResolver<'_> {
@@ -32,7 +33,7 @@ impl PlanResolver<'_> {
             if_not_exists,
             replace,
             comment,
-            properties,
+            mut properties,
         } = definition;
         // Resolve the query plan to register fields in state and extract column types.
         let resolved_input = self.resolve_query_plan(*input, state).await?;
@@ -71,6 +72,28 @@ impl PlanResolver<'_> {
                 })
                 .collect()
         };
+        let manager = self.ctx.extension::<CatalogManager>()?;
+        let namespace = match self
+            .relation_scope
+            .and_then(|scope| scope.default_namespace())
+        {
+            Some(namespace) => namespace,
+            None => {
+                let mut namespace = vec![manager.default_catalog()?.to_string()];
+                namespace.extend(Vec::<String>::from(manager.default_database()?));
+                namespace
+            }
+        };
+        // Use Spark's existing catalog properties, preserving the SQL text.
+        properties
+            .retain(|(key, _)| key != VIEW_NAMESPACE_SIZE && !key.starts_with(VIEW_NAMESPACE_PART));
+        properties.push((VIEW_NAMESPACE_SIZE.to_string(), namespace.len().to_string()));
+        properties.extend(
+            namespace
+                .into_iter()
+                .enumerate()
+                .map(|(index, part)| (format!("{VIEW_NAMESPACE_PART}{index}"), part)),
+        );
         let command = CatalogCommand::CreateView {
             view: view.into(),
             options: CreateViewOptions {
