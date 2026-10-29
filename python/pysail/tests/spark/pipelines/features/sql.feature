@@ -172,3 +172,116 @@ Feature: Declarative pipeline SQL
       """
     When the pipeline fails with STREAMING_RELATION_FOR_MATERIALIZED_VIEW
     Then pipeline dataset output is not published
+
+  Scenario: USE applies to one file and to external reads in its flows
+    Given statement
+      """
+      CREATE DATABASE other
+      """
+    Given statement
+      """
+      CREATE TABLE other.input AS SELECT 7 AS value
+      """
+    Given pipeline SQL file other.sql
+      """
+      USE DATABASE other;
+      CREATE MATERIALIZED VIEW output AS SELECT * FROM input;
+      CREATE TEMPORARY VIEW intermediate AS SELECT * FROM output;
+      """
+    Given pipeline SQL file default.sql
+      """
+      CREATE MATERIALIZED VIEW output AS SELECT * FROM intermediate;
+      """
+    When the pipeline runs
+    When query
+      """
+      SELECT * FROM default.output UNION ALL SELECT * FROM other.output
+      """
+    Then query result
+      | value |
+      | 7     |
+      | 7     |
+    Then pipeline dataset intermediate is not published
+
+  Scenario: SET configuration is captured per flow and reset between files
+    Given pipeline SQL file timezone.sql
+      """
+      SET spark.sql.session.timeZone = America/Los_Angeles;
+      CREATE MATERIALIZED VIEW pacific AS
+      SELECT hour(TIMESTAMP '2024-01-01 12:00:00+00:00') AS hour;
+      SET spark.sql.session.timeZone = UTC;
+      CREATE MATERIALIZED VIEW utc AS
+      SELECT hour(TIMESTAMP '2024-01-01 12:00:00+00:00') AS hour;
+      """
+    Given pipeline SQL file default.sql
+      """
+      CREATE MATERIALIZED VIEW default_timezone AS
+      SELECT hour(TIMESTAMP '2024-01-01 12:00:00+00:00') AS hour;
+      """
+    When the pipeline runs
+    When query
+      """
+      SELECT 'pacific' AS zone, hour FROM pacific
+      UNION ALL SELECT 'utc', hour FROM utc
+      UNION ALL SELECT 'default', hour FROM default_timezone
+      """
+    Then query result
+      | zone    | hour |
+      | pacific | 4    |
+      | utc     | 12   |
+      | default | 12   |
+
+  Scenario: Private views honor declared column names
+    Given pipeline SQL file columns.sql
+      """
+      CREATE TEMPORARY VIEW intermediate(value) AS SELECT id FROM range(2);
+      CREATE MATERIALIZED VIEW output AS SELECT value FROM intermediate;
+      """
+    When the pipeline runs
+    When query
+      """
+      SELECT * FROM output ORDER BY value
+      """
+    Then query result ordered
+      | value |
+      | 0     |
+      | 1     |
+
+  Scenario Outline: Standalone flow names must have one component
+    Given pipeline SQL file flow.sql fails with MULTIPART_FLOW_NAME_NOT_SUPPORTED
+      """
+      CREATE STREAMING TABLE output;
+      CREATE FLOW <name> AS INSERT INTO output BY NAME SELECT * FROM STREAM(source);
+      """
+    Then pipeline dataset output is not published
+
+    Examples:
+      | name  |
+      | a.b   |
+      | a.b.c |
+
+  Scenario Outline: Standalone flows require INSERT INTO BY NAME
+    Given pipeline SQL file flow.sql fails with Only INSERT INTO by name flows supported
+      """
+      CREATE STREAMING TABLE output;
+      CREATE FLOW f AS <query>;
+      """
+    Then pipeline dataset output is not published
+
+    Examples:
+      | query                                                       |
+      | INSERT INTO output SELECT * FROM STREAM(source)              |
+      | INSERT OVERWRITE output BY NAME SELECT * FROM STREAM(source) |
+      | INSERT INTO output(id) SELECT * FROM STREAM(source)          |
+
+  Scenario: Multiple files cannot register the same output
+    Given pipeline SQL file first.sql
+      """
+      CREATE MATERIALIZED VIEW output AS SELECT 1 AS value;
+      """
+    Given pipeline SQL file second.sql
+      """
+      CREATE MATERIALIZED VIEW output AS SELECT 2 AS value;
+      """
+    When the pipeline fails with PIPELINE_DUPLICATE_IDENTIFIERS.OUTPUT
+    Then pipeline dataset output is not published
