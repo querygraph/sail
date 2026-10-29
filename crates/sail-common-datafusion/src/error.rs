@@ -55,6 +55,7 @@ pub enum CommonErrorCause {
     InvalidArgument(String),
     Io(String),
     Python(PythonErrorCause),
+    Structured(Box<StructuredSparkError>),
     ArrowCast(String),
     ArrowMemory(String),
     ArrowParse(String),
@@ -107,6 +108,7 @@ impl fmt::Display for CommonErrorCause {
             | CommonErrorCause::Execution(x)
             | CommonErrorCause::DeltaTable(x)
             | CommonErrorCause::CommitStateUnknown(x) => write!(f, "{x}"),
+            CommonErrorCause::Structured(error) => write!(f, "{error}"),
             CommonErrorCause::Python(PythonErrorCause { summary, .. }) => {
                 write!(f, "{summary}")
             }
@@ -128,6 +130,9 @@ impl CommonErrorCause {
             return Self::Unknown("circular error reference".to_string());
         }
         seen.insert(ptr);
+        if let Some(error) = error.downcast_ref::<StructuredSparkError>() {
+            return Self::Structured(Box::new(error.clone()));
+        }
         if let Some(e) = error.downcast_ref::<ArrowError>() {
             return match e {
                 ArrowError::NotYetImplemented(x) => Self::NotImplemented(x.clone()),
@@ -219,3 +224,6 @@ impl CommonErrorCause {
         Self::build::<Py>(error, &mut HashSet::new())
     }
 }
+
+#[cfg(test)]
+mod tests;

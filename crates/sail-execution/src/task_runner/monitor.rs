@@ -209,6 +209,48 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn preserves_structured_cause_through_failed_task_status()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        use datafusion::arrow::datatypes::Schema;
+        use datafusion::common::DataFusionError;
+        use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+        use sail_common_datafusion::error::{RemoteError, StructuredSparkError};
+
+        let error = StructuredSparkError {
+            class: "java.lang.NumberFormatException".into(),
+            condition: "CAST_INVALID_INPUT".into(),
+            sql_state: "22018".into(),
+            message: "malformed value".into(),
+            parameters: HashMap::from([("expression".into(), "'bad'".into())]),
+        };
+        let expected = serde_json::to_value(&error)?;
+        let stream = RecordBatchStreamAdapter::new(
+            Arc::new(Schema::empty()),
+            futures::stream::iter([Err(DataFusionError::External(Box::new(error)))]),
+        );
+        let message = TaskMonitor::execute(task_key(), Box::pin(stream)).await;
+        let TaskRunnerMessage::ReportTaskStatus {
+            status: TaskStatus::Failed,
+            cause: Some(cause),
+            ..
+        } = message
+        else {
+            return Err("expected failed task with structured cause".into());
+        };
+        let cause = serde_json::from_str(&serde_json::to_string(&cause)?)?;
+        let CommonErrorCause::Structured(error) =
+            CommonErrorCause::new::<PyErrExtractor>(&RemoteError { cause })
+        else {
+            return Err("task status lost structured cause".into());
+        };
+        assert_eq!(serde_json::to_value(error)?, expected);
+        Ok(())
+    }
+
     fn task_key() -> TaskKey {
         TaskKey {
             job_id: JobId::from(1),

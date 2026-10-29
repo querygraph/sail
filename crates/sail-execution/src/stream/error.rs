@@ -95,3 +95,42 @@ impl From<TaskStreamError> for CommonErrorCause {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use datafusion::arrow::error::ArrowError;
+    use datafusion::common::DataFusionError;
+    use sail_common_datafusion::error::StructuredSparkError;
+
+    use super::*;
+
+    #[test]
+    fn structured_cause_survives_flight_status_and_error_sources()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let error = StructuredSparkError {
+            class: "java.lang.NumberFormatException".into(),
+            condition: "CAST_INVALID_INPUT".into(),
+            sql_state: "22018".into(),
+            message: "malformed 雪\nvalue".into(),
+            parameters: HashMap::from([("expression".into(), "'雪\n'".into())]),
+        };
+        let expected = serde_json::to_value(&error)?;
+        let status: Status =
+            TaskStreamError::from(CommonErrorCause::Structured(Box::new(error.clone()))).into();
+        let sources = [
+            FlightError::Tonic(Box::new(status)),
+            FlightError::Arrow(ArrowError::ExternalError(Box::new(error.clone()))),
+            FlightError::ExternalError(Box::new(error)),
+        ];
+        for source in sources {
+            let source = DataFusionError::External(Box::new(TaskStreamError::from(source)));
+            let CommonErrorCause::Structured(error) =
+                CommonErrorCause::new::<PyErrExtractor>(&source)
+            else {
+                return Err(format!("structured Flight cause lost: {source:?}").into());
+            };
+            assert_eq!(serde_json::to_value(error)?, expected);
+        }
+        Ok(())
+    }
+}

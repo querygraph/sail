@@ -17,3 +17,6 @@ pub(super) fn into_status(error: StructuredSparkError) -> Status {
         ]),
     )
 }
+
+#[cfg(test)]
+mod tests;

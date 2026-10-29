@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::num::ParseIntError;
 use std::str::ParseBoolError;
@@ -228,7 +229,6 @@ where
 }
 
 #[derive(Debug, Clone)]
-#[expect(clippy::enum_variant_names)]
 pub(crate) enum SparkThrowable {
     ParseException(String),
     AnalysisException(String),
@@ -246,10 +246,11 @@ pub(crate) enum SparkThrowable {
     SparkUpgradeException(String),
     SparkException(String),
     PythonException(String),
+    Structured(Box<StructuredSparkError>),
 }
 
 impl SparkThrowable {
-    pub fn message(&self) -> &str {
+    pub fn message(&self) -> Cow<'_, str> {
         match self {
             SparkThrowable::ParseException(message)
             | SparkThrowable::AnalysisException(message)
@@ -264,12 +265,14 @@ impl SparkThrowable {
             | SparkThrowable::SparkRuntimeException(message)
             | SparkThrowable::SparkUpgradeException(message)
             | SparkThrowable::SparkException(message)
-            | SparkThrowable::PythonException(message) => message,
+            | SparkThrowable::PythonException(message) => Cow::Borrowed(message),
+            SparkThrowable::Structured(error) => Cow::Owned(error.to_string()),
         }
     }
 
-    pub fn class_name(&self) -> &'static str {
+    pub fn class_name(&self) -> &str {
         match self {
+            SparkThrowable::Structured(error) => &error.class,
             SparkThrowable::ParseException(_) => {
                 "org.apache.spark.sql.catalyst.parser.ParseException"
             }
@@ -338,7 +341,10 @@ fn truncate_grpc_message(message: &str) -> String {
 
 impl From<SparkThrowable> for Status {
     fn from(throwable: SparkThrowable) -> Status {
-        spark_status(throwable.class_name(), throwable.message(), HashMap::new())
+        match throwable {
+            SparkThrowable::Structured(error) => structured::into_status(*error),
+            throwable => spark_status(throwable.class_name(), &throwable.message(), HashMap::new()),
+        }
     }
 }
 
@@ -364,6 +370,7 @@ fn spark_status(class: &str, message: &str, mut metadata: HashMap<String, String
 impl From<CommonErrorCause> for SparkThrowable {
     fn from(value: CommonErrorCause) -> Self {
         match value {
+            CommonErrorCause::Structured(error) => SparkThrowable::Structured(error),
             CommonErrorCause::NotImplemented(x) => SparkThrowable::UnsupportedOperationException(x),
             CommonErrorCause::InvalidArgument(x) => SparkThrowable::IllegalArgumentException(x),
             CommonErrorCause::Unknown(x)
