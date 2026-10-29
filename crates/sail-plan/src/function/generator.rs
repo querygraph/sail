@@ -87,6 +87,9 @@ pub(super) fn list_built_in_generator_functions() -> Vec<(&'static str, ScalarFu
         ("variant_explode", F::custom(variant_explode)),
         ("variant_explode_outer", F::custom(variant_explode)),
     ]
+    .into_iter()
+    .map(|(name, function)| (name, F::non_foldable(function)))
+    .collect()
 }
 
 pub fn get_outer_built_in_generator_functions(name: &str) -> &str {

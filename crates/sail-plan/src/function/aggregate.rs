@@ -1131,6 +1131,7 @@ mod tests {
             order_by: vec![],
             preserve_count_argument_columns: false,
             function_context: FunctionContextInput {
+                require_foldable: false,
                 argument_display_names: &argument_display_names,
                 plan_config: &plan_config,
                 session_context: &session_context,

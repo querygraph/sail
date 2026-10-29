@@ -121,6 +121,7 @@ impl PlanResolver<'_> {
             let expr = get_built_in_function(function_name)?(ScalarFunctionInput {
                 arguments: vec![],
                 function_context: FunctionContextInput {
+                    require_foldable: state.config().require_foldable,
                     argument_display_names: &[],
                     plan_config: &self.config,
                     session_context: self.ctx,

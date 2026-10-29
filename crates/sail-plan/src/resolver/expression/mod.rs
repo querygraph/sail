@@ -106,7 +106,24 @@ impl PlanResolver<'_> {
     ) -> PlanResult<NamedExpr> {
         use spec::Expr;
 
-        match expr {
+        if state.config().require_foldable
+            && matches!(
+                &expr,
+                Expr::InSubquery { .. }
+                    | Expr::ScalarSubquery { .. }
+                    | Expr::Exists { .. }
+                    | Expr::Subquery { .. }
+                    | Expr::Table { .. }
+                    | Expr::Window { .. }
+                    | Expr::LambdaFunction { .. }
+                    | Expr::CommonInlineUserDefinedFunction(_)
+            )
+        {
+            return Err(PlanError::analysis(
+                "[NOT_A_CONSTANT_STRING.NOT_CONSTANT] expression is not foldable",
+            ));
+        }
+        let resolved = match expr {
             Expr::Literal(literal) => self.resolve_expression_literal(literal, state),
             Expr::UnresolvedAttribute {
                 name,
@@ -340,7 +357,11 @@ impl PlanResolver<'_> {
             Expr::NamedArgument { .. } => Err(PlanError::invalid(
                 "named argument expression can only be used in UDF arguments",
             )),
+        }?;
+        if state.config().require_foldable {
+            Self::require_constant_expression(&resolved.expr)?;
         }
+        Ok(resolved)
     }
 
     pub(super) async fn resolve_named_expressions(

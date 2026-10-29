@@ -79,6 +79,16 @@ impl PlanResolver<'_> {
 
         let canonical_function_name = function_name.to_ascii_lowercase();
         let catalog_manager = self.ctx.extension::<CatalogManager>()?;
+        if state.config().require_foldable
+            && (catalog_manager
+                .get_function(&canonical_function_name)?
+                .is_some()
+                || is_higher_order_function(&canonical_function_name))
+        {
+            return Err(PlanError::analysis(
+                "[NOT_A_CONSTANT_STRING.NOT_CONSTANT] user-defined or higher-order function is not foldable",
+            ));
+        }
         if let Some(udf) = catalog_manager.get_function(&canonical_function_name)?
             && udf.inner().is::<PySparkUnresolvedUDF>()
         {
@@ -168,6 +178,7 @@ impl PlanResolver<'_> {
                         let input = ScalarFunctionInput {
                             arguments,
                             function_context: FunctionContextInput {
+                                require_foldable: state.config().require_foldable,
                                 argument_display_names: &argument_display_names,
                                 plan_config: &self.config,
                                 session_context: self.ctx,
@@ -227,6 +238,7 @@ impl PlanResolver<'_> {
                                         .config()
                                         .preserve_count_argument_columns,
                                     function_context: FunctionContextInput {
+                                        require_foldable: state.config().require_foldable,
                                         argument_display_names: &argument_display_names,
                                         plan_config: &self.config,
                                         session_context: self.ctx,

@@ -55,6 +55,8 @@ impl FieldInfo {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct PlanResolverStateConfig {
+    /// Reject non-foldable expressions before lowering can erase their provenance.
+    pub require_foldable: bool,
     pub arrow_allow_large_var_types: bool,
     /// Keep source columns in COUNT arguments while resolving SQL PIVOT aggregates.
     /// Implicit pivot grouping needs those references before the aggregate is rewritten.

@@ -373,8 +373,9 @@ fn spark_divide(input: ScalarFunctionInput) -> PlanResult<Expr> {
 
     let (dividend, divisor) = arguments.two()?;
 
-    // Plan-time check for literal zero divisors (fast path, better error UX).
-    if is_zero_literal(&divisor) {
+    // Constant-name resolution must validate the result type before evaluation.
+    // Ordinary queries keep the existing literal-zero fast path.
+    if !function_context.require_foldable && is_zero_literal(&divisor) {
         if function_context.plan_config.ansi_mode {
             return Err(PlanError::ArrowError(ArrowError::DivideByZero));
         } else {
@@ -439,8 +440,8 @@ fn spark_div(input: ScalarFunctionInput) -> PlanResult<Expr> {
 
     let (dividend, divisor) = arguments.two()?;
 
-    // Plan-time check for literal zero divisors.
-    if is_zero_literal(&divisor) {
+    // Constant-name resolution defers evaluation until after type validation.
+    if !function_context.require_foldable && is_zero_literal(&divisor) {
         if function_context.plan_config.ansi_mode {
             return Err(PlanError::ArrowError(ArrowError::DivideByZero));
         } else {
@@ -628,8 +629,8 @@ fn spark_modulo(input: ScalarFunctionInput) -> PlanResult<Expr> {
 
     let (dividend, divisor) = arguments.two()?;
 
-    // Plan-time check for literal zero divisors.
-    if is_zero_literal(&divisor) {
+    // Constant-name resolution defers evaluation until after type validation.
+    if !function_context.require_foldable && is_zero_literal(&divisor) {
         if function_context.plan_config.ansi_mode {
             return Err(PlanError::ArrowError(ArrowError::ArithmeticOverflow(
                 "Remainder by zero".to_string(),

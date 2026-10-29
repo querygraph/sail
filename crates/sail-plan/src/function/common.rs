@@ -28,6 +28,8 @@ pub struct FunctionContextInput<'a> {
     pub plan_config: &'a Arc<PlanConfig>,
     pub session_context: &'a SessionContext,
     pub schema: &'a DFSchemaRef,
+    /// Require foldability before a builder can erase function provenance.
+    pub require_foldable: bool,
 }
 
 pub struct ScalarFunctionInput<'a> {
@@ -41,6 +43,17 @@ pub(crate) type ScalarFunction =
 pub(crate) struct ScalarFunctionBuilder;
 
 impl ScalarFunctionBuilder {
+    pub fn non_foldable(function: ScalarFunction) -> ScalarFunction {
+        Arc::new(move |input| {
+            if input.function_context.require_foldable {
+                return Err(PlanError::analysis(
+                    "[NOT_A_CONSTANT_STRING.NOT_CONSTANT] function is not foldable",
+                ));
+            }
+            function(input)
+        })
+    }
+
     pub fn nullary<F, R>(f: F) -> ScalarFunction
     where
         F: Fn() -> R + Send + Sync + 'static,

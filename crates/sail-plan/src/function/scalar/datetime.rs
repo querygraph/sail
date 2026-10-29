@@ -1427,7 +1427,10 @@ pub(super) fn list_built_in_datetime_functions() -> Vec<(&'static str, ScalarFun
             "current_timestamp",
             F::custom(current_timestamp_microseconds),
         ),
-        ("current_timezone", F::custom(current_timezone)),
+        (
+            "current_timezone",
+            F::non_foldable(F::custom(current_timezone)),
+        ),
         ("date_add", F::custom(|input| dateadd(input, "date_add"))),
         ("date_diff", F::custom(datediff)),
         (
