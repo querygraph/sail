@@ -1,7 +1,12 @@
 """Pipeline DataFrame API behavior against Spark Connect."""
 
 import pytest
-from pyspark.errors.exceptions.connect import AnalysisException, IllegalArgumentException, UnknownException
+from pyspark.errors.exceptions import connect as errors
+from pyspark.errors.exceptions.connect import (
+    AnalysisException,
+    IllegalArgumentException,
+    UnknownException,
+)
 from pyspark.sql.connect import proto as pb
 
 try:
@@ -317,8 +322,11 @@ def test_drop_graph_preserves_tables(pipeline_spark, pipeline):
     command.pipeline_command.drop_dataflow_graph.dataflow_graph_id = graph_id
     pipeline_spark.client.execute_command(command)
     assert pipeline_spark.table("output").count() == 3
-    with pytest.raises(IllegalArgumentException, match="does not exist"):
+    with pytest.raises(getattr(errors, "SparkException", UnknownException)) as error:
         run()
+    assert error.value.getCondition() == "DATAFLOW_GRAPH_NOT_FOUND"
+    assert error.value.getMessageParameters() == {"graphId": graph_id}
+    assert error.value.getSqlState() == "KD011"
 
 
 def test_quoted_identifier_with_dot(pipeline_spark, pipeline):

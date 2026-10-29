@@ -10,7 +10,7 @@ use sail_common_datafusion::extension::SessionExtension;
 use sail_plan::config::PlanConfig;
 
 use crate::config::{ConfigKeyValue, SparkRuntimeConfig};
-use crate::error::{SparkError, SparkResult, SparkThrowable};
+use crate::error::{SparkError, SparkResult, SparkThrowable, StructuredSparkError};
 use crate::executor::Executor;
 use crate::pipelines::PipelineGraph;
 use crate::spark::config::SparkConfigKey;
@@ -116,7 +116,16 @@ impl SparkSession {
             .pipelines
             .get(id)
             .cloned()
-            .ok_or_else(|| SparkError::invalid(format!("Dataflow graph {id} does not exist")))
+            .ok_or_else(|| {
+                Box::new(StructuredSparkError {
+                    class: "org.apache.spark.SparkException",
+                    condition: "DATAFLOW_GRAPH_NOT_FOUND",
+                    sql_state: "KD011",
+                    message: format!("Dataflow graph with id {id} could not be found"),
+                    parameters: HashMap::from([("graphId".into(), id.into())]),
+                })
+                .into()
+            })
     }
 
     pub(crate) fn drop_pipeline(&self, id: &str) -> SparkResult<()> {
