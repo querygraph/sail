@@ -54,3 +54,5 @@ sail-build-scripts = { path = "../sail-build-scripts" }
 [dev-dependencies]
 # ORC's public footer messages use the older protobuf runtime.
 prost013 = { package = "prost", version = "0.13.5" }
+# Verify the retained Java oracle digests without a runtime hashing dependency.
+sha2 = "0.11.0"
