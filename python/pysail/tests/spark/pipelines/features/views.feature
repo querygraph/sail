@@ -90,6 +90,17 @@ Feature: Persistent pipeline views
       DESCRIBE EXTENDED other.output
       """
     Then query result row where "col_name" is "Comment" has "data_type" equal to "persisted comment"
+    Given a new declarative pipeline
+    Given pipeline SQL file other.sql
+      """
+      USE other;
+      CREATE VIEW output(number COMMENT 'identifier') COMMENT 'persisted comment'
+      AS SELECT value FROM input;
+      """
+    Given pipeline SQL file consumer.sql
+      """
+      CREATE MATERIALIZED VIEW result AS SELECT * FROM other.output;
+      """
     When the pipeline runs
     When query
       """

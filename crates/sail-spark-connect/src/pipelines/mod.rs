@@ -116,22 +116,30 @@ pub(crate) async fn handle_command(
             sc::PipelineCommandResult::default()
         }
         pc::CommandType::StartRun(command) => {
-            let graph = spark.pipeline(
-                command
-                    .dataflow_graph_id
-                    .as_deref()
-                    .required("dataflow graph id")?,
-            )?;
-            let (definition, mut cancelled) = graph.lock()?.start()?;
+            let graph_id = command
+                .dataflow_graph_id
+                .as_deref()
+                .required("dataflow graph id")?;
+            let graph = spark.pipeline(graph_id)?;
+            let (definition, mut cancelled, selection) = {
+                let mut graph = graph.lock()?;
+                // Command validation precedes reserving the execution entry,
+                // so invalid options can be corrected on the same graph.
+                let selection = selection::Selection::new(&graph.definition, &command)?;
+                if command.storage.as_deref().is_none_or(str::is_empty) {
+                    return Err(SparkError::invalid(
+                        "Storage must be specified to start a run.",
+                    ));
+                }
+                let (definition, cancelled) = graph.start(graph_id)?;
+                (definition, cancelled, selection)
+            };
             let ctx = ctx.clone();
             let inner = async_stream::try_stream! {
                 yield event("Starting pipeline analysis");
                 let run = async {
-                    if command.storage.as_deref().is_none_or(str::is_empty) {
-                        return Err(SparkError::missing("pipeline storage"));
-                    }
                     let analyzed = analysis::analyze(&ctx, &definition).await?;
-                    let selection = selection::Selection::new(&definition, &analyzed, &command)?;
+                    let selection = selection.with_dependencies(&definition, &analyzed);
                     if !command.dry.unwrap_or(false) {
                         execution::validate_publication(&ctx, &definition, &analyzed).await?;
                         execution::execute(&ctx, &definition, analyzed, selection).await?;

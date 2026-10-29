@@ -1,7 +1,7 @@
 """Pipeline DataFrame API behavior against Spark Connect."""
 
 import pytest
-from pyspark.errors.exceptions.connect import AnalysisException, IllegalArgumentException
+from pyspark.errors.exceptions.connect import AnalysisException, IllegalArgumentException, UnknownException
 from pyspark.sql.connect import proto as pb
 
 try:
@@ -47,22 +47,27 @@ def test_batch_dependencies_and_view_isolation(pipeline_spark, pipeline):
     assert pipeline_spark.table("source").count() == 4
 
 
-def test_repeated_materialized_view_refresh(pipeline_spark, pipeline):
-    _, registry, run = pipeline
+def test_repeated_materialized_view_refresh(pipeline_spark, pipeline_factory):
     pipeline_spark.range(2).write.saveAsTable("external_input")
-    with graph_element_registration_context(registry):
 
-        @dp.materialized_view
-        def output():
-            return pipeline_spark.table("external_input")
+    def refresh():
+        _, registry, run = pipeline_factory()
+        with graph_element_registration_context(registry):
 
-    run()
+            @dp.materialized_view
+            def output():
+                return pipeline_spark.table("external_input")
+
+        run()
+
+    refresh()
     pipeline_spark.range(2, 5).write.mode("append").saveAsTable("external_input")
-    run()
+    refresh()
     assert [row.id for row in pipeline_spark.table("output").orderBy("id").collect()] == list(range(5))
 
 
-def test_materialized_view_comment_is_published(pipeline_spark, pipeline):
+@pytest.mark.parametrize("dry", [True, False])
+def test_materialized_view_comment_is_published(pipeline_spark, pipeline, dry):
     _, registry, run = pipeline
     with graph_element_registration_context(registry):
 
@@ -70,36 +75,41 @@ def test_materialized_view_comment_is_published(pipeline_spark, pipeline):
         def output():
             return pipeline_spark.range(2)
 
-    run(dry=True)
-    assert not pipeline_spark.catalog.tableExists("output")
-    run()
-    assert pipeline_spark.catalog.getTable("output").description == "daily summary"
-    assert pipeline_spark.table("output").count() == 2
+    run(dry=dry)
+    if dry:
+        assert not pipeline_spark.catalog.tableExists("output")
+    else:
+        assert pipeline_spark.catalog.getTable("output").description == "daily summary"
+        assert pipeline_spark.table("output").count() == 2
 
 
-def test_selective_refresh_reads_committed_excluded_producers(pipeline_spark, pipeline):
+def test_selective_refresh_reads_committed_excluded_producers(pipeline_spark, pipeline_factory):
     """PipelineRefreshFunctionalSuite: selective refresh does not refresh dependencies."""
-    _, registry, run = pipeline
     pipeline_spark.range(1).write.saveAsTable("external_input")
-    with graph_element_registration_context(registry):
 
-        @dp.materialized_view
-        def producer():
-            return pipeline_spark.table("external_input")
+    def refresh(**options):
+        _, registry, run = pipeline_factory()
+        with graph_element_registration_context(registry):
 
-        @dp.materialized_view
-        def consumer():
-            return pipeline_spark.table("producer")
+            @dp.materialized_view
+            def producer():
+                return pipeline_spark.table("external_input")
 
-    run()
+            @dp.materialized_view
+            def consumer():
+                return pipeline_spark.table("producer")
+
+        run(**options)
+
+    refresh()
     pipeline_spark.range(1, 3).write.mode("append").saveAsTable("external_input")
-    run(refresh=["consumer"])
+    refresh(refresh=["consumer"])
     assert pipeline_spark.table("producer").count() == 1
     assert pipeline_spark.table("consumer").count() == 1
-    run(full_refresh=["producer"])
+    refresh(full_refresh=["producer"])
     assert pipeline_spark.table("producer").count() == 3
     assert pipeline_spark.table("consumer").count() == 1
-    run(refresh=["consumer"])
+    refresh(refresh=["consumer"])
     assert pipeline_spark.table("consumer").count() == 3
 
 
@@ -125,6 +135,78 @@ def test_invalid_refresh_selection_does_not_publish(pipeline_spark, pipeline, op
 
     with pytest.raises(IllegalArgumentException, match=message):
         run(**options)
+    assert not pipeline_spark.catalog.tableExists("output")
+    # Invalid command options do not reserve the graph's execution entry.
+    run(dry=True)
+
+
+@pytest.mark.parametrize("dry", [True, False])
+def test_graph_can_only_be_started_once(pipeline_spark, pipeline, dry):
+    graph_id, registry, run = pipeline
+    with graph_element_registration_context(registry):
+        dp.materialized_view(name="output")(lambda: pipeline_spark.range(2))
+
+    run(dry=dry)
+    with pytest.raises(UnknownException) as error:
+        run(dry=True)
+    assert error.value.getCondition() == (
+        "SPARK_CONNECT_ILLEGAL_STATE.EXECUTION_STATE_EXECUTE_HOLDER_ALREADY_EXISTS_GRAPH"
+    )
+    assert error.value.getMessageParameters() == {"graphId": graph_id}
+    assert error.value.getSqlState() == "XXSC0"
+    assert pipeline_spark.catalog.tableExists("output") is not dry
+    if not dry:
+        assert pipeline_spark.table("output").count() == 2
+
+
+def test_failed_analysis_still_reserves_the_graph(pipeline_spark, pipeline):
+    graph_id, registry, run = pipeline
+    with graph_element_registration_context(registry):
+        dp.materialized_view(name="output")(lambda: pipeline_spark.range(2).selectExpr("missing_column"))
+
+    # Spark wraps the underlying unresolved column in UnresolvedPipelineException.
+    # The failure still occurs after the execution entry has been reserved.
+    with pytest.raises(AnalysisException):
+        run(dry=True)
+    with pytest.raises(UnknownException) as error:
+        run(dry=True)
+    assert error.value.getCondition() == (
+        "SPARK_CONNECT_ILLEGAL_STATE.EXECUTION_STATE_EXECUTE_HOLDER_ALREADY_EXISTS_GRAPH"
+    )
+    assert error.value.getMessageParameters() == {"graphId": graph_id}
+
+
+def test_empty_registration_can_be_corrected_before_start(pipeline_spark, pipeline):
+    _, registry, run = pipeline
+    with pytest.raises(AnalysisException, match="RUN_EMPTY_PIPELINE"):
+        run(dry=True)
+    with graph_element_registration_context(registry):
+        dp.materialized_view(name="output")(lambda: pipeline_spark.range(2))
+    run(dry=True)
+    assert not pipeline_spark.catalog.tableExists("output")
+
+
+def test_duplicate_registration_does_not_reserve_the_graph(pipeline_spark, pipeline):
+    _, registry, run = pipeline
+    with graph_element_registration_context(registry):
+        dp.materialized_view(name="output")(lambda: pipeline_spark.range(2))
+        dp.materialized_view(name="output")(lambda: pipeline_spark.range(3))
+    for _ in range(2):
+        with pytest.raises(AnalysisException, match="PIPELINE_DUPLICATE_IDENTIFIERS.OUTPUT"):
+            run(dry=True)
+
+
+def test_missing_storage_does_not_reserve_the_graph(pipeline_spark, pipeline):
+    graph_id, registry, run = pipeline
+    with graph_element_registration_context(registry):
+        dp.materialized_view(name="output")(lambda: pipeline_spark.range(2))
+
+    command = pb.Command()
+    command.pipeline_command.start_run.dataflow_graph_id = graph_id
+    command.pipeline_command.start_run.dry = True
+    with pytest.raises(IllegalArgumentException, match="Storage must be specified"):
+        pipeline_spark.client.execute_command(command)
+    run(dry=True)
     assert not pipeline_spark.catalog.tableExists("output")
 
 

@@ -12,6 +12,11 @@ def declarative_pipeline(pipeline, pipeline_spark):
     return pipeline_spark
 
 
+@given("a new declarative pipeline", target_fixture="pipeline")
+def new_declarative_pipeline(pipeline_factory):
+    return pipeline_factory()
+
+
 @given(parsers.parse("pipeline SQL file {name}"))
 def pipeline_sql_file(name, docstring, pipeline):
     _, registry, _ = pipeline

@@ -13,11 +13,7 @@ pub(super) struct Selection {
 }
 
 impl Selection {
-    pub fn new(
-        graph: &GraphDefinition,
-        analyzed: &AnalyzedGraph,
-        run: &StartRun,
-    ) -> SparkResult<Self> {
+    pub fn new(graph: &GraphDefinition, run: &StartRun) -> SparkResult<Self> {
         let parse = |names: &[String]| -> SparkResult<BTreeSet<Name>> {
             names
                 .iter()
@@ -59,14 +55,22 @@ impl Selection {
                 overlap.join(".")
             )));
         }
+        let required = refresh.union(&reset).cloned().collect();
+        Ok(Self {
+            refresh,
+            reset,
+            required,
+        })
+    }
+
+    pub fn with_dependencies(mut self, graph: &GraphDefinition, analyzed: &AnalyzedGraph) -> Self {
         // A selection names only datasets to run, not their upstream or
         // downstream tables. Temporary views are expanded to discover the
         // existing materialized outputs that selected flows need to scan.
-        let mut required: BTreeSet<_> = refresh.union(&reset).cloned().collect();
-        let mut pending: Vec<_> = required.iter().cloned().collect();
+        let mut pending: Vec<_> = self.required.iter().cloned().collect();
         while let Some(name) = pending.pop() {
             for input in analyzed.dependencies.get(&name).into_iter().flatten() {
-                if required.insert(input.clone())
+                if self.required.insert(input.clone())
                     && graph
                         .outputs
                         .iter()
@@ -76,11 +80,7 @@ impl Selection {
                 }
             }
         }
-        Ok(Self {
-            refresh,
-            reset,
-            required,
-        })
+        self
     }
 
     pub fn runs(&self, name: &Name) -> bool {

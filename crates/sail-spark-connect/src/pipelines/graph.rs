@@ -5,7 +5,7 @@ use sail_sql_analyzer::expression::from_ast_object_name;
 use sail_sql_analyzer::parser::parse_object_name;
 use tokio::sync::watch;
 
-use crate::error::{ProtoFieldExt, SparkError, SparkResult};
+use crate::error::{ProtoFieldExt, SparkError, SparkResult, StructuredSparkError};
 use crate::spark::connect::{self as sc, pipeline_command as pc};
 
 pub(super) type Name = Vec<String>;
@@ -110,8 +110,24 @@ impl PipelineGraph {
         }
     }
 
-    pub(super) fn start(&mut self) -> SparkResult<(GraphDefinition, watch::Receiver<bool>)> {
-        self.ensure_idle()?;
+    pub(super) fn start(
+        &mut self,
+        graph_id: &str,
+    ) -> SparkResult<(GraphDefinition, watch::Receiver<bool>)> {
+        self.definition.validate_registration()?;
+        // Spark's session retains the execution entry after completion or
+        // failure. A refresh registers a new graph, even after a dry run.
+        if self.active.is_some() {
+            return Err(Box::new(StructuredSparkError {
+                class: "org.apache.spark.SparkIllegalStateException",
+                condition: "SPARK_CONNECT_ILLEGAL_STATE.EXECUTION_STATE_EXECUTE_HOLDER_ALREADY_EXISTS_GRAPH",
+                sql_state: "XXSC0",
+                message: format!(
+                    "Spark Connect encountered an illegal state condition. Pipeline execution for graph ID {graph_id} already exists. Stop the existing execution before starting a new one."
+                ),
+                parameters: HashMap::from([("graphId".into(), graph_id.into())]),
+            }).into());
+        }
         let (tx, rx) = watch::channel(false);
         self.active = Some(tx);
         Ok((self.definition.clone(), rx))
@@ -224,7 +240,7 @@ impl GraphDefinition {
         }
     }
 
-    pub(super) fn validate(&self) -> SparkResult<()> {
+    fn validate_registration(&self) -> SparkResult<()> {
         if !self
             .outputs
             .iter()
@@ -242,7 +258,6 @@ impl GraphDefinition {
             }
         }
         let mut flows = BTreeSet::new();
-        let mut producers: BTreeMap<&Name, Vec<&Flow>> = BTreeMap::new();
         for flow in &self.flows {
             if !flows.insert(&flow.name) {
                 return Err(analysis(
@@ -250,6 +265,14 @@ impl GraphDefinition {
                     quoted(&flow.name),
                 ));
             }
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate(&self) -> SparkResult<()> {
+        let names: BTreeSet<_> = self.outputs.iter().map(|output| &output.name).collect();
+        let mut producers: BTreeMap<&Name, Vec<&Flow>> = BTreeMap::new();
+        for flow in &self.flows {
             if flow.name != flow.target && names.contains(&flow.name) {
                 return Err(analysis(
                     "FLOW_NAME_CONFLICTS_WITH_TABLE",

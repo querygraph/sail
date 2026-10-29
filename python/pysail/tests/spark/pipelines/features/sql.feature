@@ -187,6 +187,11 @@ Feature: Declarative pipeline SQL
       CREATE MATERIALIZED VIEW output COMMENT 'daily summary' AS SELECT * FROM range(2);
       """
     When the pipeline runs
+    Given a new declarative pipeline
+    Given pipeline SQL file comment.sql
+      """
+      CREATE MATERIALIZED VIEW output COMMENT 'daily summary' AS SELECT * FROM range(2);
+      """
     When the pipeline runs
     When query
       """

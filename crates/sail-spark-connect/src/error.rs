@@ -21,6 +21,9 @@ use tokio::task::JoinError;
 use tonic::{Code, Status};
 use tonic_types::{ErrorDetails, StatusExt};
 
+mod structured;
+pub use structured::StructuredSparkError;
+
 pub type SparkResult<T> = Result<T, SparkError>;
 
 #[derive(Debug, Error)]
@@ -49,6 +52,8 @@ pub enum SparkError {
     AnalysisError(String),
     #[error("parse error: {0}")]
     ParseError(String),
+    #[error(transparent)]
+    Structured(#[from] Box<StructuredSparkError>),
 }
 
 impl SparkError {
@@ -333,26 +338,27 @@ fn truncate_grpc_message(message: &str) -> String {
 
 impl From<SparkThrowable> for Status {
     fn from(throwable: SparkThrowable) -> Status {
-        let class = throwable.class_name();
-
-        let mut metadata = HashMap::new();
-        // We do not add the "stackTrace" field since the Java stack trace is not available.
-        metadata.insert("classes".into(), format!("[\"{class}\"]"));
-
-        let mut details = ErrorDetails::new();
-        details.set_error_info(class, "org.apache.spark", metadata);
-
-        // Truncate the message if it exceeds the maximum length.
-        // gRPC has a hard limit of 16384 bytes for total metadata size.
-        // Both `grpc-message` and `grpc-status-details-bin` encode the message,
-        // so long messages (e.g., Python tracebacks) can easily exceed the limit.
-        let message = truncate_grpc_message(throwable.message());
-
-        // The original Spark Connect server implementation uses the "INTERNAL" status code
-        // for all Spark exceptions, so we do the same here.
-        // Reference: org.apache.spark.sql.connect.utils.ErrorUtils#buildStatusFromThrowable
-        Status::with_error_details(Code::Internal, message, details)
+        spark_status(throwable.class_name(), throwable.message(), HashMap::new())
     }
+}
+
+fn spark_status(class: &str, message: &str, mut metadata: HashMap<String, String>) -> Status {
+    // We do not add the "stackTrace" field since the Java stack trace is not available.
+    metadata.insert("classes".into(), format!("[\"{class}\"]"));
+
+    let mut details = ErrorDetails::new();
+    details.set_error_info(class, "org.apache.spark", metadata);
+
+    // Truncate the message if it exceeds the maximum length.
+    // gRPC has a hard limit of 16384 bytes for total metadata size.
+    // Both `grpc-message` and `grpc-status-details-bin` encode the message,
+    // so long messages (e.g., Python tracebacks) can easily exceed the limit.
+    let message = truncate_grpc_message(message);
+
+    // The original Spark Connect server implementation uses the "INTERNAL" status code
+    // for all Spark exceptions, so we do the same here.
+    // Reference: org.apache.spark.sql.connect.utils.ErrorUtils#buildStatusFromThrowable
+    Status::with_error_details(Code::Internal, message, details)
 }
 
 impl From<CommonErrorCause> for SparkThrowable {
@@ -464,6 +470,7 @@ impl From<SparkError> for Status {
             }
             SparkError::AnalysisError(s) => SparkThrowable::AnalysisException(s).into(),
             SparkError::ParseError(s) => SparkThrowable::ParseException(s).into(),
+            SparkError::Structured(error) => (*error).into(),
             e @ SparkError::SendError(_) => {
                 Status::cancelled(truncate_grpc_message(&e.to_string()))
             }
