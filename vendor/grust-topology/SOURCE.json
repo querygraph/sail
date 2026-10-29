@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/querygraph/grust",
+  "commit": "fb18b27aa561ffb75a2da5a0f14f23a3cdfce6cd",
+  "path": "crates/grust-topology",
+  "files_sha256": {
+    "Cargo.toml": "c432af10266ba62cd88fc343e17c153045ce1c9f587cfb1f50b11e0851b1404d",
+    "LICENSE-MIT": "99d43669bd0d8086aa12829db4ca8090e72cd7cfbb09d6fca86ab0e5c8dd8efd",
+    "src/lib.rs": "385693790b481e48fde16bf1c7182783ec80e19055c69b4a2945d16a55098de6",
+    "src/tests.rs": "9f5fcd4ae687659d93afbd568e2cf2bc1421198ffa0ffff2e9dbfe3e69e9d815"
+  }
+}
