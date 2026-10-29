@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use datafusion::prelude::SessionContext;
 use log::warn;
 use sail_common::spec;
@@ -245,12 +247,29 @@ fn analyze_is_streaming(plan: sc::Plan) -> SparkResult<bool> {
 }
 
 pub(crate) fn is_streaming_query_plan(plan: &spec::QueryPlan) -> bool {
-    is_streaming_query_node(&plan.node)
+    is_streaming_query_node(&plan.node, &HashMap::new())
 }
 
-fn is_streaming_query_node(node: &spec::QueryNode) -> bool {
+fn is_streaming_query_node(
+    node: &spec::QueryNode,
+    cte_scope: &HashMap<spec::Identifier, bool>,
+) -> bool {
+    let is_streaming = |plan: &spec::QueryPlan| is_streaming_query_node(&plan.node, cte_scope);
     match node {
-        spec::QueryNode::Read { is_streaming, .. } => *is_streaming,
+        spec::QueryNode::Read {
+            read_type,
+            is_streaming,
+        } => {
+            // CTE substitution replaces the read (including STREAM's flag) with
+            // the definition. Use the same exact, bare-name keys as PlanResolver.
+            if let spec::ReadType::NamedTable(table) = read_type
+                && let [name] = table.name.parts()
+                && let Some(streaming) = cte_scope.get(name)
+            {
+                return *streaming;
+            }
+            *is_streaming
+        }
         // leaf nodes with no query plan inputs
         spec::QueryNode::LocalRelation { .. }
         | spec::QueryNode::CachedLocalRelation { .. }
@@ -288,46 +307,105 @@ fn is_streaming_query_node(node: &spec::QueryNode) -> bool {
         | spec::QueryNode::StatSampleBy { input, .. }
         | spec::QueryNode::WithParameters { input, .. }
         | spec::QueryNode::TableAlias { input, .. }
-        | spec::QueryNode::TableSample { input, .. } => is_streaming_query_plan(input),
+        | spec::QueryNode::TableSample { input, .. } => is_streaming(input),
         // single optional input - None input means no source, which is not streaming
         spec::QueryNode::Project { input, .. } | spec::QueryNode::LateralView { input, .. } => {
-            input.as_ref().is_some_and(|i| is_streaming_query_plan(i))
+            input.as_ref().is_some_and(|i| is_streaming(i))
         }
         // nested struct with single input
-        spec::QueryNode::Aggregate(agg) => is_streaming_query_plan(&agg.input),
-        spec::QueryNode::Sample(s) => is_streaming_query_plan(&s.input),
-        spec::QueryNode::Deduplicate(d) => is_streaming_query_plan(&d.input),
-        spec::QueryNode::Pivot(p) => is_streaming_query_plan(&p.input),
-        spec::QueryNode::Unpivot(u) => is_streaming_query_plan(&u.input),
-        spec::QueryNode::Parse(p) => is_streaming_query_plan(&p.input),
-        spec::QueryNode::WithWatermark(w) => is_streaming_query_plan(&w.input),
-        spec::QueryNode::ApplyInPandasWithState(a) => is_streaming_query_plan(&a.input),
-        spec::QueryNode::NamedWindows { input, windows: _ } => is_streaming_query_plan(input),
+        spec::QueryNode::Aggregate(agg) => is_streaming(&agg.input),
+        spec::QueryNode::Sample(s) => is_streaming(&s.input),
+        spec::QueryNode::Deduplicate(d) => is_streaming(&d.input),
+        spec::QueryNode::Pivot(p) => is_streaming(&p.input),
+        spec::QueryNode::Unpivot(u) => is_streaming(&u.input),
+        spec::QueryNode::Parse(p) => is_streaming(&p.input),
+        spec::QueryNode::WithWatermark(w) => is_streaming(&w.input),
+        spec::QueryNode::ApplyInPandasWithState(a) => is_streaming(&a.input),
+        spec::QueryNode::NamedWindows { input, windows: _ } => is_streaming(input),
         // multiple inputs
-        spec::QueryNode::Join(j) => {
-            is_streaming_query_plan(&j.left) || is_streaming_query_plan(&j.right)
-        }
-        spec::QueryNode::SetOperation(s) => {
-            is_streaming_query_plan(&s.left) || is_streaming_query_plan(&s.right)
-        }
-        spec::QueryNode::CoGroupMap(c) => {
-            is_streaming_query_plan(&c.input) || is_streaming_query_plan(&c.other)
-        }
+        spec::QueryNode::Join(j) => is_streaming(&j.left) || is_streaming(&j.right),
+        spec::QueryNode::SetOperation(s) => is_streaming(&s.left) || is_streaming(&s.right),
+        spec::QueryNode::CoGroupMap(c) => is_streaming(&c.input) || is_streaming(&c.other),
         spec::QueryNode::GroupMap(g) => {
-            is_streaming_query_plan(&g.input)
-                || g.initial_input
-                    .as_ref()
-                    .is_some_and(|i| is_streaming_query_plan(i))
+            is_streaming(&g.input) || g.initial_input.as_ref().is_some_and(|i| is_streaming(i))
         }
-        spec::QueryNode::WithCtes { input, ctes, .. } => {
-            is_streaming_query_plan(input)
-                || ctes.iter().any(|(_name, p)| is_streaming_query_plan(p))
+        spec::QueryNode::WithCtes {
+            input,
+            ctes,
+            recursive,
+        } => {
+            let mut scope = cte_scope.clone();
+            if *recursive {
+                // Recursive self-references must not inherit an outer homonym.
+                // Keep their explicit read flags until recursive analysis can
+                // determine the definition's streaming status.
+                for (name, _) in ctes {
+                    scope.remove(name);
+                }
+            }
+            let mut definitions_streaming = false;
+            for (name, definition) in ctes {
+                let streaming = is_streaming_query_node(&definition.node, &scope);
+                definitions_streaming |= streaming;
+                if !recursive {
+                    scope.insert(name.clone(), streaming);
+                }
+            }
+            // Spark's analyzed WithCTE includes even unused definitions.
+            definitions_streaming || is_streaming_query_node(&input.node, &scope)
         }
         spec::QueryNode::WithRelations { root, references } => {
-            is_streaming_query_plan(root) || references.iter().any(is_streaming_query_plan)
+            is_streaming(root) || references.iter().any(is_streaming)
         }
         spec::QueryNode::LateralJoin { left, right, .. } => {
-            is_streaming_query_plan(left) || is_streaming_query_plan(right)
+            is_streaming(left) || is_streaming(right)
         }
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use sail_common::spec;
+    use sail_sql_analyzer::source::SqlSource;
+    use sail_sql_analyzer::statement::from_ast_statement_with_source;
+
+    use super::is_streaming_query_plan;
+
+    #[test]
+    fn cte_reads_inherit_definition_streaming_status() -> Result<(), Box<dyn std::error::Error>> {
+        for (sql, expected) in [
+            ("WITH x AS (SELECT 1) SELECT * FROM STREAM(x)", false),
+            (
+                "WITH x AS (SELECT * FROM STREAM(source)) SELECT * FROM x",
+                true,
+            ),
+            (
+                "WITH x AS (SELECT 1), y AS (SELECT * FROM STREAM(x)) SELECT * FROM STREAM(y)",
+                false,
+            ),
+            ("WITH x AS (SELECT 1) SELECT * FROM STREAM(default.x)", true),
+            ("WITH x AS (SELECT * FROM STREAM(source)) SELECT 1", true),
+            (
+                "WITH x AS (SELECT 1) SELECT * FROM (WITH x AS (SELECT 2) SELECT * FROM STREAM(x))",
+                false,
+            ),
+            (
+                "SELECT * FROM (WITH x AS (SELECT 1) SELECT * FROM STREAM(x)) UNION ALL SELECT * FROM STREAM(x)",
+                true,
+            ),
+            (
+                "WITH x AS (SELECT 1) SELECT * FROM (WITH RECURSIVE x AS (SELECT * FROM STREAM(x)) SELECT * FROM x)",
+                true,
+            ),
+        ] {
+            let source = SqlSource::new(sql)?;
+            let spec::Plan::Query(query) =
+                from_ast_statement_with_source(source.parse_one_statement()?, &source)?
+            else {
+                return Err("expected query".into());
+            };
+            assert_eq!(is_streaming_query_plan(&query), expected, "{sql}");
+        }
+        Ok(())
     }
 }
