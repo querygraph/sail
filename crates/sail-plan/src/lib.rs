@@ -13,6 +13,7 @@ use crate::config::PlanConfig;
 use crate::error::PlanResult;
 use crate::resolver::PlanResolver;
 use crate::resolver::plan::NamedPlan;
+use crate::resolver::scope::RelationScope;
 use crate::streaming::rewriter::{is_streaming_plan, rewrite_streaming_plan};
 
 pub mod catalog;
@@ -37,8 +38,23 @@ pub async fn resolve_and_execute_plan(
     config: Arc<PlanConfig>,
     plan: spec::Plan,
 ) -> PlanResult<(Arc<dyn ExecutionPlan>, Vec<StringifiedPlan>)> {
+    resolve_and_execute_plan_with_scope(ctx, config, plan, None).await
+}
+
+/// Resolve with an optional caller-local namespace, then use the same optimizer,
+/// streaming rewrite, physical planner, and field-renaming path as other queries.
+pub async fn resolve_and_execute_plan_with_scope(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    plan: spec::Plan,
+    scope: Option<&dyn RelationScope>,
+) -> PlanResult<(Arc<dyn ExecutionPlan>, Vec<StringifiedPlan>)> {
     let mut info = vec![];
     let resolver = PlanResolver::new(ctx, config);
+    let resolver = match scope {
+        Some(scope) => resolver.with_relation_scope(scope),
+        None => resolver,
+    };
     let NamedPlan { plan, fields } = resolver.resolve_named_plan(plan).await?;
     info.push(plan.to_stringified(PlanType::InitialLogicalPlan));
     let df = execute_logical_plan(ctx, plan).await?;

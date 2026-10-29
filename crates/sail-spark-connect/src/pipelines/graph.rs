@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use sail_common::spec;
-use sail_sql_analyzer::{expression::from_ast_object_name, parser::parse_object_name};
+use sail_sql_analyzer::expression::from_ast_object_name;
+use sail_sql_analyzer::parser::parse_object_name;
 use tokio::sync::watch;
 
 use crate::error::{ProtoFieldExt, SparkError, SparkResult};

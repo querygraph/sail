@@ -7,7 +7,8 @@ use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_common_datafusion::session::job::JobService;
-use sail_plan::{execute_logical_plan, resolver::PlanResolver};
+use sail_plan::resolve_and_execute_plan_with_scope;
+use sail_plan::resolver::PlanResolver;
 
 use super::analysis::{AnalyzedGraph, GraphScope};
 use super::graph::{GraphDefinition, analysis};
@@ -112,14 +113,13 @@ pub(super) async fn execute(
             options: vec![],
             table_properties: details.table_properties.into_iter().collect(),
         };
-        let plan = resolver
-            .resolve_named_plan(spec::Plan::Command(spec::CommandPlan::new(
-                spec::CommandNode::WriteTo(write),
-            )))
-            .await?
-            .plan;
-        let df = execute_logical_plan(ctx, plan).await?;
-        let physical = df.create_physical_plan().await?;
+        let (physical, _) = resolve_and_execute_plan_with_scope(
+            ctx,
+            config,
+            spec::Plan::Command(spec::CommandPlan::new(spec::CommandNode::WriteTo(write))),
+            Some(&scope),
+        )
+        .await?;
         let mut stream = service.runner().execute(ctx, physical).await?;
         while stream.try_next().await?.is_some() {}
         // Downstream flows scan the newly committed table. They must not inline

@@ -7,6 +7,7 @@ mod topology;
 use std::time::SystemTime;
 
 use datafusion::prelude::SessionContext;
+pub(crate) use graph::PipelineGraph;
 use sail_catalog::manager::CatalogManager;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 
@@ -15,8 +16,6 @@ use crate::executor::{Executor, ExecutorBatch, ExecutorMetadata, ExecutorOutput}
 use crate::service::ExecutePlanResponseStream;
 use crate::session::SparkSession;
 use crate::spark::connect::{self as sc, pipeline_command as pc, pipeline_command_result as pr};
-
-pub(crate) use graph::PipelineGraph;
 
 fn result(value: sc::PipelineCommandResult) -> ExecutorOutput {
     ExecutorOutput::new(ExecutorBatch::PipelineCommandResult(Box::new(value)))

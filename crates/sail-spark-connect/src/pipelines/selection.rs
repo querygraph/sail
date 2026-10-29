@@ -3,7 +3,8 @@ use std::collections::BTreeSet;
 use super::analysis::AnalyzedGraph;
 use super::graph::{GraphDefinition, Name, parse_name};
 use crate::error::{SparkError, SparkResult};
-use crate::spark::connect::{OutputType, pipeline_command::StartRun};
+use crate::spark::connect::OutputType;
+use crate::spark::connect::pipeline_command::StartRun;
 
 pub(super) struct Selection {
     pub refresh: BTreeSet<Name>,

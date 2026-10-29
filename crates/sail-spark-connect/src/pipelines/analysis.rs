@@ -9,7 +9,8 @@ use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_plan::error::{PlanError, PlanResult};
-use sail_plan::resolver::{PlanResolver, scope::RelationScope};
+use sail_plan::resolver::PlanResolver;
+use sail_plan::resolver::scope::RelationScope;
 
 use super::graph::{GraphDefinition, Name, analysis, quoted};
 use crate::error::SparkResult;
