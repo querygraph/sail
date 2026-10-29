@@ -17,7 +17,7 @@ use log::debug;
 use object_store::path::Path;
 use object_store::{ObjectMeta, ObjectStore, ObjectStoreExt};
 
-use crate::listing::source::ListingFileSample;
+use crate::listing::source::{ListingFileSample, ListingFileSelection};
 use crate::url::PathGlobFilter;
 
 /// What normalization does with an inferred nanosecond timestamp.
@@ -179,6 +179,35 @@ pub async fn sample_listing_files<'a>(
         });
     }
     Ok(samples)
+}
+
+/// Select inference inputs without changing the existing sampling behavior.
+/// Both modes reuse the listing URL, hidden-file, and path-glob filters.
+pub async fn select_listing_files<'a>(
+    ctx: &dyn Session,
+    urls: &'a [ListingTableUrl],
+    path_glob_filter: Option<&'a PathGlobFilter>,
+    selection: ListingFileSelection,
+) -> Result<Vec<ListingFileSample<'a>>> {
+    if selection == ListingFileSelection::Sample {
+        return sample_listing_files(ctx, urls, path_glob_filter).await;
+    }
+    let mut groups = Vec::with_capacity(urls.len());
+    for url in urls {
+        let store = ctx.runtime_env().object_store(url)?;
+        let mut objects: Vec<_> = list_all_files(url, ctx, store.as_ref(), path_glob_filter)
+            .await?
+            .try_filter(|meta| futures::future::ready(meta.size > 0))
+            .try_collect()
+            .await?;
+        objects.sort_by(|left, right| left.location.cmp(&right.location));
+        groups.push(ListingFileSample {
+            url,
+            store,
+            objects,
+        });
+    }
+    Ok(groups)
 }
 
 pub fn validate_partitions(

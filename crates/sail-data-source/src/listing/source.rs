@@ -26,7 +26,7 @@ use url::Url;
 
 use crate::listing::table::{ListingTableSource, ListingTableSourceConfig};
 use crate::listing::utils::{
-    infer_partitions, rewrite_unsupported_fields, sample_listing_files, validate_partitions,
+    infer_partitions, rewrite_unsupported_fields, select_listing_files, validate_partitions,
 };
 use crate::listing::write::{FileWriteNode, FileWriteOptions};
 use crate::resolve_listing_urls;
@@ -50,6 +50,12 @@ pub trait FormatFactory: Debug + Send + Sync + 'static {
 /// A trait for format-specific logic for reading listing files.
 #[async_trait]
 pub trait ReadFormat: Debug + Send + Sync + 'static {
+    /// Select files supplied to schema, compression, and partition inference.
+    /// Formats retain the first-ten-nonempty-files-per-URL default unless they opt in.
+    fn schema_inference_file_selection(&self) -> ListingFileSelection {
+        ListingFileSelection::Sample
+    }
+
     async fn infer_compression(
         &self,
         ctx: &dyn Session,
@@ -98,6 +104,18 @@ pub trait ReadFormat: Debug + Send + Sync + 'static {
     fn path_glob_filter(&self) -> Option<&str> {
         None
     }
+}
+
+/// Which eligible, nonempty objects are supplied to listing inference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListingFileSelection {
+    /// The first ten nonempty files per URL in the existing listing order.
+    Sample,
+    /// All nonempty files, sorted by location within each URL's group.
+    /// Input URL order and complete object metadata are retained. This collects
+    /// all eligible objects in memory and also broadens compression and partition
+    /// inference and partition validation to those files.
+    All,
 }
 
 #[derive(Debug)]
@@ -181,22 +199,28 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
             .map(PathGlobFilter::parse)
             .transpose()?;
         let urls = resolve_listing_urls(ctx, paths).await?;
-        let sampled_files = sample_listing_files(ctx, &urls, path_glob_filter.as_ref()).await?;
-        let compression = read_format.infer_compression(ctx, &sampled_files).await?;
+        let inference_files = select_listing_files(
+            ctx,
+            &urls,
+            path_glob_filter.as_ref(),
+            read_format.schema_inference_file_selection(),
+        )
+        .await?;
+        let compression = read_format.infer_compression(ctx, &inference_files).await?;
 
         let (schema, partition_fields) = match schema {
             Some(schema) if !schema.fields().is_empty() => {
                 let physical = if read_format.requires_explicit_schema_validation() {
                     Some(
                         read_format
-                            .infer_schema(ctx, &sampled_files, compression)
+                            .infer_schema(ctx, &inference_files, compression)
                             .await?,
                     )
                 } else if read_case_sensitive {
                     None
                 } else {
                     read_format
-                        .infer_schema(ctx, &sampled_files, compression)
+                        .infer_schema(ctx, &inference_files, compression)
                         .await
                         .ok()
                 };
@@ -218,7 +242,7 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
                 // are treated as file columns, and the file reader fails
                 // because the file itself does not contain them.
                 let partition_by = if partition_by.is_empty() {
-                    infer_partitions(&sampled_files)?
+                    infer_partitions(&inference_files)?
                         .into_iter()
                         .filter(|name| {
                             schema
@@ -239,12 +263,12 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
             }
             _ => {
                 let schema = read_format
-                    .infer_schema(ctx, &sampled_files, compression)
+                    .infer_schema(ctx, &inference_files, compression)
                     .await?;
                 let schema = rewrite_unsupported_fields(schema);
 
                 let partition_by = if partition_by.is_empty() {
-                    infer_partitions(&sampled_files)?
+                    infer_partitions(&inference_files)?
                 } else {
                     partition_by
                 };
@@ -259,7 +283,7 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
             }
         };
 
-        validate_partitions(&sampled_files, &partition_fields)?;
+        validate_partitions(&inference_files, &partition_fields)?;
 
         let source = ListingTableSource::try_new(ListingTableSourceConfig {
             table_paths: urls,
@@ -385,3 +409,7 @@ fn reconcile_schema_names_case_insensitive(schema: Schema, physical: &Schema) ->
 #[cfg(test)]
 #[path = "case_sensitivity_tests.rs"]
 mod case_sensitivity_tests;
+
+#[cfg(test)]
+#[path = "inference_selection_tests.rs"]
+mod inference_selection_tests;
