@@ -1,7 +1,10 @@
-use datafusion::arrow::array::{Array, AsArray, ListArray, Time64NanosecondArray};
-use datafusion::arrow::buffer::OffsetBuffer;
+use datafusion::arrow::array::{
+    Array, AsArray, Int32Array, ListArray, RecordBatch, Time64NanosecondArray,
+};
+use datafusion::arrow::buffer::{NullBuffer, OffsetBuffer};
 use datafusion::common::config::ConfigOptions;
 use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs};
+use datafusion::physical_expr::ScalarFunctionExpr;
 use sail_common::spec;
 
 use super::*;
@@ -63,6 +66,77 @@ fn decoded_time_precision_cast_preserves_nested_fields_and_executes() -> Result<
     assert_eq!(values.value(0), 45_296_123_000_000);
     assert!(values.is_null(1));
     assert_eq!(result.data_type(), target.data_type());
+    Ok(())
+}
+
+#[test]
+fn time_precision_physical_expression_round_trip_preserves_nested_schema_and_values() -> Result<()>
+{
+    let source = list_field(0)?;
+    let target = list_field(3)?;
+    let schema = Arc::new(Schema::new(vec![
+        Arc::new(Field::new("id", DataType::Int32, false)),
+        Arc::clone(&source),
+    ]));
+    let function = ScalarUDF::from(SparkTimePrecisionCast::try_new(
+        Arc::clone(&source),
+        Arc::clone(&target),
+    )?);
+    let expression = Arc::new(ScalarFunctionExpr::try_new(
+        Arc::new(function),
+        vec![Arc::new(Column::new("times", 1))],
+        schema.as_ref(),
+        Arc::new(ConfigOptions::default()),
+    )?) as Arc<dyn PhysicalExpr>;
+    let bytes = try_encode_physical_expr(&RemoteExecutionCodec, &expression)?;
+    assert!(!bytes.is_empty());
+    let decoded = try_decode_physical_expr(
+        &TaskContext::default(),
+        &RemoteExecutionCodec,
+        &bytes,
+        schema.as_ref(),
+    )?;
+    assert_eq!(expression.return_field(schema.as_ref())?, target);
+    assert_eq!(decoded.return_field(schema.as_ref())?, target);
+    assert_eq!(
+        decoded.data_type(schema.as_ref())?,
+        target.data_type().clone()
+    );
+
+    let DataType::List(element) = source.data_type() else {
+        return plan_err!("expected list");
+    };
+    let offsets = OffsetBuffer::from_lengths([2, 0, 1]);
+    let nulls = Some(NullBuffer::from(vec![true, false, true]));
+    let values = Arc::new(ListArray::try_new(
+        Arc::clone(element),
+        offsets.clone(),
+        Arc::new(Time64NanosecondArray::from(vec![
+            Some(45_296_123_456_000),
+            None,
+            Some(86_399_999_999_000),
+        ])),
+        nulls.clone(),
+    )?);
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::new(Int32Array::from(vec![10, 11, 12])), values],
+    )?;
+    let expected = expression.evaluate(&batch)?.into_array(batch.num_rows())?;
+    let actual = decoded.evaluate(&batch)?.into_array(batch.num_rows())?;
+    assert_eq!(actual.to_data(), expected.to_data());
+    assert_eq!(actual.data_type(), target.data_type());
+    let actual = actual.as_list::<i32>();
+    assert_eq!(actual.offsets(), &offsets);
+    assert_eq!(actual.nulls(), nulls.as_ref());
+    assert_eq!(
+        actual
+            .values()
+            .as_primitive::<datafusion::arrow::datatypes::Time64NanosecondType>()
+            .iter()
+            .collect::<Vec<_>>(),
+        vec![Some(45_296_123_000_000), None, Some(86_399_999_000_000)]
+    );
     Ok(())
 }
 

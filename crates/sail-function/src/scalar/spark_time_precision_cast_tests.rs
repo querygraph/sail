@@ -245,3 +245,151 @@ fn rejects_invalid_precision_metadata_before_execution() -> Result<()> {
     assert!(SparkTimePrecisionCast::try_new(bad_storage, time("t", 3, true)?).is_err());
     Ok(())
 }
+
+#[test]
+fn negative_nanoseconds_truncate_towards_zero_without_changing_identity() -> Result<()> {
+    // Pin Spark's integer arithmetic independently of SQL TIME range validation.
+    let input: ArrayRef = Arc::new(Time64NanosecondArray::from(vec![
+        Some(-1_234_567),
+        Some(-999_999),
+        None,
+    ]));
+    for (precision, expected) in [
+        (0, vec![Some(-1_234_567), Some(-999_999), None]),
+        (3, vec![Some(-1_000_000), Some(0), None]),
+    ] {
+        let function =
+            SparkTimePrecisionCast::try_new(time("t", 0, true)?, time("t", precision, true)?)?;
+        let output = invoke(&function, ColumnarValue::Array(Arc::clone(&input)))?.into_array(3)?;
+        let actual = output
+            .as_primitive::<Time64NanosecondType>()
+            .iter()
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+    Ok(())
+}
+
+#[test]
+fn sliced_large_list_keeps_nonzero_offsets_parent_nulls_and_null_elements() -> Result<()> {
+    let source_element = time("item", 0, true)?;
+    let source = Arc::new(Field::new(
+        "values",
+        DataType::LargeList(Arc::clone(&source_element)),
+        true,
+    ));
+    let target = Arc::new(Field::new(
+        "values",
+        DataType::LargeList(time("item", 3, true)?),
+        true,
+    ));
+    let function = SparkTimePrecisionCast::try_new(source, target)?;
+    let input = LargeListArray::try_new(
+        source_element,
+        OffsetBuffer::from_lengths([1, 2, 2]),
+        Arc::new(Time64NanosecondArray::from(vec![
+            Some(NANOS),
+            Some(1_234_567),
+            None,
+            Some(NANOS),
+            None,
+        ])),
+        Some(NullBuffer::from(vec![true, false, true])),
+    )?
+    .slice(1, 2);
+    let nulls = input.nulls().cloned();
+    let output = invoke(&function, ColumnarValue::Array(Arc::new(input)))?.into_array(2)?;
+    let output = output.as_list::<i64>();
+    assert_eq!(output.len(), 2);
+    assert_eq!(output.value_offsets(), &[1, 3, 5]);
+    assert_eq!(output.nulls(), nulls.as_ref());
+    assert_eq!(output.values().len(), 5);
+    let values = output.value(1);
+    assert_eq!(
+        values
+            .as_primitive::<Time64NanosecondType>()
+            .iter()
+            .collect::<Vec<_>>(),
+        vec![Some(45_296_123_000_000), None]
+    );
+    Ok(())
+}
+
+#[test]
+fn sliced_fixed_size_list_keeps_sliced_children_and_parent_nulls() -> Result<()> {
+    let source_element = time("item", 0, true)?;
+    let source = Arc::new(Field::new(
+        "values",
+        DataType::FixedSizeList(Arc::clone(&source_element), 2),
+        true,
+    ));
+    let target = Arc::new(Field::new(
+        "values",
+        DataType::FixedSizeList(time("item", 3, true)?, 2),
+        true,
+    ));
+    let function = SparkTimePrecisionCast::try_new(source, target)?;
+    let input = FixedSizeListArray::try_new(
+        source_element,
+        2,
+        Arc::new(Time64NanosecondArray::from(vec![
+            Some(0),
+            Some(0),
+            Some(1_234_567),
+            None,
+            Some(NANOS),
+            None,
+        ])),
+        Some(NullBuffer::from(vec![true, false, true])),
+    )?
+    .slice(1, 2);
+    let nulls = input.nulls().cloned();
+    let output = invoke(&function, ColumnarValue::Array(Arc::new(input)))?.into_array(2)?;
+    let output = output.as_fixed_size_list();
+    assert_eq!(output.len(), 2);
+    assert_eq!(output.value_length(), 2);
+    assert_eq!(output.nulls(), nulls.as_ref());
+    assert_eq!(output.values().len(), 4);
+    let values = output.value(1);
+    assert_eq!(
+        values
+            .as_primitive::<Time64NanosecondType>()
+            .iter()
+            .collect::<Vec<_>>(),
+        vec![Some(45_296_123_000_000), None]
+    );
+    Ok(())
+}
+
+#[test]
+fn zero_width_fixed_size_list_preserves_positive_sliced_row_count() -> Result<()> {
+    let source_element = time("item", 0, false)?;
+    let source = Arc::new(Field::new(
+        "values",
+        DataType::FixedSizeList(Arc::clone(&source_element), 0),
+        false,
+    ));
+    let target = Arc::new(Field::new(
+        "values",
+        DataType::FixedSizeList(time("item", 3, false)?, 0),
+        false,
+    ));
+    let function = SparkTimePrecisionCast::try_new(source, target)?;
+    let input = FixedSizeListArray::try_new_with_length(
+        source_element,
+        0,
+        Arc::new(Time64NanosecondArray::from(Vec::<i64>::new())),
+        None,
+        4,
+    )?
+    .slice(1, 2);
+    let output = invoke(&function, ColumnarValue::Array(Arc::new(input)))?.into_array(2)?;
+    let output = output.as_fixed_size_list();
+    assert_eq!(output.len(), 2);
+    assert_eq!(output.value_length(), 0);
+    assert_eq!(output.values().len(), 0);
+    assert_eq!(output.null_count(), 0);
+    assert_eq!(output.data_type(), function.output_field().data_type());
+    assert!(function.is_needed());
+    Ok(())
+}
