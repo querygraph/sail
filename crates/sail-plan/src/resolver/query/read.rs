@@ -56,6 +56,11 @@ impl PlanResolver<'_> {
             let format = format.as_ref().to_ascii_lowercase();
             let registry = self.ctx.extension::<DataSourceRegistry>()?;
             if registry.get_data_source(&format).is_ok() {
+                if path.as_ref().is_empty() {
+                    return Err(PlanError::analysis(
+                        "The location name cannot be empty string, but `` was given.",
+                    ));
+                }
                 let temporal_options = self
                     .resolve_time_travel_options(&format, temporal, state)
                     .await?;
