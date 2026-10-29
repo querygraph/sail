@@ -189,6 +189,11 @@ pub enum Literal {
         keys: Option<Vec<Literal>>,
         values: Option<Vec<Literal>>,
     },
+    /// Spark TIME retains nanosecond storage independently of its declared precision.
+    Time {
+        nanoseconds: Option<i64>,
+        precision: i32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -205,6 +210,15 @@ pub struct IntervalMonthDayNano {
 }
 
 impl Literal {
+    pub fn spark_time_metadata(&self) -> CommonResult<Option<spec::SparkTimeMetadata>> {
+        match self {
+            Literal::Time { precision, .. } => {
+                spec::SparkTimeMetadata::try_new(*precision).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub fn spark_interval_metadata(&self) -> CommonResult<Option<spec::SparkIntervalMetadata>> {
         match self {
             Literal::IntervalYearMonth {
@@ -303,6 +317,13 @@ pub fn data_type_to_null_literal(data_type: spec::DataType) -> CommonResult<Lite
             spec::TimeUnit::Microsecond => Ok(Literal::Time64Microsecond { microseconds: None }),
             spec::TimeUnit::Nanosecond => Ok(Literal::Time64Nanosecond { nanoseconds: None }),
         },
+        spec::DataType::Time { precision } => {
+            spec::SparkTimeMetadata::try_new(precision)?;
+            Ok(Literal::Time {
+                nanoseconds: None,
+                precision,
+            })
+        }
         spec::DataType::Duration { time_unit } => match time_unit {
             spec::TimeUnit::Second => Ok(Literal::DurationSecond { seconds: None }),
             spec::TimeUnit::Millisecond => Ok(Literal::DurationMillisecond { milliseconds: None }),

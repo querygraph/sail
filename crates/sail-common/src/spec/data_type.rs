@@ -306,6 +306,12 @@ pub enum DataType {
         utf8_type: Utf8Type,
     },
     ConfiguredBinary,
+    /// Spark's TIME type with a declared precision between 0 and 6.
+    /// All precisions use Arrow Time64(Nanosecond) storage. The precision is
+    /// carried by [`super::SparkTimeMetadata`] on the Arrow field.
+    Time {
+        precision: i32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

@@ -44,6 +44,7 @@ impl SparkTimeMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::{DataType, Literal, TimeUnit, data_type_to_null_literal};
 
     #[test]
     fn spark_time_metadata_preserves_every_supported_precision() -> CommonResult<()> {
@@ -83,5 +84,50 @@ mod tests {
         ] {
             assert!(SparkTimeMetadata::from_json(json).is_err(), "{json}");
         }
+    }
+
+    #[test]
+    fn spark_time_spec_and_typed_null_retain_declared_precision() -> CommonResult<()> {
+        for precision in 0..=6 {
+            let data_type = DataType::Time { precision };
+            let json = serde_json::to_string(&data_type)
+                .map_err(|error| CommonError::internal(error.to_string()))?;
+            assert_eq!(json, format!(r#"{{"time":{{"precision":{precision}}}}}"#));
+            let restored: DataType = serde_json::from_str(&json)
+                .map_err(|error| CommonError::internal(error.to_string()))?;
+            assert_eq!(restored, data_type);
+            let literal = data_type_to_null_literal(data_type)?;
+            assert_eq!(
+                literal,
+                Literal::Time {
+                    nanoseconds: None,
+                    precision
+                }
+            );
+            assert_eq!(
+                literal
+                    .spark_time_metadata()?
+                    .map(SparkTimeMetadata::precision),
+                Some(precision)
+            );
+        }
+        for precision in [-1, 7, 9] {
+            assert!(data_type_to_null_literal(DataType::Time { precision }).is_err());
+            assert!(
+                Literal::Time {
+                    nanoseconds: None,
+                    precision
+                }
+                .spark_time_metadata()
+                .is_err()
+            );
+        }
+        assert_eq!(
+            data_type_to_null_literal(DataType::Time64 {
+                time_unit: TimeUnit::Microsecond
+            })?,
+            Literal::Time64Microsecond { microseconds: None }
+        );
+        Ok(())
     }
 }

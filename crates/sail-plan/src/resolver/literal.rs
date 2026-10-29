@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
 use datafusion::arrow::array::{
-    ArrayData, AsArray, FixedSizeListArray, LargeListArray, MapArray, StructArray, new_empty_array,
-    new_null_array,
+    ArrayData, AsArray, FixedSizeListArray, LargeListArray, ListArray, MapArray, StructArray,
+    new_empty_array, new_null_array,
 };
 use datafusion::arrow::buffer::OffsetBuffer;
 use datafusion::arrow::datatypes as adt;
 use datafusion_common::ScalarValue;
 use datafusion_common::scalar::ScalarStructBuilder;
-use datafusion_common::utils::SingleRowListArrayBuilder;
 use sail_common::spec::{
-    self, Literal, SAIL_MAP_FIELD_NAME, SAIL_MAP_KEY_FIELD_NAME, SAIL_MAP_VALUE_FIELD_NAME,
+    self, Literal, SAIL_LIST_FIELD_NAME, SAIL_MAP_FIELD_NAME, SAIL_MAP_KEY_FIELD_NAME,
+    SAIL_MAP_VALUE_FIELD_NAME,
 };
 
 use crate::error::{PlanError, PlanResult};
@@ -77,6 +77,13 @@ impl PlanResolver<'_> {
             Literal::Time64Nanosecond { nanoseconds } => {
                 Ok(ScalarValue::Time64Nanosecond(nanoseconds))
             }
+            Literal::Time {
+                nanoseconds,
+                precision,
+            } => {
+                spec::SparkTimeMetadata::try_new(precision)?;
+                Ok(ScalarValue::Time64Nanosecond(nanoseconds))
+            }
             Literal::DurationSecond { seconds } => Ok(ScalarValue::DurationSecond(seconds)),
             Literal::DurationMillisecond { milliseconds } => {
                 Ok(ScalarValue::DurationMillisecond(milliseconds))
@@ -127,19 +134,28 @@ impl PlanResolver<'_> {
                 nullable,
                 values,
             } => {
-                let data_type = self.resolve_data_type(&data_type, state)?;
+                let field = self.resolve_literal_list_field(data_type, nullable, state)?;
                 if let Some(values) = values {
                     let scalars: Vec<ScalarValue> = values
                         .into_iter()
                         .map(|literal| self.resolve_literal(literal, state))
                         .collect::<PlanResult<Vec<_>>>()?;
-                    Ok(ScalarValue::List(ScalarValue::new_list_from_iter(
+                    let array = ScalarValue::new_list_from_iter(
                         scalars.into_iter(),
-                        &data_type,
+                        field.data_type(),
                         nullable,
-                    )))
+                    );
+                    Ok(ScalarValue::List(Arc::new(ListArray::try_new(
+                        field,
+                        array.offsets().clone(),
+                        Arc::clone(array.values()),
+                        None,
+                    )?)))
                 } else {
-                    Ok(ScalarValue::new_null_list(data_type, true, 0))
+                    let field = Arc::new(field.as_ref().clone().with_nullable(true));
+                    Ok(ScalarValue::List(Arc::new(ListArray::from(
+                        ArrayData::new_null(&adt::DataType::List(field), 0),
+                    ))))
                 }
             }
             Literal::FixedSizeList {
@@ -148,14 +164,14 @@ impl PlanResolver<'_> {
                 nullable,
                 values,
             } => {
-                let data_type = self.resolve_data_type(&data_type, state)?;
+                let field = self.resolve_literal_list_field(data_type, nullable, state)?;
                 if let Some(values) = values {
                     let scalars: Vec<ScalarValue> = values
                         .into_iter()
                         .map(|literal| self.resolve_literal(literal, state))
                         .collect::<PlanResult<Vec<_>>>()?;
                     let scalars = if scalars.is_empty() {
-                        new_empty_array(&data_type)
+                        new_empty_array(field.data_type())
                     } else {
                         ScalarValue::iter_to_array(scalars).map_err(|e| {
                             PlanError::internal(format!(
@@ -163,15 +179,12 @@ impl PlanResolver<'_> {
                             ))
                         })?
                     };
+                    let field = Arc::new(field.as_ref().clone().with_nullable(true));
                     Ok(ScalarValue::FixedSizeList(Arc::new(
-                        SingleRowListArrayBuilder::new(scalars)
-                            .build_fixed_size_list_array(length as usize),
+                        FixedSizeListArray::try_new_with_length(field, length, scalars, None, 1)?,
                     )))
                 } else {
-                    let data_type = adt::DataType::FixedSizeList(
-                        adt::Field::new_list_field(data_type, nullable).into(),
-                        length,
-                    );
+                    let data_type = adt::DataType::FixedSizeList(field, length);
                     Ok(ScalarValue::FixedSizeList(Arc::new(
                         FixedSizeListArray::from(ArrayData::new_null(&data_type, 0)),
                     )))
@@ -182,14 +195,14 @@ impl PlanResolver<'_> {
                 nullable,
                 values,
             } => {
-                let data_type = self.resolve_data_type(&data_type, state)?;
+                let field = self.resolve_literal_list_field(data_type, nullable, state)?;
                 if let Some(values) = values {
                     let scalars: Vec<ScalarValue> = values
                         .into_iter()
                         .map(|literal| self.resolve_literal(literal, state))
                         .collect::<PlanResult<Vec<_>>>()?;
                     let scalars = if scalars.is_empty() {
-                        new_empty_array(&data_type)
+                        new_empty_array(field.data_type())
                     } else {
                         ScalarValue::iter_to_array(scalars).map_err(|e| {
                             PlanError::internal(format!(
@@ -197,13 +210,13 @@ impl PlanResolver<'_> {
                             ))
                         })?
                     };
-                    Ok(ScalarValue::LargeList(Arc::new(
-                        SingleRowListArrayBuilder::new(scalars).build_large_list_array(),
-                    )))
+                    let field = Arc::new(field.as_ref().clone().with_nullable(true));
+                    let offsets = OffsetBuffer::from_lengths([scalars.len()]);
+                    Ok(ScalarValue::LargeList(Arc::new(LargeListArray::try_new(
+                        field, offsets, scalars, None,
+                    )?)))
                 } else {
-                    let data_type = adt::DataType::LargeList(
-                        adt::Field::new_list_field(data_type, nullable).into(),
-                    );
+                    let data_type = adt::DataType::LargeList(field);
                     Ok(ScalarValue::LargeList(Arc::new(LargeListArray::from(
                         ArrayData::new_null(&data_type, 0),
                     ))))
@@ -350,5 +363,22 @@ impl PlanResolver<'_> {
                 }
             }
         }
+    }
+
+    fn resolve_literal_list_field(
+        &self,
+        data_type: spec::DataType,
+        nullable: bool,
+        state: &mut PlanResolverState,
+    ) -> PlanResult<Arc<adt::Field>> {
+        Ok(Arc::new(self.resolve_field(
+            &spec::Field {
+                name: SAIL_LIST_FIELD_NAME.to_string(),
+                data_type,
+                nullable,
+                metadata: vec![],
+            },
+            state,
+        )?))
     }
 }

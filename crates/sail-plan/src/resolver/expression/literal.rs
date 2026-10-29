@@ -23,16 +23,21 @@ impl PlanResolver<'_> {
         literal: spec::Literal,
         state: &mut PlanResolverState,
     ) -> PlanResult<NamedExpr> {
-        let field_metadata = literal
-            .spark_interval_metadata()?
-            .map(|metadata| {
-                let metadata = metadata.to_json()?;
-                Ok::<_, crate::error::PlanError>(FieldMetadata::from(HashMap::from([(
-                    spec::SAIL_SPARK_INTERVAL_METADATA_KEY.to_string(),
-                    metadata,
-                )])))
-            })
-            .transpose()?;
+        let mut field_metadata = HashMap::new();
+        if let Some(metadata) = literal.spark_interval_metadata()? {
+            field_metadata.insert(
+                spec::SAIL_SPARK_INTERVAL_METADATA_KEY.to_string(),
+                metadata.to_json()?,
+            );
+        }
+        if let Some(metadata) = literal.spark_time_metadata()? {
+            field_metadata.insert(
+                spec::SAIL_SPARK_TIME_METADATA_KEY.to_string(),
+                metadata.to_json()?,
+            );
+        }
+        let field_metadata =
+            (!field_metadata.is_empty()).then(|| FieldMetadata::from(field_metadata));
         let literal = self.resolve_literal(literal, state)?;
         let service = self.ctx.extension::<PlanService>()?;
         let name = service

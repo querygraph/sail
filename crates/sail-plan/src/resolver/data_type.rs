@@ -128,6 +128,10 @@ impl PlanResolver<'_> {
             DataType::Time64 { time_unit } => {
                 Ok(adt::DataType::Time64(Self::resolve_time_unit(time_unit)?))
             }
+            DataType::Time { precision } => {
+                spec::SparkTimeMetadata::try_new(*precision)?;
+                Ok(adt::DataType::Time64(adt::TimeUnit::Nanosecond))
+            }
             DataType::Duration { time_unit } => {
                 Ok(adt::DataType::Duration(Self::resolve_time_unit(time_unit)?))
             }
@@ -306,6 +310,12 @@ impl PlanResolver<'_> {
             metadata,
         } = field;
         let mut metadata: HashMap<String, String> = metadata.iter().cloned().collect();
+        if let spec::DataType::Time { precision } = data_type {
+            metadata.insert(
+                spec::SAIL_SPARK_TIME_METADATA_KEY.to_string(),
+                spec::SparkTimeMetadata::try_new(*precision)?.to_json()?,
+            );
+        }
         if let spec::DataType::Interval {
             interval_unit,
             start_field,

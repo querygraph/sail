@@ -19,6 +19,9 @@ pub mod scope;
 mod state;
 mod tree;
 
+#[cfg(test)]
+mod time_tests;
+
 pub struct PlanResolver<'a> {
     ctx: &'a SessionContext,
     config: Arc<PlanConfig>,
