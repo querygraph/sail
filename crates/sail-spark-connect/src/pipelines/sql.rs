@@ -258,3 +258,6 @@ fn with_view_columns(
         None => query,
     }
 }
+
+#[cfg(test)]
+mod tests;
