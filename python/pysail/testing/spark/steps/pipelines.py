@@ -37,13 +37,6 @@ def run_pipeline_with_error(condition, pipeline):
         run()
 
 
-@when(parsers.parse("pipeline validation fails with {condition}"))
-def validate_pipeline_with_error(condition, pipeline):
-    _, _, run = pipeline
-    with pytest.raises(AnalysisException, match=condition):
-        run(dry=True)
-
-
 @given(parsers.parse("pipeline SQL file {name} fails with {condition}"))
 def pipeline_sql_file_with_error(name, condition, docstring, pipeline):
     _, registry, _ = pipeline

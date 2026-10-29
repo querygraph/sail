@@ -132,8 +132,8 @@ pub(crate) async fn handle_command(
                     }
                     let analyzed = analysis::analyze(&ctx, &definition).await?;
                     let selection = selection::Selection::new(&definition, &analyzed, &command)?;
-                    execution::validate_publication(&ctx, &definition, &analyzed).await?;
                     if !command.dry.unwrap_or(false) {
+                        execution::validate_publication(&ctx, &definition, &analyzed).await?;
                         execution::execute(&ctx, &definition, analyzed, selection).await?;
                     }
                     Ok::<_, SparkError>(())

@@ -136,13 +136,13 @@ Feature: Declarative pipeline SQL
     Then pipeline dataset a_valid is not published
     Then pipeline dataset z_invalid is not published
 
-  Scenario: Publication validation is part of a dry run
+  Scenario: Dry run validates the graph without planning publication
     Given pipeline SQL file invalid_format.sql
       """
       CREATE MATERIALIZED VIEW a_valid AS SELECT * FROM range(2);
       CREATE MATERIALIZED VIEW z_invalid USING missing_format AS SELECT * FROM a_valid;
       """
-    When pipeline validation fails with No data source found for: missing_format
+    When the pipeline is validated
     Then pipeline dataset a_valid is not published
     Then pipeline dataset z_invalid is not published
 
