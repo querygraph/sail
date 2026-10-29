@@ -6,9 +6,11 @@ use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_plan::resolver::PlanResolver;
 
 use super::graph::{Output, analysis, quoted};
+use super::schema_merge::merge_fields;
 use crate::error::{SparkError, SparkResult};
 use crate::proto::data_type::parse_spark_data_type;
 use crate::session::SparkSession;
+use crate::spark::connect::data_type::StructField;
 use crate::spark::connect::pipeline_command::{DefineOutput, define_output as out};
 
 pub(super) fn declared_schema(output: &DefineOutput) -> SparkResult<Option<spec::Schema>> {
@@ -35,28 +37,25 @@ pub(super) fn infer(
     output: &Output,
     plans: &[LogicalPlan],
 ) -> SparkResult<Schema> {
-    let inferred = Schema::try_merge(plans.iter().map(|x| x.schema().as_arrow().clone())).map_err(
-        |error| {
-            analysis(
-                "UNABLE_TO_INFER_PIPELINE_TABLE_SCHEMA",
-                format!("{}: {error}", quoted(&output.name)),
-            )
-        },
-    )?;
-    let Some(schema) = &output.schema else {
-        return Ok(inferred);
-    };
+    let inferred = plans
+        .iter()
+        .try_fold(spec::Fields::empty(), |fields, plan| {
+            let result = spark_fields(plan.schema().as_arrow())
+                .and_then(|next| merge_fields(&fields, &next));
+            result.map_err(|error| {
+                analysis(
+                    "UNABLE_TO_INFER_PIPELINE_TABLE_SCHEMA",
+                    format!("{}: {error}", quoted(&output.name)),
+                )
+            })
+        })?;
     let resolver = PlanResolver::new(ctx, ctx.extension::<SparkSession>()?.plan_config()?);
-    let declared = resolver.resolve_data_type_for_plan(&spec::DataType::Struct {
-        fields: schema.fields.clone(),
-    })?;
-    let DataType::Struct(fields) = declared else {
-        return Err(SparkError::internal(
-            "resolved pipeline schema is not a struct",
-        ));
+    let Some(schema) = &output.schema else {
+        return arrow_schema(&resolver, inferred);
     };
-    let declared = Schema::new(fields);
-    let merged = Schema::try_merge([declared.clone(), inferred.clone()]).map_err(|error| {
+    let declared = arrow_schema(&resolver, schema.fields.clone())?;
+    let declared_fields = spark_fields(&declared)?;
+    let merged = merge_fields(&declared_fields, &inferred).map_err(|error| {
         analysis(
             "USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE",
             format!(
@@ -68,7 +67,7 @@ pub(super) fn infer(
     // Spark validates the merged schema against the declaration after schema
     // inference. A successful merge alone still admits undeclared columns or
     // weaker nullability constraints.
-    if merged != declared {
+    if merged != declared_fields {
         return Err(analysis(
             "USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE",
             format!(
@@ -78,4 +77,24 @@ pub(super) fn infer(
         ));
     }
     Ok(declared)
+}
+
+fn spark_fields(schema: &Schema) -> SparkResult<spec::Fields> {
+    // Reuse Spark's schema conversion to normalize Arrow representations such
+    // as Utf8View and retain semantic types carried by extension metadata.
+    schema
+        .fields()
+        .iter()
+        .map(|field| spec::FieldRef::try_from(StructField::try_from(field.as_ref().clone())?))
+        .collect()
+}
+
+fn arrow_schema(resolver: &PlanResolver<'_>, fields: spec::Fields) -> SparkResult<Schema> {
+    let data_type = resolver.resolve_data_type_for_plan(&spec::DataType::Struct { fields })?;
+    let DataType::Struct(fields) = data_type else {
+        return Err(SparkError::internal(
+            "resolved pipeline schema is not a struct",
+        ));
+    };
+    Ok(Schema::new(fields))
 }

@@ -2,6 +2,7 @@ mod analysis;
 mod execution;
 mod graph;
 mod schema;
+mod schema_merge;
 mod selection;
 mod sql;
 mod topology;

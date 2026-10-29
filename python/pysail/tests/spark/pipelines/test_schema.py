@@ -1,5 +1,6 @@
 import pytest
 from pyspark.errors.exceptions.connect import AnalysisException
+from pyspark.sql import functions as F
 from pyspark.sql.types import LongType, StructField, StructType
 
 try:
@@ -69,6 +70,67 @@ def test_declared_nonnullable_field_cannot_receive_nullable_data(pipeline_spark,
         @dp.materialized_view(schema=StructType([StructField("id", LongType(), nullable=False)]))
         def output():
             return pipeline_spark.createDataFrame([(1,), (None,)], "id BIGINT")
+
+    with pytest.raises(AnalysisException, match="USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE"):
+        run(dry=True)
+    assert not pipeline_spark.catalog.tableExists("output")
+
+
+@pytest.mark.parametrize("metadata", [{}, {"comment": "declared", "tag": "declaration"}])
+def test_declared_metadata_takes_precedence(pipeline_spark, pipeline, metadata):
+    _, registry, run = pipeline
+    with graph_element_registration_context(registry):
+
+        @dp.materialized_view(schema=StructType([StructField("id", LongType(), metadata=metadata)]))
+        def output():
+            return pipeline_spark.range(2).select(F.col("id").alias("id", metadata={"comment": "inferred"}))
+
+    run(dry=True)
+    assert not pipeline_spark.catalog.tableExists("output")
+
+
+@pytest.mark.parametrize(
+    "schema, expression",
+    [
+        ("value DECIMAL(8, 2)", lambda: F.lit(1).cast("decimal(4, 2)")),
+        ("value ARRAY<DECIMAL(8, 2)>", lambda: F.array(F.lit(1).cast("decimal(4, 2)"))),
+        ("value MAP<STRING, DECIMAL(8, 2)>", lambda: F.create_map(F.lit("key"), F.lit(1).cast("decimal(4, 2)"))),
+        (
+            "value STRUCT<amount: DECIMAL(8, 2), optional: STRING>",
+            lambda: F.struct(F.lit(1).cast("decimal(4, 2)").alias("amount", metadata={"comment": "inferred"})),
+        ),
+        ("value INTERVAL DAY TO SECOND", lambda: F.expr("INTERVAL '1' HOUR")),
+    ],
+)
+def test_compatible_nested_schema_merges(pipeline_spark, pipeline, schema, expression):
+    _, registry, run = pipeline
+    with graph_element_registration_context(registry):
+
+        @dp.materialized_view(schema=schema)
+        def output():
+            return pipeline_spark.range(1).select(expression().alias("value"))
+
+    run(dry=True)
+    assert not pipeline_spark.catalog.tableExists("output")
+
+
+@pytest.mark.parametrize(
+    "schema, expression",
+    [
+        ("value DECIMAL(4, 2)", lambda: F.lit(1).cast("decimal(8, 2)")),
+        ("value DECIMAL(8, 3)", lambda: F.lit(1).cast("decimal(4, 2)")),
+        ("value STRING", lambda: F.lit(None)),
+        ("value ARRAY<STRING>", lambda: F.array(F.lit(None))),
+        ("value INTERVAL HOUR", lambda: F.expr("INTERVAL '1' DAY")),
+    ],
+)
+def test_incompatible_nested_schema_merges(pipeline_spark, pipeline, schema, expression):
+    _, registry, run = pipeline
+    with graph_element_registration_context(registry):
+
+        @dp.materialized_view(schema=schema)
+        def output():
+            return pipeline_spark.range(1).select(expression().alias("value"))
 
     with pytest.raises(AnalysisException, match="USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE"):
         run(dry=True)
