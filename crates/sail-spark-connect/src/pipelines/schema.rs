@@ -56,7 +56,7 @@ pub(super) fn infer(
         ));
     };
     let declared = Schema::new(fields);
-    Schema::try_merge([declared.clone(), inferred.clone()]).map_err(|error| {
+    let merged = Schema::try_merge([declared.clone(), inferred.clone()]).map_err(|error| {
         analysis(
             "USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE",
             format!(
@@ -64,5 +64,18 @@ pub(super) fn infer(
                 output.name.join(".")
             ),
         )
-    })
+    })?;
+    // Spark validates the merged schema against the declaration after schema
+    // inference. A successful merge alone still admits undeclared columns or
+    // weaker nullability constraints.
+    if merged != declared {
+        return Err(analysis(
+            "USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE",
+            format!(
+                "'{}' has a user-specified schema that is incompatible: specified {declared:?}, inferred {inferred:?}",
+                output.name.join(".")
+            ),
+        ));
+    }
+    Ok(declared)
 }
