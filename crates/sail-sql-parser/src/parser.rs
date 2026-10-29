@@ -149,6 +149,24 @@ where
     E: ParserExtra<'a, I> + 'a,
     E::Error: LabelError<'a, I, TokenLabel>,
 {
+    create_parser_with_spans::<I, E>(options).map(|statements| {
+        statements
+            .into_iter()
+            .map(|(statement, _)| statement)
+            .collect()
+    })
+}
+
+/// Parse statements with their original input intervals, excluding separators.
+pub fn create_parser_with_spans<'a, I, E>(
+    options: &'a ParserOptions,
+) -> impl Parser<'a, I, Vec<(Statement, TokenSpan)>, E> + Clone
+where
+    I: Input<'a, Token = Token<'a>> + ValueInput<'a>,
+    I::Span: Into<TokenSpan> + Clone,
+    E: ParserExtra<'a, I> + 'a,
+    E::Error: LabelError<'a, I, TokenLabel>,
+{
     let semicolon = Semicolon::parser((), options);
     // We only need to consume whitespaces explicitly at the beginning.
     // All other whitespaces are consumed implicitly by the statement or semicolon parsers.
@@ -156,7 +174,8 @@ where
         .repeated()
         .ignore_then(semicolon.clone().repeated())
         .ignore_then(
-            statement(options)
+            statement::<I, E>(options)
+                .map_with(|statement, extra| (statement, extra.span().into()))
                 .then_ignore(semicolon.clone().ignored().or(end()))
                 .then_ignore(semicolon.repeated())
                 .repeated()
