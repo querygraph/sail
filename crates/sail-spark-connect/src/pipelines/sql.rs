@@ -9,48 +9,143 @@ use super::graph::{Flow, PipelineGraph, analysis, quoted};
 use crate::error::{ProtoFieldExt, SparkError, SparkResult, StructuredSparkError};
 use crate::spark::connect::{OutputType, pipeline_command as pc};
 
-pub(super) fn register(
-    graph: &mut PipelineGraph,
+enum PreparationFailure {
+    Analysis(String),
+    Evaluation(SparkError),
+}
+
+struct PreparedStatement {
+    span: sail_sql_analyzer::source::TokenSpan,
+    result: Result<PipelineStatement, PreparationFailure>,
+}
+
+pub(super) struct PreparedSql {
+    text: String,
+    file: Option<String>,
+    statements: Vec<PreparedStatement>,
+}
+
+/// Preparation owns no graph state. Its future is polled only after the initial
+/// membership/idle check, and no graph guard survives its await.
+pub(super) async fn register<F>(
+    spark: &crate::session::SparkSession,
+    id: &str,
+    preparation: F,
+) -> SparkResult<()>
+where
+    F: std::future::Future<Output = SparkResult<PreparedSql>>,
+{
+    {
+        let graph = spark.pipeline(id)?;
+        graph.lock()?.ensure_idle()?;
+    }
+    let prepared = preparation.await?;
+    let graph = spark.pipeline(id)?;
+    let mut graph = graph.lock()?;
+    prepared.commit(&mut graph)
+}
+
+pub(super) async fn prepare<F, R>(
     command: pc::DefineSqlGraphElements,
-) -> SparkResult<()> {
-    graph.ensure_idle()?;
+    mut resolve_catalog: F,
+) -> SparkResult<PreparedSql>
+where
+    F: FnMut(spec::Expr) -> R,
+    R: std::future::Future<Output = SparkResult<String>>,
+{
     let text = command.sql_text.required("pipeline SQL text")?;
-    let mut draft = PipelineGraph::new(
-        graph.definition.catalog.clone(),
-        graph.definition.database.clone(),
-        graph.definition.sql_conf.clone(),
-    );
-    draft.definition = graph.definition.clone();
     let source = SqlSource::new(&text)?;
+    let mut statements = vec![];
     for (statement, span) in source.parse_statements_with_spans()? {
-        let result = from_ast_pipeline_statement_with_source(statement, &source)
-            .map_err(SparkError::from)
-            .and_then(|statement| register_statement(&mut draft, statement));
-        if let Err(error) = result {
-            return Err(Box::new(registration_error(
-                error.to_string(),
-                source.statement_origin(span)?,
-                command.sql_file_path.as_deref(),
-            ))
-            .into());
+        let result = match from_ast_pipeline_statement_with_source(statement, &source) {
+            Ok(statement) => resolve_statement(statement, &mut resolve_catalog).await,
+            Err(error) => Err(PreparationFailure::Analysis(error.to_string())),
+        };
+        let failed = result.is_err();
+        statements.push(PreparedStatement { span, result });
+        if failed {
+            break;
         }
     }
-    // USE and SET apply to this SQL file. Each flow keeps its own captured
-    // namespace/configuration; subsequent files start from pipeline defaults.
-    draft
-        .definition
-        .catalog
-        .clone_from(&graph.definition.catalog);
-    draft
-        .definition
-        .database
-        .clone_from(&graph.definition.database);
-    draft
-        .definition
-        .sql_conf
-        .clone_from(&graph.definition.sql_conf);
-    graph.definition = draft.definition;
-    Ok(())
+    drop(source);
+    Ok(PreparedSql {
+        text,
+        file: command.sql_file_path,
+        statements,
+    })
+}
+
+async fn resolve_statement<F, R>(
+    statement: PipelineStatement,
+    resolve_catalog: &mut F,
+) -> Result<PipelineStatement, PreparationFailure>
+where
+    F: FnMut(spec::Expr) -> R,
+    R: std::future::Future<Output = SparkResult<String>>,
+{
+    let PipelineStatement::Command(spec::CommandNode::SetCurrentCatalogExpression { catalog }) =
+        statement
+    else {
+        return Ok(statement);
+    };
+    match resolve_catalog(catalog).await {
+        Ok(catalog) => Ok(PipelineStatement::Command(
+            spec::CommandNode::SetCurrentCatalog {
+                catalog: catalog.into(),
+            },
+        )),
+        Err(SparkError::AnalysisError(message)) => Err(PreparationFailure::Analysis(format!(
+            "Failed to resolve catalog expression: {message}"
+        ))),
+        Err(error) => Err(PreparationFailure::Evaluation(error)),
+    }
+}
+
+impl PreparedSql {
+    pub(super) fn commit(self, graph: &mut PipelineGraph) -> SparkResult<()> {
+        graph.ensure_idle()?;
+        // Clone current state only after preparation, retaining concurrent registrations.
+        let mut draft = PipelineGraph::new(
+            graph.definition.catalog.clone(),
+            graph.definition.database.clone(),
+            graph.definition.sql_conf.clone(),
+        );
+        draft.definition = graph.definition.clone();
+        for statement in self.statements {
+            let result = match statement.result {
+                Ok(statement) => register_statement(&mut draft, statement)
+                    .map_err(|error| PreparationFailure::Analysis(error.to_string())),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(()) => {}
+                Err(PreparationFailure::Evaluation(error)) => return Err(error),
+                Err(PreparationFailure::Analysis(message)) => {
+                    return Err(Box::new(registration_error(
+                        message,
+                        StatementOrigin::from_span(&self.text, statement.span)?,
+                        self.file.as_deref(),
+                    ))
+                    .into());
+                }
+            }
+        }
+        // Namespace/configuration directives are local to this file.
+        draft
+            .definition
+            .catalog
+            .clone_from(&graph.definition.catalog);
+        draft
+            .definition
+            .database
+            .clone_from(&graph.definition.database);
+        draft
+            .definition
+            .sql_conf
+            .clone_from(&graph.definition.sql_conf);
+        graph.definition = draft.definition;
+        Ok(())
+    }
 }
 
 fn registration_error(

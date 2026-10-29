@@ -6,7 +6,7 @@ use chumsky::span::SimpleSpan;
 use sail_sql_parser::ast::statement::Statement;
 use sail_sql_parser::options::ParserOptions;
 use sail_sql_parser::parser::{create_parser, create_parser_with_spans};
-use sail_sql_parser::span::TokenSpan;
+pub use sail_sql_parser::span::TokenSpan;
 use sail_sql_parser::token::{Keyword, Punctuation, Token};
 
 use crate::error::{SqlError, SqlResult};
@@ -25,6 +25,22 @@ pub struct SqlSource<'a> {
 pub struct StatementOrigin<'a> {
     pub text: &'a str,
     pub line: usize,
+}
+
+impl<'a> StatementOrigin<'a> {
+    /// Recover an origin after parsing without retaining or rebuilding lexer tokens.
+    pub fn from_span(input: &'a str, span: TokenSpan) -> SqlResult<Self> {
+        let invalid = || SqlError::invalid("statement span does not match SQL source");
+        if span.is_empty() {
+            return Err(invalid());
+        }
+        let text = input.get(span.start..span.end).ok_or_else(invalid)?;
+        let prefix = input.get(..span.start).ok_or_else(invalid)?;
+        Ok(Self {
+            text,
+            line: 1 + prefix.bytes().filter(|byte| *byte == b'\n').count(),
+        })
+    }
 }
 
 impl<'a> SqlSource<'a> {
@@ -74,16 +90,7 @@ impl<'a> SqlSource<'a> {
 
     /// Statement intervals retain trailing trivia, unlike a view's query text.
     pub fn statement_origin(&self, span: TokenSpan) -> SqlResult<StatementOrigin<'a>> {
-        let invalid = || SqlError::invalid("statement span does not match SQL source");
-        if span.is_empty() {
-            return Err(invalid());
-        }
-        let text = self.text.get(span.start..span.end).ok_or_else(invalid)?;
-        let prefix = self.text.get(..span.start).ok_or_else(invalid)?;
-        Ok(StatementOrigin {
-            text,
-            line: 1 + prefix.bytes().filter(|byte| *byte == b'\n').count(),
-        })
+        StatementOrigin::from_span(self.text, span)
     }
 
     /// The current CREATE VIEW grammar ends with AS query. Keep the query's

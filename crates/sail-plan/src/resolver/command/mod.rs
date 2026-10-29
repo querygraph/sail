@@ -231,6 +231,10 @@ impl PlanResolver<'_> {
                     catalog: catalog.into(),
                 })
             }
+            CommandNode::SetCurrentCatalogExpression { catalog } => {
+                let catalog = self.resolve_catalog_name(catalog).await?;
+                self.resolve_catalog_command(CatalogCommand::SetCurrentCatalog { catalog })
+            }
             CommandNode::ListCatalogs { pattern } => {
                 self.resolve_catalog_command(CatalogCommand::ListCatalogs { pattern })
             }

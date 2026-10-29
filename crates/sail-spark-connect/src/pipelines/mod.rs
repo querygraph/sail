@@ -10,6 +10,7 @@ mod sql;
 mod topology;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use datafusion::prelude::SessionContext;
@@ -187,13 +188,30 @@ pub(crate) async fn handle_command(
             ));
         }
         pc::CommandType::DefineSqlGraphElements(command) => {
-            let graph = spark.pipeline(
-                command
-                    .dataflow_graph_id
-                    .as_deref()
-                    .required("dataflow graph id")?,
-            )?;
-            sql::register(&mut *graph.lock()?, command)?;
+            let id = command
+                .dataflow_graph_id
+                .as_deref()
+                .required("dataflow graph id")?
+                .to_string();
+            let mut config = None;
+            let preparation = sql::prepare(command, |expression| {
+                // Capture session planning configuration lazily, only when a catalog
+                // expression requires it. File/graph overrides belong to flows.
+                let config = match &config {
+                    Some(config) => Ok(Arc::clone(config)),
+                    None => spark
+                        .plan_config()
+                        .inspect(|value| config = Some(value.clone())),
+                };
+                async move {
+                    let resolver = sail_plan::resolver::PlanResolver::new(ctx, config?);
+                    resolver
+                        .resolve_catalog_name(expression)
+                        .await
+                        .map_err(SparkError::from)
+                }
+            });
+            sql::register(&spark, &id, preparation).await?;
             sc::PipelineCommandResult::default()
         }
         _ => return Err(SparkError::unsupported("pipeline command")),

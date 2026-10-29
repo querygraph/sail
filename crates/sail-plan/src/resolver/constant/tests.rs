@@ -25,6 +25,42 @@ use crate::function::common::{FunctionContextInput, ScalarFunctionBuilder, Scala
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[tokio::test]
+async fn catalog_expression_command_emits_the_existing_catalog_operation() -> TestResult {
+    let context = context()?;
+    let resolver = PlanResolver::new(&context, Arc::new(PlanConfig::default()));
+    let named = resolver
+        .resolve_named_plan(spec::Plan::Command(spec::CommandPlan::new(
+            spec::CommandNode::SetCurrentCatalogExpression {
+                catalog: expression("CONCAT('cat', 'alog')")?,
+            },
+        )))
+        .await?;
+    assert!(named.fields.is_none());
+    let datafusion_expr::LogicalPlan::Extension(extension) = named.plan else {
+        return Err(PlanError::internal("expected catalog command").into());
+    };
+    let command = extension
+        .node
+        .as_any()
+        .downcast_ref::<crate::catalog::CatalogCommandNode>()
+        .ok_or_else(|| PlanError::internal("expected catalog command node"))?;
+    assert_eq!(
+        command.command(),
+        &sail_catalog::command::CatalogCommand::SetCurrentCatalog {
+            catalog: "catalog".into(),
+        }
+    );
+    assert_eq!(
+        context
+            .extension::<CatalogManager>()?
+            .default_catalog()?
+            .as_ref(),
+        "catalog"
+    );
+    Ok(())
+}
+
 fn context() -> Result<SessionContext, Box<dyn std::error::Error>> {
     let provider = MemoryCatalogProvider::new("catalog".into(), vec!["db"].try_into()?, None);
     let catalog = CatalogManager::try_new(CatalogManagerOptions {

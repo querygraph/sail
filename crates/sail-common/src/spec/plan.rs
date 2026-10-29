@@ -418,6 +418,9 @@ pub enum CommandNode {
     SetCurrentCatalog {
         catalog: Identifier,
     },
+    SetCurrentCatalogExpression {
+        catalog: Expr,
+    },
     CreateCatalog {
         catalog: Identifier,
         #[serde(flatten)]

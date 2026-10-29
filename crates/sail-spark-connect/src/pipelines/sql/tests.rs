@@ -17,7 +17,7 @@ use sail_plan::catalog::SparkCatalogObjectDisplay;
 use sail_plan::formatter::SparkPlanFormatter;
 use sail_plan::resolver::PlanResolver;
 
-use super::{PipelineGraph, register, registration_error};
+use super::{PipelineGraph, prepare, registration_error};
 use crate::error::{SparkError, SparkResult};
 use crate::session::{SparkSession, SparkSessionOptions};
 use crate::spark::connect::{OutputType, pipeline_command as pc};
@@ -26,15 +26,25 @@ fn graph() -> PipelineGraph {
     PipelineGraph::new("test_catalog".into(), "test_db".into(), HashMap::new())
 }
 
-fn register_sql(graph: &mut PipelineGraph, sql: &str, file: &str) -> SparkResult<()> {
-    register(
-        graph,
+async fn register_sql(graph: &mut PipelineGraph, sql: &str, file: &str) -> SparkResult<()> {
+    prepare(
         pc::DefineSqlGraphElements {
             sql_text: Some(sql.into()),
             sql_file_path: Some(file.into()),
             ..Default::default()
         },
+        |expression| async move {
+            let context =
+                resolution_context().map_err(|error| SparkError::internal(error.to_string()))?;
+            let spark = context.extension::<SparkSession>()?;
+            PlanResolver::new(&context, spark.plan_config()?)
+                .resolve_catalog_name(expression)
+                .await
+                .map_err(SparkError::from)
+        },
     )
+    .await?
+    .commit(graph)
 }
 
 fn name(table: &str) -> Vec<String> {
@@ -73,15 +83,16 @@ fn sql_registration_errors_have_origin_parameters_with_optional_paths() {
     }
 }
 
-#[test]
-fn identity_partition_columns_keep_declared_order() -> SparkResult<()> {
+#[tokio::test]
+async fn identity_partition_columns_keep_declared_order() -> SparkResult<()> {
     let mut graph = graph();
     register_sql(
         &mut graph,
         "CREATE MATERIALIZED VIEW a PARTITIONED BY (id1, id2) \
          AS SELECT id AS id1, id AS id2 FROM range(1, 2)",
         "partition.sql",
-    )?;
+    )
+    .await?;
     let [output] = graph.definition.outputs.as_slice() else {
         return Err(SparkError::internal("expected one partitioned output"));
     };
@@ -94,15 +105,16 @@ fn identity_partition_columns_keep_declared_order() -> SparkResult<()> {
     Ok(())
 }
 
-#[test]
-fn streaming_table_properties_are_registered_without_execution() -> SparkResult<()> {
+#[tokio::test]
+async fn streaming_table_properties_are_registered_without_execution() -> SparkResult<()> {
     let mut graph = graph();
     // The original Spark fixture resolves registration without validating streamingness.
     register_sql(
         &mut graph,
         "CREATE STREAMING TABLE st TBLPROPERTIES ('prop1'='foo', 'prop2'='bar') AS SELECT 1",
         "properties.sql",
-    )?;
+    )
+    .await?;
     let [output] = graph.definition.outputs.as_slice() else {
         return Err(SparkError::internal("expected one streaming output"));
     };
@@ -121,8 +133,8 @@ fn streaming_table_properties_are_registered_without_execution() -> SparkResult<
     Ok(())
 }
 
-#[test]
-fn sql_configuration_is_captured_per_flow_and_reset_per_file() -> SparkResult<()> {
+#[tokio::test]
+async fn sql_configuration_is_captured_per_flow_and_reset_per_file() -> SparkResult<()> {
     let mut graph = graph();
     register_sql(
         &mut graph,
@@ -133,7 +145,8 @@ fn sql_configuration_is_captured_per_flow_and_reset_per_file() -> SparkResult<()
          SET conf.test2 = c; \
          CREATE STREAMING TABLE c AS SELECT id FROM range(1, 2);",
         "configuration.sql",
-    )?;
+    )
+    .await?;
     let configurations: Vec<_> = graph
         .definition
         .flows
@@ -159,7 +172,8 @@ fn sql_configuration_is_captured_per_flow_and_reset_per_file() -> SparkResult<()
         &mut graph,
         "CREATE MATERIALIZED VIEW d AS SELECT 1 AS value",
         "next.sql",
-    )?;
+    )
+    .await?;
     let Some(flow) = graph.definition.flows.last() else {
         return Err(SparkError::internal("expected next-file flow"));
     };
@@ -209,7 +223,8 @@ async fn declared_schema_validation_preserves_resolved_query_nullability()
         &mut graph,
         "CREATE MATERIALIZED VIEW a (id LONG COMMENT 'comment') AS SELECT * FROM RANGE(5);",
         "schema.sql",
-    )?;
+    )
+    .await?;
     let [output] = graph.definition.outputs.as_slice() else {
         return Err(SparkError::internal("expected one declared output").into());
     };
@@ -233,14 +248,15 @@ async fn declared_schema_validation_preserves_resolved_query_nullability()
     Ok(())
 }
 
-#[test]
-fn persisted_view_retains_original_query_text_and_comment() -> SparkResult<()> {
+#[tokio::test]
+async fn persisted_view_retains_original_query_text_and_comment() -> SparkResult<()> {
     let mut graph = graph();
     register_sql(
         &mut graph,
         "CREATE VIEW b COMMENT 'my persisted comment' AS SELECT * FROM range(1, 4);",
         "view.sql",
-    )?;
+    )
+    .await?;
     let [output] = graph.definition.outputs.as_slice() else {
         return Err(SparkError::internal("expected one persisted view"));
     };
@@ -254,15 +270,16 @@ fn persisted_view_retains_original_query_text_and_comment() -> SparkResult<()> {
     Ok(())
 }
 
-#[test]
-fn view_source_intervals_preserve_file_atomicity_and_namespace_reset() -> SparkResult<()> {
+#[tokio::test]
+async fn view_source_intervals_preserve_file_atomicity_and_namespace_reset() -> SparkResult<()> {
     let mut graph = graph();
     register_sql(
         &mut graph,
         "USE other_db; CREATE VIEW a AS SELECT 'é;雪' AS x; \
          CREATE VIEW b AS SELECT /* ; */ x FROM a;",
         "views.sql",
-    )?;
+    )
+    .await?;
     assert_eq!(graph.definition.outputs.len(), 2);
     for (output, (table, query)) in graph.definition.outputs.iter().zip([
         ("a", "SELECT 'é;雪' AS x"),
@@ -280,11 +297,14 @@ fn view_source_intervals_preserve_file_atomicity_and_namespace_reset() -> SparkR
             "USE failed_db; CREATE VIEW rejected AS SELECT 2; SELECT 3;",
             "failed.sql",
         )
+        .await
         .is_err()
     );
     assert_eq!(graph.definition.outputs.len(), 2);
-    register_sql(&mut graph, "CREATE VIEW c AS SELECT 4", "next.sql")?;
+    register_sql(&mut graph, "CREATE VIEW c AS SELECT 4", "next.sql").await?;
     assert_eq!(graph.definition.outputs.len(), 3);
     assert_eq!(graph.definition.outputs[2].name, name("c"));
     Ok(())
 }
+
+mod preparation;
