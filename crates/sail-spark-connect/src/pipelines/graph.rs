@@ -55,6 +55,35 @@ pub(super) struct Output {
     pub view: Option<spec::ViewDefinition>,
 }
 
+// This order matches Spark's table/view/sink groups during duplicate validation.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RegisteredOutputType {
+    Table,
+    View,
+    Sink,
+}
+
+impl RegisteredOutputType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Table => "TABLE",
+            Self::View => "VIEW",
+            Self::Sink => "SINK",
+        }
+    }
+}
+
+impl Output {
+    fn registered_type(&self) -> RegisteredOutputType {
+        match self.kind {
+            sc::OutputType::Sink => RegisteredOutputType::Sink,
+            sc::OutputType::TemporaryView => RegisteredOutputType::View,
+            _ if self.view.is_some() => RegisteredOutputType::View,
+            _ => RegisteredOutputType::Table,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct Flow {
     pub name: Name,
@@ -259,13 +288,33 @@ impl GraphDefinition {
             })
             .into());
         }
-        let mut names = BTreeSet::new();
-        for output in &self.outputs {
-            if !names.insert(&output.name) {
-                return Err(analysis(
-                    "PIPELINE_DUPLICATE_IDENTIFIERS.OUTPUT",
-                    quoted(&output.name),
-                ));
+        let mut outputs: Vec<_> = self.outputs.iter().collect();
+        outputs.sort_by_key(|output| output.registered_type());
+        let mut names = BTreeMap::new();
+        for output in outputs {
+            let kind = output.registered_type();
+            if let Some(previous) = names.insert(&output.name, kind) {
+                let name = quoted(&output.name);
+                let mut types = [previous.as_str(), kind.as_str()];
+                types.sort_unstable();
+                let [first, second] = types;
+                return Err(Box::new(StructuredSparkError {
+                    class: "org.apache.spark.sql.AnalysisException",
+                    condition: "PIPELINE_DUPLICATE_IDENTIFIERS.OUTPUT",
+                    sql_state: "42710",
+                    message: format!(
+                        "A duplicate identifier was found for elements registered in the pipeline's dataflow graph. \
+                         Attempted to register a {first} with identifier {name}, but a {second} has already \
+                         been registered with that identifier. Please ensure all outputs created within this \
+                         pipeline have unique identifiers."
+                    ),
+                    parameters: HashMap::from([
+                        ("outputName".into(), name),
+                        ("outputType1".into(), first.into()),
+                        ("outputType2".into(), second.into()),
+                    ]),
+                })
+                .into());
             }
         }
         let mut flows = BTreeSet::new();
