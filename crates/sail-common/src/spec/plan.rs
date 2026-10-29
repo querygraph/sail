@@ -1121,8 +1121,6 @@ pub struct WriteTo {
     pub clustering_columns: Vec<Identifier>,
     pub options: Vec<(String, String)>,
     pub table_properties: Vec<(String, String)>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub table_comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

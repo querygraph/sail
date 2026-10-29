@@ -125,7 +125,6 @@ pub(super) struct WritePlanBuilder {
     cluster_by: Vec<spec::ObjectName>,
     options: Vec<Vec<(String, String)>>,
     table_properties: Vec<(String, String)>,
-    table_comment: Option<String>,
     table_is_external: bool,
 }
 
@@ -143,7 +142,6 @@ impl WritePlanBuilder {
             cluster_by: vec![],
             options: vec![],
             table_properties: vec![],
-            table_comment: None,
             table_is_external: false,
         }
     }
@@ -205,11 +203,6 @@ impl WritePlanBuilder {
         self
     }
 
-    pub fn with_table_comment(mut self, comment: String) -> Self {
-        self.table_comment = Some(comment);
-        self
-    }
-
     pub fn with_table_is_external(mut self, is_external: bool) -> Self {
         self.table_is_external = is_external;
         self
@@ -235,7 +228,6 @@ impl PlanResolver<'_> {
             cluster_by,
             options,
             table_properties,
-            table_comment,
             table_is_external,
         } = builder;
 
@@ -274,11 +266,6 @@ impl PlanResolver<'_> {
         let mut preconditions = vec![];
         match target {
             WriteTarget::DataSource => {
-                if table_comment.is_some() {
-                    return Err(PlanError::invalid(
-                        "a table comment is not supported for writing to a data source",
-                    ));
-                }
                 if !table_properties.is_empty() {
                     return Err(PlanError::invalid(
                         "table properties are not supported for writing to a data source",
@@ -361,11 +348,6 @@ impl PlanResolver<'_> {
                         | WriteMode::TruncatePartitions
                 );
                 if let Some(info) = info.as_ref().filter(|_| use_existing) {
-                    if table_comment.is_some() {
-                        return Err(PlanError::invalid(
-                            "a table comment requires creating or replacing the target table",
-                        ));
-                    }
                     self.validate_insert_partition(&insert_partition, info)?;
                     if !table_properties.is_empty() {
                         return Err(PlanError::invalid(
@@ -505,7 +487,7 @@ impl PlanResolver<'_> {
                         .collect::<Vec<_>>();
                     let mut create_options = CreateTableOptions {
                         columns,
-                        comment: table_comment,
+                        comment: None,
                         constraints: vec![],
                         location: table_location,
                         format: write_format.clone(),

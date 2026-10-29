@@ -24,7 +24,6 @@ impl PlanResolver<'_> {
             clustering_columns,
             options,
             table_properties,
-            table_comment,
         } = write_to;
 
         let input = self.resolve_write_input(*input, state).await?;
@@ -39,9 +38,6 @@ impl PlanResolver<'_> {
 
         if let Some(provider) = provider {
             builder = builder.with_format(provider);
-        }
-        if let Some(comment) = table_comment {
-            builder = builder.with_table_comment(comment);
         }
 
         match mode {

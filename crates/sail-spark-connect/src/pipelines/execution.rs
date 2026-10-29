@@ -144,7 +144,6 @@ fn publication_command(output: &Output, flow: &Flow) -> spec::CommandNode {
             .collect(),
         options: vec![],
         table_properties: vec![],
-        table_comment: None,
     })
 }
 
