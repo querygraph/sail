@@ -285,7 +285,11 @@ impl GraphDefinition {
                     }
                     sc::OutputType::MaterializedView if streaming => {
                         return Err(analysis(
-                            "INVALID_FLOW_QUERY_TYPE.STREAMING_RELATION_FOR_MATERIALIZED_VIEW",
+                            if output.view.is_some() {
+                                "INVALID_FLOW_QUERY_TYPE.STREAMING_RELATION_FOR_PERSISTED_VIEW"
+                            } else {
+                                "INVALID_FLOW_QUERY_TYPE.STREAMING_RELATION_FOR_MATERIALIZED_VIEW"
+                            },
                             quoted(&flow.name),
                         ));
                     }

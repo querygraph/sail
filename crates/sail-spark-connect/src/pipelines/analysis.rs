@@ -67,6 +67,10 @@ impl RelationScope for GraphScope<'_> {
             ))),
         }
     }
+
+    fn default_namespace(&self) -> Option<Vec<String>> {
+        Some(vec![self.flow.catalog.clone(), self.flow.database.clone()])
+    }
 }
 
 pub(super) struct AnalyzedGraph {
@@ -124,6 +128,21 @@ pub(super) async fn analyze(
             dependencies.insert(output.name.clone(), inputs);
             if pending {
                 continue;
+            }
+            if output.view.is_some()
+                && let Some(temporary) = graph.outputs.iter().find(|candidate| {
+                    candidate.kind == OutputType::TemporaryView
+                        && dependencies[&output.name].contains(&candidate.name)
+                })
+            {
+                return Err(analysis(
+                    "INVALID_TEMP_OBJ_REFERENCE",
+                    format!(
+                        "view {} references temporary view {}",
+                        quoted(&output.name),
+                        quoted(&temporary.name)
+                    ),
+                ));
             }
             let plan = if output.kind == OutputType::TemporaryView {
                 if plans.len() != 1 {

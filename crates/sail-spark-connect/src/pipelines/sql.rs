@@ -211,7 +211,7 @@ fn register_statement(graph: &mut PipelineGraph, statement: PipelineStatement) -
             })?;
             definition.input = Box::new(with_view_columns(
                 *definition.input,
-                definition.columns.take(),
+                definition.columns.clone(),
             ));
             add_flow(graph, name.clone(), name, *definition.input.clone());
             if let Some(output) = graph.definition.outputs.last_mut() {

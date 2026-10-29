@@ -11,7 +11,7 @@ use sail_plan::resolve_and_execute_plan_with_scope;
 use sail_plan::resolver::PlanResolver;
 
 use super::analysis::{AnalyzedGraph, GraphScope};
-use super::graph::{GraphDefinition, analysis};
+use super::graph::{Flow, GraphDefinition, Output, analysis};
 use super::selection::Selection;
 use crate::error::{SparkError, SparkResult};
 use crate::session::SparkSession;
@@ -36,9 +36,6 @@ pub(super) async fn execute(
     let service = ctx.extension::<JobService>()?;
     let mut resolved = BTreeMap::new();
     for output in &graph.outputs {
-        if output.view.is_some() {
-            return Err(SparkError::unsupported("persisted pipeline view execution"));
-        }
         if output.schema.is_some() || output.definition.comment.is_some() {
             return Err(SparkError::unsupported(
                 "declared pipeline schema or comment publication",
@@ -89,36 +86,10 @@ pub(super) async fn execute(
             resolved.insert(name, plan);
             continue;
         }
-        let details = match &output.definition.details {
-            Some(pc::define_output::Details::TableDetails(details)) => details.clone(),
-            _ => pc::define_output::TableDetails::default(),
-        };
-        let write = spec::WriteTo {
-            input: Box::new(flow.query.clone()),
-            provider: details.format,
-            table: spec::ObjectName::from(name.clone()),
-            mode: spec::WriteToMode::CreateOrReplace,
-            partitioning_columns: details
-                .partition_cols
-                .into_iter()
-                .map(|x| spec::Expr::UnresolvedAttribute {
-                    name: spec::ObjectName::bare(x),
-                    plan_id: None,
-                    is_metadata_column: false,
-                })
-                .collect(),
-            clustering_columns: details
-                .clustering_columns
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-            options: vec![],
-            table_properties: details.table_properties.into_iter().collect(),
-        };
         let (physical, _) = resolve_and_execute_plan_with_scope(
             ctx,
             config,
-            spec::Plan::Command(spec::CommandPlan::new(spec::CommandNode::WriteTo(write))),
+            spec::Plan::Command(spec::CommandPlan::new(publication_command(output, flow))),
             Some(&scope),
         )
         .await?;
@@ -129,6 +100,43 @@ pub(super) async fn execute(
         resolved.insert(name.clone(), read_output(ctx, name).await?);
     }
     Ok(())
+}
+
+fn publication_command(output: &Output, flow: &Flow) -> spec::CommandNode {
+    if let Some(mut definition) = output.view.clone() {
+        definition.replace = true;
+        definition.if_not_exists = false;
+        return spec::CommandNode::CreateView {
+            view: output.name.clone().into(),
+            definition,
+        };
+    }
+    let details = match &output.definition.details {
+        Some(pc::define_output::Details::TableDetails(details)) => details.clone(),
+        _ => pc::define_output::TableDetails::default(),
+    };
+    spec::CommandNode::WriteTo(spec::WriteTo {
+        input: Box::new(flow.query.clone()),
+        provider: details.format,
+        table: output.name.clone().into(),
+        mode: spec::WriteToMode::CreateOrReplace,
+        partitioning_columns: details
+            .partition_cols
+            .into_iter()
+            .map(|name| spec::Expr::UnresolvedAttribute {
+                name: spec::ObjectName::bare(name),
+                plan_id: None,
+                is_metadata_column: false,
+            })
+            .collect(),
+        clustering_columns: details
+            .clustering_columns
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        options: vec![],
+        table_properties: details.table_properties.into_iter().collect(),
+    })
 }
 
 async fn read_output(
