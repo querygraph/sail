@@ -237,6 +237,7 @@ use sail_function::scalar::misc::version::SparkVersion;
 use sail_function::scalar::multi_expr::MultiExpr;
 use sail_function::scalar::normalize_float_keys::NormalizeFloatKeys;
 use sail_function::scalar::predicate::rewrite_like_pattern::RewriteLikePatternFunc;
+use sail_function::scalar::spark_ansi_string_cast::SparkAnsiStringCast;
 use sail_function::scalar::spark_cast_string_to_int32::SparkCastStringToInt32;
 use sail_function::scalar::spark_struct_rename::SparkStructRename;
 use sail_function::scalar::spark_to_string::{SparkToLargeUtf8, SparkToUtf8, SparkToUtf8View};
@@ -3752,6 +3753,21 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             UdfKind::SparkParseJson(r#gen::SparkParseJsonUdf { safe }) => {
                 return Ok(Arc::new(ScalarUDF::from(SparkParseJson::new(safe))));
             }
+            UdfKind::SparkAnsiStringCast(r#gen::SparkAnsiStringCastUdf {
+                target_type,
+                sql_target,
+            }) => {
+                if name != "spark_ansi_string_cast" {
+                    return plan_err!(
+                        "ANSI string cast payload has mismatched function name: {name}"
+                    );
+                }
+                let target_type = self.try_decode_data_type(&target_type)?;
+                return Ok(Arc::new(ScalarUDF::from(SparkAnsiStringCast::try_new(
+                    target_type,
+                    sql_target,
+                )?)));
+            }
             UdfKind::SparkStructRename(r#gen::SparkStructRenameUdf { target_type }) => {
                 let target_type = self.try_decode_data_type(&target_type)?;
                 return Ok(Arc::new(ScalarUDF::from(SparkStructRename::new(
@@ -4324,6 +4340,11 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 null_short_circuit,
                 mode,
                 output_timezone: func.output_timezone().map(|timezone| timezone.to_string()),
+            })
+        } else if let Some(func) = node.inner().downcast_ref::<SparkAnsiStringCast>() {
+            UdfKind::SparkAnsiStringCast(r#gen::SparkAnsiStringCastUdf {
+                target_type: self.try_encode_data_type(func.target_type())?,
+                sql_target: func.sql_target().into(),
             })
         } else if let Some(func) = node.inner().downcast_ref::<SparkStructRename>() {
             let target_type = self.try_encode_data_type(func.target_type())?;
@@ -9166,3 +9187,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod ansi_string_cast_tests;

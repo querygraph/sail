@@ -268,6 +268,7 @@ message ExtendedScalarUdf {
     StrToMapUdf str_to_map = 38;
     SparkSequenceUdf spark_sequence = 39;
     SparkToStringUdf spark_to_string = 40;
+    SparkAnsiStringCastUdf spark_ansi_string_cast = 41;
   }
 }
 
@@ -1309,4 +1310,9 @@ message DeltaOptimizeRewriteExecNode {
 
 message DeltaOptimizeGroupAssignment {
   repeated uint64 groups = 1;
+}
+
+message SparkAnsiStringCastUdf {
+  bytes target_type = 1;
+  string sql_target = 2;
 }
