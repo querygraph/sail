@@ -133,3 +133,100 @@ def test_protocol_dataset_without_flow_preserves_identifier(pipeline_spark, pipe
     assert error.value.getMessageParameters() == {"identifier": identifier}
     assert not pipeline_spark.catalog.tableExists("independent")
     assert not pipeline_spark.catalog.tableExists(name)
+
+
+@pytest.mark.parametrize("dry", [False, True])
+@pytest.mark.parametrize(
+    ("files", "flow_name", "targets"),
+    [
+        pytest.param(
+            [
+                "CREATE STREAMING TABLE st; CREATE FLOW f AS INSERT INTO st BY NAME SELECT * FROM STREAM(source)",
+                "CREATE FLOW f AS INSERT INTO st BY NAME SELECT * FROM STREAM(source)",
+            ],
+            "f",
+            ["st"],
+            id="same-target",
+        ),
+        pytest.param(
+            [
+                "CREATE STREAMING TABLE st AS SELECT * FROM STREAM(source); CREATE STREAMING TABLE st2",
+                "CREATE FLOW st AS INSERT INTO st2 BY NAME SELECT * FROM STREAM(source2)",
+            ],
+            "st",
+            ["st", "st2"],
+            id="implicit-explicit",
+        ),
+        pytest.param(
+            [
+                (
+                    "CREATE STREAMING TABLE st; CREATE STREAMING TABLE st2; "
+                    "CREATE FLOW f AS INSERT INTO st2 BY NAME SELECT * FROM STREAM(source)"
+                ),
+                "CREATE FLOW f AS INSERT INTO st BY NAME SELECT * FROM STREAM(source)",
+            ],
+            "f",
+            ["st2", "st"],
+            id="target-order",
+        ),
+        pytest.param(
+            [
+                (
+                    "CREATE STREAMING TABLE st; CREATE STREAMING TABLE st2; CREATE STREAMING TABLE st3; "
+                    "CREATE FLOW f AS INSERT INTO st BY NAME SELECT * FROM STREAM(source)"
+                ),
+                "CREATE FLOW f AS INSERT INTO st2 BY NAME SELECT * FROM STREAM(source)",
+                "CREATE FLOW f AS INSERT INTO st3 BY NAME SELECT * FROM STREAM(source)",
+            ],
+            "f",
+            ["st", "st2"],
+            id="first-two-targets",
+        ),
+        pytest.param(
+            [
+                (
+                    "CREATE STREAMING TABLE st; CREATE STREAMING TABLE st2; "
+                    "CREATE FLOW f AS INSERT INTO st BY NAME SELECT * FROM STREAM(source); "
+                    "CREATE FLOW g AS INSERT INTO st BY NAME SELECT * FROM STREAM(source)"
+                ),
+                (
+                    "CREATE FLOW g AS INSERT INTO st2 BY NAME SELECT * FROM STREAM(source); "
+                    "CREATE FLOW f AS INSERT INTO st2 BY NAME SELECT * FROM STREAM(source)"
+                ),
+            ],
+            "f",
+            ["st", "st2"],
+            id="first-registered-identifier",
+        ),
+        pytest.param(
+            [
+                (
+                    "CREATE STREAMING TABLE `st.with.dot`; "
+                    "CREATE FLOW `flow``with.dot` AS INSERT INTO `st.with.dot` BY NAME SELECT * FROM STREAM(source)"
+                ),
+                "CREATE FLOW `flow``with.dot` AS INSERT INTO `st.with.dot` BY NAME SELECT * FROM STREAM(source)",
+            ],
+            "flow`with.dot",
+            ["st.with.dot"],
+            id="escaped-identifiers",
+        ),
+    ],
+)
+def test_duplicate_flows_preserve_identifiers_and_targets(
+    pipeline_spark, pipeline, tmp_path, files, flow_name, targets, dry
+):
+    _, registry, run = pipeline
+    for index, sql in enumerate(files):
+        registry.register_sql(sql, tmp_path / f"flow_{index}.sql")
+    with pytest.raises(AnalysisException) as error:
+        run(dry=dry)
+    catalog = pipeline_spark.catalog.currentCatalog()
+    database = pipeline_spark.catalog.currentDatabase()
+    assert error.value.getCondition() == "PIPELINE_DUPLICATE_IDENTIFIERS.FLOW"
+    assert error.value.getSqlState() == "42710"
+    assert error.value.getMessageParameters() == {
+        "flowName": f"{catalog}.{database}.{flow_name}",
+        "datasetNames": ",".join(f"`{catalog}`.`{database}`.`{target}`" for target in targets),
+    }
+    for target in targets:
+        assert not pipeline_spark.catalog.tableExists(f"`{target}`")

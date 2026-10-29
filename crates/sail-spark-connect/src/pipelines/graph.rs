@@ -317,14 +317,38 @@ impl GraphDefinition {
                 .into());
             }
         }
-        let mut flows = BTreeSet::new();
+        let mut flows: BTreeMap<&Name, Vec<&Name>> = BTreeMap::new();
         for flow in &self.flows {
-            if !flows.insert(&flow.name) {
-                return Err(analysis(
-                    "PIPELINE_DUPLICATE_IDENTIFIERS.FLOW",
-                    quoted(&flow.name),
-                ));
-            }
+            flows.entry(&flow.name).or_default().push(&flow.target);
+        }
+        // Check in registration order, rather than when a second occurrence arrives.
+        for flow in &self.flows {
+            let Some(targets) = flows.get(&flow.name) else {
+                continue;
+            };
+            let [first, second, ..] = targets.as_slice() else {
+                continue;
+            };
+            let name = flow.name.join(".");
+            let datasets = if first == second {
+                quoted(first)
+            } else {
+                format!("{},{}", quoted(first), quoted(second))
+            };
+            return Err(Box::new(StructuredSparkError {
+                class: "org.apache.spark.sql.AnalysisException",
+                condition: "PIPELINE_DUPLICATE_IDENTIFIERS.FLOW",
+                sql_state: "42710",
+                message: format!(
+                    "A duplicate identifier was found for elements registered in the pipeline's dataflow graph. \
+                     Flow {name} was found in multiple datasets: {datasets}"
+                ),
+                parameters: HashMap::from([
+                    ("flowName".into(), name),
+                    ("datasetNames".into(), datasets),
+                ]),
+            })
+            .into());
         }
         Ok(())
     }
