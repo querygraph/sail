@@ -1121,8 +1121,23 @@ impl TryFrom<RelType> for RelationNode {
                 }
             }
             RelType::Transpose(_) => Err(SparkError::todo("transpose")),
-            RelType::UnresolvedTableValuedFunction(_) => {
-                Err(SparkError::todo("unresolved table valued function"))
+            RelType::UnresolvedTableValuedFunction(function) => {
+                let sc::UnresolvedTableValuedFunction {
+                    function_name,
+                    arguments,
+                } = function;
+                Ok(RelationNode::Query(spec::QueryNode::Read {
+                    is_streaming: false,
+                    read_type: spec::ReadType::Udtf(Box::new(spec::ReadUdtf {
+                        name: from_ast_object_name(parse_object_name(&function_name)?)?,
+                        arguments: arguments
+                            .into_iter()
+                            .map(|x| x.try_into())
+                            .collect::<SparkResult<_>>()?,
+                        named_arguments: vec![],
+                        options: vec![],
+                    })),
+                }))
             }
             RelType::LateralJoin(lateral_join) => {
                 use sc::join::JoinType;

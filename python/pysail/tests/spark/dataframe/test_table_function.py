@@ -1,6 +1,7 @@
 import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
+from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType, IntegerType, Row, StringType, StructField, StructType
 
 
@@ -159,3 +160,12 @@ def test_lateral_join_without_table(spark):
         df.toPandas(),
         pd.DataFrame({"v": [0, 1]}, dtype="int32"),
     )
+
+
+@pytest.mark.parametrize("values", [None, [], [2, 5]])
+def test_connect_table_function_relation(spark, values):
+    if not hasattr(spark, "tvf"):
+        pytest.skip("Table-valued function API requires Spark 4.0+")
+    df = spark.tvf.explode_outer(F.lit(values).cast("array<int>"))
+    assert df.schema.simpleString() == "struct<col:int>"
+    assert df.orderBy("col").collect() == ([Row(col=2), Row(col=5)] if values else [Row(col=None)])

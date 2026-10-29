@@ -65,3 +65,40 @@ def test_define_output_returns_resolved_identifier(pipeline_spark, kind, name, d
         assert identifier.catalog_name == ("" if private else catalog)
         assert list(identifier.namespace) == ([] if private else [namespace])
         assert identifier.table_name == name.strip("`")
+
+
+@pytest.mark.parametrize(
+    ("kind", "name", "database"),
+    [
+        pytest.param(pb.MATERIALIZED_VIEW, "`mv`", None, id="default-materialized-view"),
+        pytest.param(pb.TEMPORARY_VIEW, "tv", None, id="default-temporary-view"),
+        pytest.param(pb.MATERIALIZED_VIEW, "mv", "custom_db", id="custom-materialized-view"),
+        pytest.param(pb.TEMPORARY_VIEW, "tv", "custom_db", id="custom-temporary-view"),
+    ],
+)
+def test_define_flow_returns_resolved_identifier(pipeline_spark, kind, name, database):
+    with _graph(pipeline_spark, database) as (graph_id, catalog, namespace):
+        private = kind == pb.TEMPORARY_VIEW
+        if private:
+            command = pb.Command()
+            output = command.pipeline_command.define_output
+            output.dataflow_graph_id = graph_id
+            output.output_name = name
+            output.output_type = kind
+            _, properties, _ = pipeline_spark.client.execute_command(command)
+            assert properties["pipeline_command_result"].HasField("define_output_result")
+        command = pb.Command()
+        flow = command.pipeline_command.define_flow
+        flow.dataflow_graph_id = graph_id
+        flow.flow_name = name
+        flow.target_dataset_name = name
+        function = flow.relation_flow_details.relation.unresolved_table_valued_function
+        function.function_name = "range"
+        function.arguments.add().literal.integer = 5
+        _, properties, _ = pipeline_spark.client.execute_command(command)
+        result = properties["pipeline_command_result"]
+        assert result.HasField("define_flow_result")
+        identifier = result.define_flow_result.resolved_identifier
+        assert identifier.catalog_name == ("" if private else catalog)
+        assert list(identifier.namespace) == ([] if private else [namespace])
+        assert identifier.table_name == name.strip("`")
