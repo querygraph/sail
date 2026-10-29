@@ -62,6 +62,21 @@ def test_repeated_materialized_view_refresh(pipeline_spark, pipeline):
     assert [row.id for row in pipeline_spark.table("output").orderBy("id").collect()] == list(range(5))
 
 
+def test_materialized_view_comment_is_published(pipeline_spark, pipeline):
+    _, registry, run = pipeline
+    with graph_element_registration_context(registry):
+
+        @dp.materialized_view(comment="daily summary")
+        def output():
+            return pipeline_spark.range(2)
+
+    run(dry=True)
+    assert not pipeline_spark.catalog.tableExists("output")
+    run()
+    assert pipeline_spark.catalog.getTable("output").description == "daily summary"
+    assert pipeline_spark.table("output").count() == 2
+
+
 def test_selective_refresh_reads_committed_excluded_producers(pipeline_spark, pipeline):
     """PipelineRefreshFunctionalSuite: selective refresh does not refresh dependencies."""
     _, registry, run = pipeline

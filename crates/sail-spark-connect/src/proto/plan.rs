@@ -1817,6 +1817,7 @@ impl TryFrom<WriteOperationV2> for spec::WriteTo {
             clustering_columns,
             options,
             table_properties,
+            table_comment: None,
         })
     }
 }

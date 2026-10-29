@@ -71,9 +71,9 @@ pub(super) async fn execute(
     let service = ctx.extension::<JobService>()?;
     let mut resolved = BTreeMap::new();
     for output in &graph.outputs {
-        if output.schema.is_some() || output.definition.comment.is_some() {
+        if output.schema.is_some() {
             return Err(SparkError::unsupported(
-                "declared pipeline schema or comment publication",
+                "declared pipeline schema publication",
             ));
         }
         if output.kind != OutputType::TemporaryView
@@ -171,6 +171,7 @@ fn publication_command(output: &Output, flow: &Flow) -> spec::CommandNode {
             .collect(),
         options: vec![],
         table_properties: details.table_properties.into_iter().collect(),
+        table_comment: output.definition.comment.clone(),
     })
 }
 

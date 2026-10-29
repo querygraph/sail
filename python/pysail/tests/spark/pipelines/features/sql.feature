@@ -177,6 +177,30 @@ Feature: Declarative pipeline SQL
     When the pipeline is validated
     Then pipeline dataset output is not published
 
+  Scenario: Materialized view comments replace existing table comments
+    Given statement
+      """
+      CREATE TABLE output (id BIGINT) COMMENT 'old comment'
+      """
+    Given pipeline SQL file comment.sql
+      """
+      CREATE MATERIALIZED VIEW output COMMENT 'daily summary' AS SELECT * FROM range(2);
+      """
+    When the pipeline runs
+    When the pipeline runs
+    When query
+      """
+      SELECT count(*) AS rows FROM output
+      """
+    Then query result
+      | rows |
+      | 2    |
+    When query
+      """
+      DESCRIBE EXTENDED output
+      """
+    Then query result row where "col_name" is "Comment" has "data_type" equal to "daily summary"
+
   Scenario: Streaming table definitions require a producer
     Given pipeline SQL file empty.sql
       """
