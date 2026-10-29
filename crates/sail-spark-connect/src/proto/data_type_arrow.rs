@@ -76,7 +76,12 @@ impl TryFrom<adt::Field> for sdt::StructField {
         let udt_metadata = field.metadata().get(spec::SAIL_SPARK_UDT_METADATA_KEY);
         let extension_type_name = field.extension_type_name();
 
-        let data_type = if let Some(udt_metadata) = udt_metadata {
+        let data_type = if let Some(metadata) =
+            field.metadata().get(spec::SAIL_SPARK_TIME_METADATA_KEY)
+        {
+            let metadata = spec::SparkTimeMetadata::from_json(metadata)?;
+            spark_time_data_type(field.data_type(), metadata)?
+        } else if let Some(udt_metadata) = udt_metadata {
             let udt_metadata: spec::SparkUdtMetadata = serde_json::from_str(udt_metadata)?;
             DataType {
                 kind: Some(sdt::Kind::Udt(Box::new(sdt::Udt {
@@ -134,6 +139,23 @@ impl TryFrom<adt::Field> for sdt::StructField {
                 }),
         })
     }
+}
+
+fn spark_time_data_type(
+    arrow_type: &adt::DataType,
+    metadata: spec::SparkTimeMetadata,
+) -> SparkResult<DataType> {
+    if arrow_type != &adt::DataType::Time64(adt::TimeUnit::Nanosecond) {
+        return Err(SparkError::invalid(format!(
+            "Spark TIME metadata requires Arrow Time64(Nanosecond), found {arrow_type}"
+        )));
+    }
+    Ok(DataType {
+        kind: Some(sdt::Kind::Time(sdt::Time {
+            precision: Some(metadata.precision()),
+            type_variation_reference: 0,
+        })),
+    })
 }
 
 fn spark_interval_data_type(
@@ -309,6 +331,10 @@ impl TryFrom<adt::DataType> for DataType {
         Ok(DataType { kind: Some(kind) })
     }
 }
+
+#[cfg(test)]
+#[path = "data_type_arrow_time_tests.rs"]
+mod time_tests;
 
 #[cfg(test)]
 mod tests {
@@ -555,7 +581,7 @@ mod tests {
         let arrow_type = adt::DataType::Time64(adt::TimeUnit::Millisecond);
         assert!(DataType::try_from(arrow_type).is_err());
 
-        // Time64 Nanosecond - valid Arrow but rejected by Spark (only precision 0, 3, 6 supported)
+        // Unannotated Time64(Nanosecond) lacks a supported declared Spark precision.
         let arrow_type = adt::DataType::Time64(adt::TimeUnit::Nanosecond);
         assert!(DataType::try_from(arrow_type).is_err());
     }
