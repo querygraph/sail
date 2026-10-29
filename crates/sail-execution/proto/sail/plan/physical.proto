@@ -80,6 +80,26 @@ message ExtendedPhysicalPlanNode {
     DeltaMaintenanceExecNode delta_maintenance = 65;
     DeltaOptimizeRewriteExecNode delta_optimize_rewrite = 66;
   }
+  // Only leaf file scan nodes carry this supplement. DataFusion's base scan
+  // encoding omits object ETags and versions. Older workers ignore this field,
+  // so identity preservation requires workers using the same codec revision.
+  optional FileScanIdentity file_scan_identity = 67;
+}
+
+message FileScanIdentity {
+  // Positions must match the base scan's groups and files exactly.
+  repeated FileGroupIdentity groups = 1;
+}
+
+message FileGroupIdentity {
+  repeated FileObjectIdentity files = 1;
+}
+
+message FileObjectIdentity {
+  string location = 1;
+  // Preserve absence separately from an explicitly empty value.
+  optional string e_tag = 2;
+  optional string version = 3;
 }
 
 message InputFileMetadataExecNode {

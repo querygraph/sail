@@ -61,7 +61,7 @@ use datafusion::physical_plan::work_table::WorkTableExec;
 use datafusion::physical_plan::{ExecutionPlan, PlanProperties};
 use datafusion_proto::generated::datafusion_common as gen_datafusion_common;
 use datafusion_proto::physical_plan::from_proto::{
-    parse_physical_sort_exprs, parse_protobuf_file_scan_config, parse_protobuf_partitioning,
+    parse_physical_sort_exprs, parse_protobuf_partitioning,
 };
 use datafusion_proto::physical_plan::to_proto::{
     serialize_file_scan_config, serialize_partitioning, serialize_physical_sort_exprs,
@@ -355,6 +355,10 @@ use crate::proto::encode::{
 #[cfg(test)]
 use crate::proto::encode::{try_encode_physical_expr, try_encode_physical_plan};
 
+mod file_scan_identity;
+
+use file_scan_identity::{encode_file_scan_identity, parse_file_scan_config_with_identity};
+
 pub struct RemoteExecutionCodec;
 
 impl Debug for RemoteExecutionCodec {
@@ -373,11 +377,28 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let node = ExtendedPhysicalPlanNode::decode(buf)
             .map_err(|e| plan_datafusion_err!("failed to decode plan: {e}"))?;
-        let ExtendedPhysicalPlanNode { node_kind } = node;
+        let ExtendedPhysicalPlanNode {
+            node_kind,
+            file_scan_identity,
+        } = node;
         let node_kind = match node_kind {
             Some(x) => x,
             None => return plan_err!("no physical plan node found"),
         };
+        if file_scan_identity.is_some()
+            && !matches!(
+                &node_kind,
+                NodeKind::NdJson(_)
+                    | NodeKind::Csv(_)
+                    | NodeKind::Parquet(_)
+                    | NodeKind::Arrow(_)
+                    | NodeKind::Text(_)
+                    | NodeKind::BinarySource(_)
+                    | NodeKind::Avro(_)
+            )
+        {
+            return plan_err!("File scan identity requires a leaf file scan node");
+        }
         match node_kind {
             NodeKind::Range(r#gen::RangeExecNode {
                 start,
@@ -632,11 +653,12 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                     self.try_decode_file_compression_type(file_compression_type)?;
                 let base_config = try_decode_message(&base_config)?;
                 let table_schema = FileScanConfig::parse_table_schema_from_proto(&base_config)?;
-                let source = parse_protobuf_file_scan_config(
+                let source = parse_file_scan_config_with_identity(
                     &base_config,
                     &PhysicalPlanDecodeContext::new(ctx, self),
                     proto_converter,
                     Arc::new(JsonSource::new(table_schema)),
+                    file_scan_identity.as_ref(),
                 )?;
                 let source = FileScanConfigBuilder::from(source)
                     .with_file_compression_type(file_compression_type)
@@ -653,11 +675,12 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 let csv_options: CsvOptions = (&options).try_into()?;
                 let file_compression_type: FileCompressionType = csv_options.compression.into();
                 let source = CsvSource::new(table_schema).with_csv_options(csv_options);
-                let source = parse_protobuf_file_scan_config(
+                let source = parse_file_scan_config_with_identity(
                     &base_config,
                     &PhysicalPlanDecodeContext::new(ctx, self),
                     proto_converter,
                     Arc::new(source),
+                    file_scan_identity.as_ref(),
                 )?;
                 let source = FileScanConfigBuilder::from(source)
                     .with_file_compression_type(file_compression_type)
@@ -731,11 +754,12 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 if let Some(predicate) = predicate {
                     source = source.with_predicate(predicate);
                 }
-                let source = parse_protobuf_file_scan_config(
+                let source = parse_file_scan_config_with_identity(
                     &base_config,
                     &PhysicalPlanDecodeContext::new(ctx, self),
                     proto_converter,
                     Arc::new(source),
+                    file_scan_identity.as_ref(),
                 )?;
                 let struct_field_matching =
                     Self::try_decode_struct_field_matching(struct_field_matching)?;
@@ -772,11 +796,12 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             NodeKind::Arrow(r#gen::ArrowExecNode { base_config }) => {
                 let base_config = try_decode_message(&base_config)?;
                 let table_schema = FileScanConfig::parse_table_schema_from_proto(&base_config)?;
-                let source = parse_protobuf_file_scan_config(
+                let source = parse_file_scan_config_with_identity(
                     &base_config,
                     &PhysicalPlanDecodeContext::new(ctx, self),
                     proto_converter,
                     Arc::new(ArrowSource::new_file_source(table_schema)),
+                    file_scan_identity.as_ref(),
                 )?;
                 Ok(Arc::new(DataSourceExec::new(Arc::new(source))))
             }
@@ -800,11 +825,12 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 };
                 let base_config = try_decode_message(&base_config)?;
                 let table_schema = FileScanConfig::parse_table_schema_from_proto(&base_config)?;
-                let source = parse_protobuf_file_scan_config(
+                let source = parse_file_scan_config_with_identity(
                     &base_config,
                     &PhysicalPlanDecodeContext::new(ctx, self),
                     proto_converter,
                     Arc::new(TextSource::new(table_schema, whole_text, line_sep)),
+                    file_scan_identity.as_ref(),
                 )?;
                 let source = FileScanConfigBuilder::from(source)
                     .with_file_compression_type(file_compression_type)
@@ -814,11 +840,12 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             NodeKind::BinarySource(r#gen::BinarySourceExecNode { base_config }) => {
                 let base_config = try_decode_message(&base_config)?;
                 let table_schema = FileScanConfig::parse_table_schema_from_proto(&base_config)?;
-                let source = parse_protobuf_file_scan_config(
+                let source = parse_file_scan_config_with_identity(
                     &base_config,
                     &PhysicalPlanDecodeContext::new(ctx, self),
                     proto_converter,
                     Arc::new(BinarySource::new(table_schema)),
+                    file_scan_identity.as_ref(),
                 )?;
                 let source = FileScanConfigBuilder::from(source).build();
                 Ok(Arc::new(DataSourceExec::new(Arc::new(source))))
@@ -826,11 +853,12 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             NodeKind::Avro(r#gen::AvroExecNode { base_config }) => {
                 let base_config = try_decode_message(&base_config)?;
                 let table_schema = FileScanConfig::parse_table_schema_from_proto(&base_config)?;
-                let source = parse_protobuf_file_scan_config(
+                let source = parse_file_scan_config_with_identity(
                     &base_config,
                     &PhysicalPlanDecodeContext::new(ctx, self),
                     proto_converter,
                     Arc::new(AvroSource::new(table_schema)),
+                    file_scan_identity.as_ref(),
                 )?;
                 Ok(Arc::new(DataSourceExec::new(Arc::new(source))))
             }
@@ -2199,6 +2227,7 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
         buf: &mut Vec<u8>,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<()> {
+        let mut file_scan_identity = None;
         let node_kind = if let Some(range) = node.downcast_ref::<RangeExec>() {
             let schema = try_encode_schema(range.original_schema().as_ref())?;
             let projection = self.try_encode_projection(range.projection())?;
@@ -2469,6 +2498,11 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 };
             if let Some(file_scan) = source.downcast_ref::<FileScanConfig>() {
                 let file_source = file_scan.file_source();
+                // The metadata wrapper recursively encodes its inner scan, which
+                // carries identity once; the outer wrapper must not duplicate it.
+                if !file_source.is::<InputFileMetadataSource>() {
+                    file_scan_identity = Some(encode_file_scan_identity(file_scan));
+                }
                 if let Some(metadata_source) = file_source.downcast_ref::<InputFileMetadataSource>()
                 {
                     let mut source_config = file_scan.clone();
@@ -3463,6 +3497,7 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
         };
         let node = ExtendedPhysicalPlanNode {
             node_kind: Some(node_kind),
+            file_scan_identity,
         };
         node.encode(buf)
             .map_err(|e| plan_datafusion_err!("failed to encode plan: {e}"))
@@ -7106,6 +7141,7 @@ mod tests {
                 row_level_mode: None,
                 write_context_json: String::new(),
             })),
+            file_scan_identity: None,
         };
 
         let converter = RemotePhysicalProtoConverter::default();
@@ -9213,3 +9249,6 @@ mod ansi_string_cast_tests;
 
 #[cfg(test)]
 mod time_precision_cast_tests;
+
+#[cfg(test)]
+mod file_scan_identity_tests;
