@@ -952,7 +952,11 @@ impl PlanResolver<'_> {
                             .schema()
                             .fields()
                             .iter()
-                            .filter(|f| f.name().eq_ignore_ascii_case(name))
+                            .filter(|f| {
+                                f.name() == name
+                                    || (!self.config.case_sensitive
+                                        && f.name().eq_ignore_ascii_case(name))
+                            })
                             .map(|f| {
                                 super::write_schema::validate_nested_fields(
                                     f.data_type(),

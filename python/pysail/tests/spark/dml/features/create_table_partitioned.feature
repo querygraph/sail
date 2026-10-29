@@ -150,6 +150,10 @@ Feature: CREATE TABLE with PARTITIONED BY clause
       CREATE TABLE typed_partition_case(id BIGINT, payload STRING)
       USING parquet PARTITIONED BY (ID BIGINT)
       """
+    Given statement
+      """
+      INSERT INTO typed_partition_case (id, payload, ID) VALUES (1, 'a', 2)
+      """
     When query
       """
       SELECT * FROM typed_partition_case
@@ -161,3 +165,39 @@ Feature: CREATE TABLE with PARTITIONED BY clause
        |-- payload: string (nullable = true)
        |-- ID: long (nullable = true)
       """
+    When query
+      """
+      SELECT id AS original, ID AS part FROM typed_partition_case
+      """
+    Then query result
+      | original | part |
+      | 1        | 2    |
+
+  Scenario: By-name writes retain case-insensitive matching when configured
+    Given final statement
+      """
+      DROP TABLE IF EXISTS case_insensitive_write
+      """
+    Given final statement
+      """
+      RESET spark.sql.caseSensitive
+      """
+    Given statement
+      """
+      SET spark.sql.caseSensitive = false
+      """
+    Given statement
+      """
+      CREATE TABLE case_insensitive_write(id BIGINT) USING parquet
+      """
+    Given statement
+      """
+      INSERT INTO case_insensitive_write BY NAME SELECT CAST(7 AS BIGINT) AS ID
+      """
+    When query
+      """
+      SELECT * FROM case_insensitive_write
+      """
+    Then query result
+      | id |
+      | 7  |
