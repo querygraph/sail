@@ -59,6 +59,8 @@ pub(super) struct Flow {
     pub target: Name,
     pub query: spec::QueryPlan,
     pub sql_conf: HashMap<String, String>,
+    pub catalog: String,
+    pub database: String,
 }
 
 #[derive(Clone)]
@@ -188,6 +190,8 @@ impl PipelineGraph {
             target,
             query,
             sql_conf,
+            catalog: self.definition.catalog.clone(),
+            database: self.definition.database.clone(),
         });
         Ok(name)
     }

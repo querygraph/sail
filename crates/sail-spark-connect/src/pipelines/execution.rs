@@ -74,6 +74,7 @@ pub(super) async fn execute(
             graph,
             resolved: &resolved,
             reads: Mutex::default(),
+            flow,
         };
         let resolver = PlanResolver::new(ctx, config.clone()).with_relation_scope(&scope);
         if output.kind == OutputType::TemporaryView {

@@ -12,7 +12,7 @@ use sail_plan::error::{PlanError, PlanResult};
 use sail_plan::resolver::PlanResolver;
 use sail_plan::resolver::scope::RelationScope;
 
-use super::graph::{GraphDefinition, Name, analysis, quoted};
+use super::graph::{Flow, GraphDefinition, Name, analysis, quoted};
 use crate::error::SparkResult;
 use crate::session::SparkSession;
 use crate::spark::connect::OutputType;
@@ -23,14 +23,17 @@ pub(super) struct GraphScope<'a> {
     pub graph: &'a GraphDefinition,
     pub resolved: &'a BTreeMap<Name, LogicalPlan>,
     pub reads: Mutex<BTreeSet<Name>>,
+    pub flow: &'a Flow,
 }
 
 impl RelationScope for GraphScope<'_> {
     fn resolve(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>> {
-        let name = self
-            .graph
-            .resolve_name(name)
-            .map_err(|e| PlanError::analysis(e.to_string()))?;
+        let raw: Name = name.iter().map(|x| x.to_ascii_lowercase()).collect();
+        let name = if self.graph.outputs.iter().any(|x| x.name == raw) {
+            raw
+        } else {
+            self.qualify(&raw)?
+        };
         if self.graph.outputs.iter().any(|x| x.name == name) {
             self.reads
                 .lock()
@@ -43,6 +46,26 @@ impl RelationScope for GraphScope<'_> {
                 .ok_or(PlanError::UnresolvedRelation(name))
         } else {
             Ok(None)
+        }
+    }
+
+    fn qualify(&self, name: &[String]) -> PlanResult<Name> {
+        match name {
+            [table] if !self.flow.database.is_empty() => Ok(vec![
+                self.flow.catalog.clone(),
+                self.flow.database.clone(),
+                table.clone(),
+            ]),
+            [database, table] => Ok(vec![
+                self.flow.catalog.clone(),
+                database.clone(),
+                table.clone(),
+            ]),
+            [_, _, _] => Ok(name.to_vec()),
+            _ => Err(PlanError::analysis(format!(
+                "cannot qualify pipeline relation {}",
+                quoted(name)
+            ))),
         }
     }
 }
@@ -67,20 +90,23 @@ pub(super) async fn analyze(
             if resolved.contains_key(&output.name) {
                 continue;
             }
-            let scope = GraphScope {
-                graph,
-                resolved: &resolved,
-                reads: Mutex::default(),
-            };
+            let mut inputs = BTreeSet::new();
             let mut plans = vec![];
             let mut pending = false;
             for flow in graph.flows.iter().filter(|x| x.target == output.name) {
+                let scope = GraphScope {
+                    graph,
+                    resolved: &resolved,
+                    reads: Mutex::default(),
+                    flow,
+                };
                 let config = spark.plan_config_with_overrides(flow.sql_conf.clone())?;
                 let resolver = PlanResolver::new(ctx, config).with_relation_scope(&scope);
-                match resolver
+                let result = resolver
                     .resolve_named_plan(spec::Plan::Query(flow.query.clone()))
-                    .await
-                {
+                    .await;
+                inputs.extend(scope.reads.into_inner()?);
+                match result {
                     Ok(plan) => {
                         let plan = if let Some(fields) = plan.fields {
                             rename_logical_plan(plan.plan, &fields)?
@@ -96,7 +122,6 @@ pub(super) async fn analyze(
                     Err(error) => return Err(error.into()),
                 }
             }
-            let inputs = scope.reads.into_inner()?;
             dependencies.insert(output.name.clone(), inputs);
             if pending {
                 continue;

@@ -116,6 +116,10 @@ impl PlanResolver<'_> {
                 Ok(plan)
             };
         }
+        let reference = match self.relation_scope {
+            Some(scope) => scope.qualify(&reference)?,
+            None => reference,
+        };
         let manager = self.ctx.extension::<CatalogManager>()?;
         let data_source_registry = self.ctx.extension::<DataSourceRegistry>()?;
         let (status, catalog_reference, lake_relation) =
