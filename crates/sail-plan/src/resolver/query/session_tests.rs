@@ -345,3 +345,6 @@ mod generated_analyzer;
 
 #[path = "view_publication_tests.rs"]
 mod view_publication;
+
+#[path = "read_case_tests.rs"]
+mod read_case;

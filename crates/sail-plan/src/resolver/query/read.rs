@@ -245,7 +245,7 @@ impl PlanResolver<'_> {
                             items: temporal_options,
                         },
                     ],
-                    read_case_sensitive: self.config.case_sensitive,
+                    read_case_sensitive: self.source_read_case_sensitive(),
                 };
                 let table_source = match lake_relation {
                     Some((relation_provider, relation)) => {
@@ -362,6 +362,7 @@ impl PlanResolver<'_> {
                     let mut resolver = PlanResolver::new(self.ctx, self.config.clone())
                         .with_relation_scope(&scope);
                     resolver.query_session = self.query_session;
+                    resolver.source_read_case_sensitive = self.source_read_case_sensitive;
                     resolver.resolve_query_plan(query_plan, state).await?
                 }
                 None => self.resolve_query_plan(query_plan, state).await?,
@@ -628,7 +629,7 @@ impl PlanResolver<'_> {
             options: vec![OptionLayer::OptionList {
                 items: options.into_iter().collect(),
             }],
-            read_case_sensitive: self.config.case_sensitive,
+            read_case_sensitive: self.source_read_case_sensitive(),
         };
         let registry = self.ctx.extension::<DataSourceRegistry>()?;
         let table_source = registry

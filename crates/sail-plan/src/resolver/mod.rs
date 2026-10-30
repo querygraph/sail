@@ -28,6 +28,7 @@ mod time_tests;
 pub struct PlanResolver<'a> {
     ctx: &'a SessionContext,
     config: Arc<PlanConfig>,
+    source_read_case_sensitive: Option<bool>,
     relation_scope: Option<&'a dyn scope::RelationScope>,
     query_session: Option<session::QuerySession<'a>>,
 }
@@ -37,9 +38,24 @@ impl<'a> PlanResolver<'a> {
         Self {
             ctx,
             config,
+            source_read_case_sensitive: None,
             relation_scope: None,
             query_session: None,
         }
+    }
+
+    /// Override case matching passed to query source factories independently of
+    /// semantic column resolution. Ordinary callers inherit `PlanConfig`.
+    /// The caller chooses the metadata phase; this does not mutate the Session,
+    /// change source options or override write/row-operation schema matching.
+    pub fn with_source_read_case_sensitive(mut self, case_sensitive: bool) -> Self {
+        self.source_read_case_sensitive = Some(case_sensitive);
+        self
+    }
+
+    fn source_read_case_sensitive(&self) -> bool {
+        self.source_read_case_sensitive
+            .unwrap_or(self.config.case_sensitive)
     }
 
     /// Resolve request-local relations without registering them in a catalog.
