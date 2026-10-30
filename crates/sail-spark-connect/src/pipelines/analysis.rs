@@ -214,3 +214,7 @@ pub(super) async fn analyze(
         relations: resolved,
     })
 }
+
+#[cfg(test)]
+#[path = "analysis_artifact_tests.rs"]
+mod artifact_tests;
