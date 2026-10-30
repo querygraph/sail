@@ -8,6 +8,7 @@ mod requested_schema;
 mod schema;
 mod source;
 mod timezone;
+mod write_options;
 
 pub use factory::{OrcDataSource, OrcFormatFactory, OrcWriteFormat};
 pub use listing_options::{OrcListingSessionDefaults, OrcReadSessionModes};
@@ -19,6 +20,7 @@ pub use requested_schema::OrcRequestedSchemaAdapter;
 pub use schema::infer_schema as infer_orc_schema;
 pub use source::OrcSource;
 pub use timezone::OrcJavaTimeZoneConfig;
+pub use write_options::OrcWriteCompression;
 
 #[cfg(test)]
 mod fixture_tests;
