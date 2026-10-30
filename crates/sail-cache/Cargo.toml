@@ -19,3 +19,8 @@ datafusion-common = { workspace = true }
 chrono = { workspace = true }
 log = { workspace = true }
 moka = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }

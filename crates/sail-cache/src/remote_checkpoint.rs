@@ -59,6 +59,8 @@ impl RemoteCheckpointRegistry {
         }
     }
 
+    /// Resolve a storage path while admission is open. This is not a lease on
+    /// storage effects; callers must separately own and drain those effects.
     pub fn resolve_relation(
         &self,
         runtime_env: &RuntimeEnv,
@@ -75,15 +77,17 @@ impl RemoteCheckpointRegistry {
     }
 
     pub fn insert(&self, descriptor: RemoteCheckpointDescriptor) -> Result<()> {
+        let relation_id = descriptor.relation_id.clone();
+        let mut relations = self.relations.write().map_err(|error| {
+            internal_datafusion_err!("checkpoint registry is poisoned: {error}")
+        })?;
+        // Sealing takes this same lock, so an admitted publication either
+        // finishes before the seal or observes the closed registry.
         if self.closed.load(Ordering::Acquire) {
             return Err(DataFusionError::Plan(
                 "checkpoint session is stopping".to_string(),
             ));
         }
-        let relation_id = descriptor.relation_id.clone();
-        let mut relations = self.relations.write().map_err(|error| {
-            internal_datafusion_err!("checkpoint registry is poisoned: {error}")
-        })?;
         match relations.entry(relation_id.clone()) {
             Entry::Occupied(_) => {
                 return Err(internal_datafusion_err!(
@@ -101,6 +105,9 @@ impl RemoteCheckpointRegistry {
         let relations = self.relations.read().map_err(|error| {
             internal_datafusion_err!("checkpoint registry is poisoned: {error}")
         })?;
+        if self.closed.load(Ordering::Acquire) {
+            return Ok(None);
+        }
         Ok(relations.get(relation_id).cloned())
     }
 
@@ -115,29 +122,19 @@ impl RemoteCheckpointRegistry {
     }
 
     pub async fn cleanup_session(&self, runtime_env: &RuntimeEnv) -> Result<()> {
-        self.closed.store(true, Ordering::Release);
-        let storage_cleanup = if self.path.is_some() {
-            match self.resolve_root(runtime_env) {
-                Ok(root) => {
-                    delete_object_store_prefix_objects(
-                        root.store().as_ref(),
-                        &self.session_prefix(root.prefix()),
-                    )
-                    .await
-                }
-                Err(error) => Err(error),
-            }
-        } else {
-            Ok(())
-        };
-        let registry_cleanup = self.clear();
-        match (storage_cleanup, registry_cleanup) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(storage_error), Err(registry_error)) => Err(internal_datafusion_err!(
-                "checkpoint storage cleanup failed: {storage_error}; registry cleanup failed: {registry_error}"
-            )),
+        self.seal()?;
+        if self.path.is_some() {
+            let root = self.resolve_root(runtime_env)?;
+            delete_object_store_prefix_objects(
+                root.store().as_ref(),
+                &self.session_prefix(root.prefix()),
+            )
+            .await?;
         }
+        // Retain the closed registry's in-memory descriptors if storage cleanup
+        // fails or is canceled. A later explicit cleanup can retry the prefix.
+        // This does not fence writes already admitted to the object store.
+        self.clear()
     }
 
     fn resolve_root(&self, runtime_env: &RuntimeEnv) -> Result<ResolvedObjectStorePath> {
@@ -155,10 +152,21 @@ impl RemoteCheckpointRegistry {
     }
 
     fn clear(&self) -> Result<()> {
-        let mut relations = self.relations.write().map_err(|error| {
+        let removed = {
+            let mut relations = self.relations.write().map_err(|error| {
+                internal_datafusion_err!("checkpoint registry is poisoned: {error}")
+            })?;
+            std::mem::take(&mut *relations)
+        };
+        drop(removed);
+        Ok(())
+    }
+
+    fn seal(&self) -> Result<()> {
+        let _relations = self.relations.write().map_err(|error| {
             internal_datafusion_err!("checkpoint registry is poisoned: {error}")
         })?;
-        relations.clear();
+        self.closed.store(true, Ordering::Release);
         Ok(())
     }
 }
@@ -168,6 +176,10 @@ impl SessionExtension for RemoteCheckpointRegistry {
         "remote checkpoint registry"
     }
 }
+
+#[cfg(test)]
+#[path = "remote_checkpoint_tests.rs"]
+mod cleanup_tests;
 
 #[cfg(test)]
 #[expect(clippy::expect_used, clippy::unwrap_used)]

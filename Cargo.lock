@@ -7061,9 +7061,11 @@ dependencies = [
 name = "sail-cache"
 version = "0.7.2"
 dependencies = [
+ "async-trait",
  "chrono",
  "datafusion",
  "datafusion-common",
+ "futures",
  "log",
  "moka",
  "object_store",
@@ -7071,6 +7073,7 @@ dependencies = [
  "sail-common-datafusion",
  "sail-object-store",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
