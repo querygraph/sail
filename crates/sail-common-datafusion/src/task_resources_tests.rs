@@ -124,6 +124,77 @@ async fn canceling_one_scope_preserves_sibling_admission() -> TestResult {
 }
 
 #[tokio::test]
+async fn sealing_rejects_admission_without_canceling_admitted_work() -> TestResult {
+    let scope = TaskResourceScope::new(Handle::current());
+    let (release, pending) = oneshot::channel();
+    let (observed, observation) = oneshot::channel();
+    scope.spawn(|canceled| async move {
+        pending
+            .await
+            .map_err(|error| DataFusionError::External(Box::new(error)))?;
+        let _ = observed.send(*canceled.borrow());
+        Ok(())
+    })?;
+    scope.seal()?;
+    assert!(scope.spawn(|_| async { Ok(()) }).is_err());
+    assert!(scope.drain().now_or_never().is_none());
+    release.send(()).map_err(|_| "supervisor was lost")?;
+    assert!(!observation.await?);
+    let report = scope.drain().await?;
+    assert!(report.is_clean());
+    assert_eq!(report.registered, 1);
+    Ok(())
+}
+
+struct ReentrantCancellation {
+    scope: Arc<TaskResourceScope>,
+    calls: AtomicUsize,
+    lock_held: AtomicBool,
+    rejected: AtomicBool,
+}
+
+impl futures::task::ArcWake for ReentrantCancellation {
+    fn wake_by_ref(arc_self: &Arc<Self>) {
+        arc_self.calls.fetch_add(1, Ordering::SeqCst);
+        // Detect the old deadlock without hanging the test process. Only the
+        // successful path invokes the public API reentrantly.
+        if arc_self.scope.state.try_lock().is_err() {
+            arc_self.lock_held.store(true, Ordering::SeqCst);
+            return;
+        }
+        arc_self.rejected.store(
+            arc_self.scope.spawn(|_| async { Ok(()) }).is_err(),
+            Ordering::SeqCst,
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancellation_wakes_reentrant_listeners_after_sealing_and_unlocking() -> TestResult {
+    let scope = Arc::new(TaskResourceScope::new(Handle::current()));
+    let watcher = Arc::new(ReentrantCancellation {
+        scope: scope.clone(),
+        calls: AtomicUsize::new(0),
+        lock_held: AtomicBool::new(false),
+        rejected: AtomicBool::new(false),
+    });
+    let waker = futures::task::waker(watcher.clone());
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut receiver = scope.cancellation.subscribe();
+    for _ in 0..2 {
+        let mut changed = Box::pin(receiver.changed());
+        assert!(changed.as_mut().poll(&mut context).is_pending());
+        scope.cancel()?;
+        assert!(changed.as_mut().poll(&mut context).is_ready());
+    }
+    assert_eq!(watcher.calls.load(Ordering::SeqCst), 2);
+    assert!(!watcher.lock_held.load(Ordering::SeqCst));
+    assert!(watcher.rejected.load(Ordering::SeqCst));
+    assert!(scope.drain().await?.is_clean());
+    Ok(())
+}
+
+#[tokio::test]
 async fn panicking_supervisor_remains_a_failed_join() -> TestResult {
     let scope = TaskResourceScope::new(Handle::current());
     scope.spawn(|_| {

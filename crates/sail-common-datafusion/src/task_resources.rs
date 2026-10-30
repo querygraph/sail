@@ -124,6 +124,12 @@ impl TaskResourceScope {
         self.begin_drain(true).map(|_| ())
     }
 
+    /// Synchronously seal admission without canceling successful supervisors.
+    /// The owner must still await `drain` to qualify their completion.
+    pub fn seal(&self) -> Result<()> {
+        self.begin_drain(false).map(|_| ())
+    }
+
     /// Seal admission and join every supervisor. Multiple callers share one
     /// report. Dropping a pending caller does not drop the owned join handles:
     /// the shared drain remains stored in the scope until another caller resumes.
@@ -132,13 +138,20 @@ impl TaskResourceScope {
     }
 
     fn begin_drain(&self, cancel: bool) -> Result<Drain> {
+        let drain = self.sealed_drain()?;
+        // Waking a listener can run arbitrary code, including reentering this
+        // scope. Admission is sealed before notification, outside our mutex.
+        if cancel {
+            self.cancellation.send_replace(true);
+        }
+        Ok(drain)
+    }
+
+    fn sealed_drain(&self) -> Result<Drain> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| internal_datafusion_err!("task resource scope lock poisoned"))?;
-        if cancel {
-            self.cancellation.send_replace(true);
-        }
         let resources = match &mut *state {
             State::Closing(drain) => return Ok(drain.clone()),
             State::Open { resources, .. } => std::mem::take(resources),
