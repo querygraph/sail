@@ -49,6 +49,17 @@ impl ScopedSession {
         &self.resources
     }
 
+    /// Run the captured native analyzer without logical optimization.
+    /// This preserves analyzer-only callers' phase boundary; it does not execute
+    /// statements or install admission/routing for external work in custom rules.
+    pub fn analyze(&self, plan: LogicalPlan) -> Result<LogicalPlan> {
+        self.state.analyzer().execute_and_check(
+            plan,
+            self.state.config_options().as_ref(),
+            |_, _| {},
+        )
+    }
+
     /// Supply an already-qualified registry; this helper does not define its
     /// provider ownership, admission bounds or effect-outcome policy.
     pub fn with_object_store_registry(
@@ -131,3 +142,7 @@ impl Session for ScopedSession {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "scoped/analyzer_tests.rs"]
+mod analyzer_tests;
