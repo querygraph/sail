@@ -51,6 +51,7 @@ use self::timestamp::{new_timestamp_decoder, new_timestamp_instant_decoder};
 use self::union::UnionArrayDecoder;
 
 mod decimal;
+mod length;
 mod list;
 mod map;
 mod string;

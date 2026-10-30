@@ -83,7 +83,7 @@ pub enum OrcError {
     },
 
     #[snafu(display(
-        "String/Binary data size ({} bytes) exceeds maximum offset size ({}) \
+        "Array offset total ({}) exceeds maximum offset size ({}) \
          with current batch size {}. Please reduce the batch size to avoid offset overflow.",
         total_length,
         max_size,

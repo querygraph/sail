@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::io::Read;
+use std::io::{self, Read};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -23,18 +23,19 @@ use arrow::array::{ArrayRef, DictionaryArray, GenericByteArray, StringArray};
 use arrow::buffer::{Buffer, NullBuffer, OffsetBuffer};
 use arrow::compute::kernels::cast;
 use arrow::datatypes::{ByteArrayType, DataType, GenericBinaryType, GenericStringType};
-use snafu::{ensure, ResultExt};
+use snafu::ResultExt;
 
 use crate::array_decoder::derive_present_vec;
 use crate::column::Column;
 use crate::compression::Decompressor;
 use crate::encoding::integer::get_unsigned_int_decoder;
 use crate::encoding::PrimitiveValueDecoder;
-use crate::error::{ArrowSnafu, IoSnafu, OffsetOverflowSnafu, Result};
+use crate::error::{ArrowSnafu, IoSnafu, Result};
 use crate::proto::column_encoding::Kind as ColumnEncodingKind;
 use crate::proto::stream::Kind;
 use crate::stripe::Stripe;
 
+use super::length::{check_length_buffer_size, checked_total_length, new_length_buffer};
 use super::{ArrayBatchDecoder, Int64ArrayDecoder, PresentDecoder};
 
 // TODO: reduce duplication with string below
@@ -113,26 +114,23 @@ impl<T: ByteArrayType> GenericByteArrayDecoder<T> {
         batch_size: usize,
         parent_present: Option<&NullBuffer>,
     ) -> Result<GenericByteArray<T>> {
+        check_length_buffer_size::<T::Offset>(batch_size)?;
         let present =
             derive_present_vec(&mut self.present, parent_present, batch_size).transpose()?;
 
-        let mut lengths = vec![0; batch_size];
+        let mut lengths = new_length_buffer::<T::Offset>(batch_size)?;
         if let Some(present) = &present {
             self.lengths.decode_spaced(&mut lengths, present)?;
         } else {
             self.lengths.decode(&mut lengths)?;
         }
-        let total_length: i64 = lengths.iter().sum();
-        ensure!(
-            total_length <= i32::MAX as i64,
-            OffsetOverflowSnafu {
-                total_length,
-                max_size: i32::MAX,
-                batch_size,
-            }
-        );
+        let total_length = checked_total_length(&lengths)?;
         // Fetch all data bytes at once
-        let mut bytes = Vec::with_capacity(total_length as usize);
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(total_length)
+            .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))
+            .context(IoSnafu)?;
         self.bytes
             .by_ref()
             .take(total_length as u64)
@@ -225,5 +223,85 @@ impl ArrayBatchDecoder for DictionaryStringArrayDecoder {
 
     fn skip_values(&mut self, n: usize, parent_present: Option<&NullBuffer>) -> Result<()> {
         self.indexes.skip_values(n, parent_present)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use arrow::array::BinaryArray;
+    use bytes::Bytes;
+
+    use super::*;
+    use crate::array_decoder::length::tests::{
+        assert_error, malformed_cases, unsigned_literals, Unread,
+    };
+    use crate::encoding::integer::RleVersion;
+
+    fn malformed<T: ByteArrayType>() {
+        let payload = Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]);
+        for case in malformed_cases() {
+            let mut decoder = GenericByteArrayDecoder::<T>::new(
+                Box::new(Decompressor::new(payload.clone(), None, vec![])),
+                case.decoder(),
+                None,
+            );
+            assert_error(
+                decoder.next_byte_batch(case.count, None).unwrap_err(),
+                case.expected,
+            );
+            // The actual payload decompressor remains at its original position.
+            let mut remaining = vec![];
+            decoder.bytes.read_to_end(&mut remaining).unwrap();
+            assert_eq!(remaining.as_slice(), payload.as_ref());
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut decoder = GenericByteArrayDecoder::<T>::new(
+            Box::new(Decompressor::empty()),
+            Box::new(Unread(calls.clone())),
+            None,
+        );
+        assert!(decoder.next_byte_batch(usize::MAX, None).is_err());
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn malformed_string_lengths_leave_payload_unread() {
+        malformed::<GenericStringType<i32>>();
+    }
+
+    #[test]
+    fn malformed_binary_lengths_leave_payload_unread() {
+        malformed::<GenericBinaryType<i32>>();
+    }
+
+    fn valid<T: ByteArrayType>() -> GenericByteArray<T> {
+        let mut decoder = GenericByteArrayDecoder::<T>::new(
+            Box::new(Decompressor::new(Bytes::from_static(b"abc"), None, vec![])),
+            get_unsigned_int_decoder(Cursor::new(unsigned_literals(&[2, 0, 1])), RleVersion::V1),
+            None,
+        );
+        decoder
+            .next_byte_batch(4, Some(&NullBuffer::from(vec![true, false, true, true])))
+            .unwrap()
+    }
+
+    #[test]
+    fn string_and_binary_lengths_preserve_null_and_empty_values() {
+        assert_eq!(
+            valid::<GenericStringType<i32>>(),
+            StringArray::from(vec![Some("ab"), None, Some(""), Some("c")])
+        );
+        assert_eq!(
+            valid::<GenericBinaryType<i32>>(),
+            BinaryArray::from(vec![
+                Some(b"ab".as_slice()),
+                None,
+                Some(b"".as_slice()),
+                Some(b"c".as_slice())
+            ])
+        );
     }
 }
