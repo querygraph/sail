@@ -597,6 +597,20 @@ impl Walker<'_> {
             | N::Empty { .. } => Ok(()),
             N::Values(rows) => rows.iter().try_for_each(|row| self.exprs(row, cte_scope)),
             N::CommonInlineUserDefinedTableFunction(function) => {
+                // Without a declared return type the schema comes from the
+                // UDTF's `analyze`, which `resolve_python_udtf_plan` runs in
+                // Python during resolution (`query/udtf.rs`): an unowned
+                // helper, refused here until Python analysis has an owner.
+                // A declared return type resolves without it, so the
+                // arguments keep their classification.
+                if let spec::TableFunctionDefinition::PythonUdtf {
+                    return_type: None, ..
+                } = &function.function
+                {
+                    return Err(BindingError::UnsupportedRead(
+                        "dynamic inline table function",
+                    ));
+                }
                 self.exprs(&function.arguments, cte_scope)
             }
             // Constructs whose resolution executes a helper plan.

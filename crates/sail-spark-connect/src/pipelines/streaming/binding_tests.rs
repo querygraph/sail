@@ -664,3 +664,65 @@ fn binding_names_must_be_canonical_for_the_flow() -> TestResult {
     assert_eq!(reads.local, BTreeSet::from([name(&["c", "d", "events"])]));
     Ok(())
 }
+
+fn inline_table_function(return_type: Option<spec::DataType>) -> spec::QueryPlan {
+    spec::QueryPlan::new(spec::QueryNode::CommonInlineUserDefinedTableFunction(
+        spec::CommonInlineUserDefinedTableFunction {
+            function_name: "probe".into(),
+            deterministic: true,
+            arguments: vec![],
+            function: spec::TableFunctionDefinition::PythonUdtf {
+                return_type,
+                eval_type: spec::PySparkUdfType::Table,
+                command: vec![],
+                python_version: "3.12".into(),
+            },
+        },
+    ))
+}
+
+#[test]
+fn dynamic_inline_table_function_is_refused_before_resolution() {
+    let result = validate(inline_table_function(None), &[], &[]);
+    assert!(
+        matches!(result, Err(BindingError::UnsupportedRead(_))),
+        "dynamic schema invokes Python analyze during resolution: {result:?}"
+    );
+}
+
+#[test]
+fn static_inline_table_function_keeps_binding_classification() {
+    let result = validate(
+        inline_table_function(Some(spec::DataType::Struct {
+            fields: spec::Fields::default(),
+        })),
+        &[],
+        &[],
+    );
+    assert!(
+        result.is_ok(),
+        "static schema does not invoke dynamic analyze: {result:?}"
+    );
+}
+
+#[test]
+fn a_static_inline_table_function_still_classifies_reads_in_its_arguments() -> TestResult {
+    // The guard is only about dynamic schema analysis: with a declared
+    // return type the arguments are walked as before, so an unbound streaming
+    // read inside a scalar subquery argument is still refused by name.
+    let mut function = inline_table_function(Some(spec::DataType::Struct {
+        fields: spec::Fields::default(),
+    }));
+    let spec::QueryNode::CommonInlineUserDefinedTableFunction(udtf) = &mut function.node else {
+        return Err("fixture must remain an inline table function".into());
+    };
+    udtf.arguments = vec![spec::Expr::ScalarSubquery {
+        subquery: Box::new(read("nowhere", true)),
+    }];
+    let result = validate(function, &[], &[]);
+    assert!(
+        matches!(result, Err(BindingError::UnboundStreamingRead(_))),
+        "{result:?}"
+    );
+    Ok(())
+}
