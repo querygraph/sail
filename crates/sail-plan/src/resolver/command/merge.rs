@@ -206,10 +206,10 @@ impl PlanResolver<'_> {
 
         let registry = self.ctx.extension::<DataSourceRegistry>()?;
         let lake_source = registry.get_lake_source(&target_format)?;
-        let session_state = self.ctx.state();
+        let session = self.provider_session();
         Ok(lake_source
             .plan_row_level_operation(
-                &session_state,
+                session.as_session(),
                 RowLevelOperation::Merge(Box::new(MergeInfo {
                     target: Arc::new(target_plan),
                     source: Arc::new(source_plan),

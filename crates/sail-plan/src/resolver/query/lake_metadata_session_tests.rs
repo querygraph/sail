@@ -5,7 +5,7 @@ use sail_common_datafusion::lakesource::{LakeSource, LakeSourceMetadata};
 
 use super::*;
 
-struct CheckingLake {
+pub(super) struct CheckingLake {
     owner: Option<Arc<TaskResourceScope>>,
     calls: Arc<AtomicUsize>,
 }
@@ -24,14 +24,11 @@ impl DataSource for CheckingLake {
         datafusion_common::internal_err!("metadata test must not plan a writer")
     }
 }
-#[tonic::async_trait]
-impl LakeSource for CheckingLake {
-    async fn infer_metadata(
-        &self,
-        session: &dyn Session,
-        info: SourceInfo,
-    ) -> Result<LakeSourceMetadata> {
-        assert_eq!(info.paths, ["/input"]);
+impl CheckingLake {
+    pub(super) fn new(owner: Option<Arc<TaskResourceScope>>, calls: Arc<AtomicUsize>) -> Self {
+        Self { owner, calls }
+    }
+    pub(super) async fn metadata(&self, session: &dyn Session) -> Result<LakeSourceMetadata> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let store = session
             .runtime_env()
@@ -65,6 +62,18 @@ impl LakeSource for CheckingLake {
         })
     }
 }
+#[tonic::async_trait]
+impl LakeSource for CheckingLake {
+    async fn infer_metadata(
+        &self,
+        session: &dyn Session,
+        info: SourceInfo,
+    ) -> Result<LakeSourceMetadata> {
+        assert_eq!(info.paths, ["/input"]);
+        self.metadata(session).await
+    }
+}
+
 async fn metadata_case(scoped: bool, properties: bool, catalog: bool) -> TestResult {
     let fixture = Fixture::new().await?;
     let calls = Arc::new(AtomicUsize::new(0));

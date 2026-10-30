@@ -68,7 +68,7 @@ impl PlanResolver<'_> {
         let target_plan = Arc::new(self.resolve_row_level_table_plan(table, state).await?);
         let truncate = source
             .plan_row_level_operation(
-                &self.ctx.state(),
+                self.provider_session().as_session(),
                 RowLevelOperation::Truncate {
                     target_plan,
                     target: Box::new(target),

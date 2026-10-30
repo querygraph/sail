@@ -55,7 +55,7 @@ impl PlanResolver<'_> {
         registry
             .get_lake_source(&target_format)?
             .plan_row_level_operation(
-                &self.ctx.state(),
+                self.provider_session().as_session(),
                 RowLevelOperation::Delete(Box::new(delete_info)),
             )
             .await

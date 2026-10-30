@@ -240,7 +240,7 @@ impl PlanResolver<'_> {
         registry
             .get_lake_source(&target_format)?
             .plan_row_level_operation(
-                &self.ctx.state(),
+                self.provider_session().as_session(),
                 RowLevelOperation::Update(Box::new(UpdateInfo {
                     target_plan: Arc::new(target_plan),
                     target,
