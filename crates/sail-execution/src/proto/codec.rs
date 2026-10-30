@@ -115,6 +115,7 @@ use sail_data_source::formats::binary::source::BinarySource;
 use sail_data_source::formats::console::ConsoleSinkExec;
 use sail_data_source::formats::csv::CsvSource;
 use sail_data_source::formats::noop::NoopSinkExec;
+use sail_data_source::formats::orc::{OrcJavaTimeZoneConfig, OrcSource};
 use sail_data_source::formats::python::{
     InputPartition, PythonDataSourceExec, PythonDataSourceWriteCommitExec,
     PythonDataSourceWriteExec,
@@ -356,6 +357,7 @@ use crate::proto::encode::{
 use crate::proto::encode::{try_encode_physical_expr, try_encode_physical_plan};
 
 mod file_scan_identity;
+mod orc;
 
 use file_scan_identity::{encode_file_scan_identity, parse_file_scan_config_with_identity};
 
@@ -395,6 +397,7 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                     | NodeKind::Text(_)
                     | NodeKind::BinarySource(_)
                     | NodeKind::Avro(_)
+                    | NodeKind::Orc(_)
             )
         {
             return plan_err!("File scan identity requires a leaf file scan node");
@@ -861,6 +864,56 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                     file_scan_identity.as_ref(),
                 )?;
                 Ok(Arc::new(DataSourceExec::new(Arc::new(source))))
+            }
+            NodeKind::Orc(r#gen::OrcExecNode {
+                base_config,
+                options,
+                reader_timezone_json,
+                session_timezone,
+                read_case_sensitive,
+                output_partitioning,
+            }) => {
+                // ORC has no legacy wire form without object identity. Other
+                // file formats retain their existing absent-sidecar behavior.
+                let identity = file_scan_identity
+                    .as_ref()
+                    .ok_or_else(|| plan_datafusion_err!("ORC scan requires file identity"))?;
+                let options = options
+                    .as_ref()
+                    .ok_or_else(|| plan_datafusion_err!("ORC scan requires read options"))?;
+                let options = orc::decode_read_options(options)?;
+                let reader_timezone: OrcJavaTimeZoneConfig =
+                    self.try_decode_json(&reader_timezone_json, "ORC reader timezone")?;
+                let base_config = try_decode_message(&base_config)?;
+                let table_schema = FileScanConfig::parse_table_schema_from_proto(&base_config)?;
+                let source = OrcSource::try_new(
+                    table_schema,
+                    options,
+                    reader_timezone,
+                    session_timezone,
+                    read_case_sensitive,
+                    ctx.memory_pool().clone(),
+                )?;
+                let source = parse_file_scan_config_with_identity(
+                    &base_config,
+                    &PhysicalPlanDecodeContext::new(ctx, self),
+                    proto_converter,
+                    Arc::new(source),
+                    Some(identity),
+                )?;
+                let scan = DataSourceExec::new(Arc::new(source));
+                let scan = if output_partitioning.is_empty() {
+                    scan
+                } else {
+                    let partitioning = self.try_decode_partitioning(
+                        &output_partitioning,
+                        &scan.schema(),
+                        ctx,
+                        proto_converter,
+                    )?;
+                    scan.with_partitioning(partitioning)
+                };
+                Ok(Arc::new(scan))
             }
             NodeKind::WorkTable(r#gen::WorkTableExecNode { name, schema }) => {
                 let schema = try_decode_schema(&schema)?;
@@ -2625,6 +2678,27 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                         proto_converter,
                     )?)?;
                     NodeKind::Avro(r#gen::AvroExecNode { base_config })
+                } else if let Some(orc_source) = file_source.downcast_ref::<OrcSource>() {
+                    // The shared base protobuf omits outer compression. Reject
+                    // the unsupported driver configuration instead of decoding
+                    // it as a different, uncompressed scan on a worker.
+                    if file_scan.file_compression_type.is_compressed() {
+                        return plan_err!("ORC does not support outer file compression");
+                    }
+                    let base_config = try_encode_message(serialize_file_scan_config(
+                        file_scan,
+                        self,
+                        proto_converter,
+                    )?)?;
+                    NodeKind::Orc(r#gen::OrcExecNode {
+                        base_config,
+                        options: Some(orc::encode_read_options(orc_source.options())?),
+                        reader_timezone_json: self
+                            .try_encode_json(orc_source.reader_timezone(), "ORC reader timezone")?,
+                        session_timezone: orc_source.session_timezone().to_owned(),
+                        read_case_sensitive: orc_source.read_case_sensitive(),
+                        output_partitioning,
+                    })
                 } else {
                     return plan_err!("unsupported data source node: {data_source:?}");
                 }
@@ -9252,3 +9326,6 @@ mod time_precision_cast_tests;
 
 #[cfg(test)]
 mod file_scan_identity_tests;
+
+#[cfg(test)]
+mod orc_tests;

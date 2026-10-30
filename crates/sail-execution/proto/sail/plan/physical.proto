@@ -79,6 +79,7 @@ message ExtendedPhysicalPlanNode {
     InputFileMetadataExecNode input_file_metadata = 64;
     DeltaMaintenanceExecNode delta_maintenance = 65;
     DeltaOptimizeRewriteExecNode delta_optimize_rewrite = 66;
+    OrcExecNode orc = 68;
   }
   // Only leaf file scan nodes carry this supplement. DataFusion's base scan
   // encoding omits object ETags and versions. Older workers ignore this field,
@@ -796,6 +797,27 @@ message BinarySourceExecNode {
 
 message AvroExecNode {
   bytes base_config = 1;
+}
+
+message OrcExecNode {
+  bytes base_config = 1;
+  OrcReadOptions options = 2;
+  // Captured, versioned OrcJavaTimeZoneConfig; workers validate its profile
+  // identity instead of consulting their own local timezone.
+  string reader_timezone_json = 3;
+  string session_timezone = 4;
+  bool read_case_sensitive = 5;
+  bytes output_partitioning = 6;
+}
+
+message OrcReadOptions {
+  // All fields are required by the codec. Presence distinguishes an omitted
+  // setting from a real zero budget. These are configured values, not ceilings
+  // derived from the driver's memory pool; each worker derives its own limits.
+  optional uint64 max_encoded_metadata_bytes = 1;
+  optional uint64 max_decoded_metadata_bytes = 2;
+  optional uint64 max_decoded_stripe_footer_bytes = 3;
+  optional uint64 max_schema_depth = 4;
 }
 
 message WorkTableExecNode {
