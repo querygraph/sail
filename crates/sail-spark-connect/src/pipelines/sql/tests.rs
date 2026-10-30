@@ -182,7 +182,10 @@ async fn sql_configuration_is_captured_per_flow_and_reset_per_file() -> SparkRes
     Ok(())
 }
 
-fn resolution_context() -> Result<SessionContext, Box<dyn std::error::Error>> {
+/// A session carrying the extensions `PlanResolver` requires (catalog
+/// manager, Spark session, plan service), with Sail's function registry in
+/// place of DataFusion's defaults. Shared with the streaming lowering tests.
+pub(crate) fn resolution_context() -> Result<SessionContext, Box<dyn std::error::Error>> {
     pyo3::Python::initialize();
     let provider =
         MemoryCatalogProvider::new("test_catalog".into(), vec!["test_db"].try_into()?, None);

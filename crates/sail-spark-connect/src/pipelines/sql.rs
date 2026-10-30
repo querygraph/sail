@@ -378,4 +378,4 @@ fn with_view_columns(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

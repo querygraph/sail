@@ -776,6 +776,128 @@ async fn codex_lower_snapshot_distinguishes_declared_local_versions() -> TestRes
     Ok(())
 }
 
+/// A projection over `input` in the Spark spec, as the Connect decoder would
+/// hand it to the resolver.
+fn project(input: spec::QueryPlan, expressions: Vec<spec::Expr>) -> spec::QueryPlan {
+    spec::QueryPlan::new(spec::QueryNode::Project {
+        input: Some(Box::new(input)),
+        expressions,
+    })
+}
+
+fn attribute(name: &str) -> spec::Expr {
+    spec::Expr::UnresolvedAttribute {
+        name: spec::ObjectName::bare(name),
+        plan_id: None,
+        is_metadata_column: false,
+    }
+}
+
+/// An unresolved call of a Sail built-in by name, resolved by `PlanResolver`
+/// through Sail's own function registry.
+fn call(function: &str, arguments: Vec<spec::Expr>) -> spec::Expr {
+    spec::Expr::UnresolvedFunction(spec::UnresolvedFunction {
+        function_name: spec::ObjectName::bare(function),
+        arguments,
+        named_arguments: vec![],
+        is_distinct: false,
+        is_user_defined_function: false,
+        is_internal: None,
+        ignore_nulls: None,
+        filter: None,
+        order_by: None,
+    })
+}
+
+fn alias(expr: spec::Expr, name: &str) -> spec::Expr {
+    spec::Expr::Alias {
+        expr: Box::new(expr),
+        name: vec![name.into()],
+        metadata: None,
+    }
+}
+
+/// Lower a streaming read of `clicks` projected to `id` and `expression`,
+/// through the real resolver, and return the lowering.
+async fn lower_projection(expression: spec::Expr) -> Result<Lowered, Box<dyn std::error::Error>> {
+    // Function resolution consults the catalog manager for temporary
+    // functions, so the session needs Sail's extensions.
+    let ctx = crate::pipelines::sql::tests::resolution_context()?;
+    let scope = TaskResourceScope::new(Handle::current());
+    let (_source, binding) = bind_clicks(100)?;
+    let graph = graph();
+    let flow = flow(
+        project(
+            read("clicks", true),
+            vec![attribute("id"), alias(expression, "x")],
+        ),
+        &[],
+    );
+    let lowered = lower(
+        &ctx,
+        Arc::new(PlanConfig::default()),
+        &scope,
+        &Inputs {
+            graph: &graph,
+            flow: &flow,
+            relations: &relations()?,
+            sources: std::slice::from_ref(&binding),
+            statics: &[],
+            locals: &[],
+        },
+    )
+    .await?;
+    Ok(lowered)
+}
+
+/// Shared body of the resolved-clock cases: the function is resolved by Sail
+/// (not built from DataFusion's `expr_fn`), the plan is admitted, and the
+/// evidence marks it non-replayable naming a stable function. This pins the
+/// seam between resolution and admission: any folding of the clock into a
+/// literal before admission would erase the provenance and fail here.
+async fn assert_resolved_clock_not_replayable(function: &str) -> TestResult {
+    let lowered = lower_projection(call(function, vec![])).await?;
+    let evidence = &lowered.evidence;
+    assert!(evidence.admitted, "{function}: {evidence:?}");
+    assert!(
+        !evidence.replayable,
+        "{function}: a resolved clock must not be content-replayable: {evidence:?}"
+    );
+    assert!(
+        evidence
+            .operators
+            .iter()
+            .any(|op| op.reason.contains("is stable, not immutable")),
+        "{function}: {evidence:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_resolved_sail_current_timestamp_is_not_content_replayable() -> TestResult {
+    assert_resolved_clock_not_replayable("current_timestamp").await
+}
+
+#[tokio::test]
+async fn a_resolved_sail_now_is_not_content_replayable() -> TestResult {
+    assert_resolved_clock_not_replayable("now").await
+}
+
+#[tokio::test]
+async fn a_resolved_sail_current_date_is_not_content_replayable() -> TestResult {
+    assert_resolved_clock_not_replayable("current_date").await
+}
+
+#[tokio::test]
+async fn a_resolved_immutable_projection_remains_content_replayable() -> TestResult {
+    // Control: a resolved Immutable built-in in the same position.
+    let lowered = lower_projection(call("abs", vec![attribute("id")])).await?;
+    let evidence = &lowered.evidence;
+    assert!(evidence.admitted, "{evidence:?}");
+    assert!(evidence.replayable, "{evidence:?}");
+    Ok(())
+}
+
 /// A provider error type the lowerer must never name.
 #[derive(Debug)]
 struct ProviderFailure(u32);
