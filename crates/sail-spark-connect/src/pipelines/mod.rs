@@ -3,6 +3,7 @@ mod execution;
 mod graph;
 mod materialize;
 mod properties;
+mod reanalysis;
 mod schema;
 mod schema_merge;
 mod selection;

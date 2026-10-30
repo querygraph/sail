@@ -1,5 +1,4 @@
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
@@ -7,11 +6,9 @@ use futures::TryStreamExt;
 use sail_catalog::command::CatalogCommand;
 use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
-use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_common_datafusion::session::job::JobService;
 use sail_plan::config::PlanConfig;
 use sail_plan::resolve_and_execute_plan_with_scope;
-use sail_plan::resolver::PlanResolver;
 use sail_plan::resolver::scope::RelationScope;
 
 use super::analysis::{AnalyzedGraph, GraphScope};
@@ -39,58 +36,28 @@ pub(super) async fn execute(
     let spark = ctx.extension::<SparkSession>()?;
     super::materialize::tables(ctx, graph, &analyzed, &selection).await?;
     super::materialize::views(ctx, graph, &analyzed).await?;
-    let mut resolved = BTreeMap::new();
-    for name in analyzed.order {
+    for name in &analyzed.order {
         let output = graph
             .outputs
             .iter()
-            .find(|x| x.name == name)
+            .find(|output| &output.name == name)
             .ok_or_else(|| SparkError::internal("analyzed output missing"))?;
         if output.view.is_some()
-            || !selection.required.contains(&name)
-            || (output.kind != OutputType::TemporaryView && !selection.runs(&name))
+            || output.kind == OutputType::TemporaryView
+            || !selection.runs(name)
         {
             continue;
-        }
-        // Read catalog inputs only when a query consumes them, after selected
-        // upstream tables have been written. A view-only refresh does no reads.
-        for input in analyzed.dependencies.get(&name).into_iter().flatten() {
-            if graph.outputs.iter().any(|output| {
-                &output.name == input
-                    && output.kind != OutputType::TemporaryView
-                    && (output.view.is_some() || !resolved.contains_key(input))
-            }) {
-                resolved.insert(input.clone(), read_output(ctx, input.clone()).await?);
-            }
         }
         let flow = graph
             .flows
             .iter()
-            .find(|x| x.target == name)
+            .find(|x| &x.target == name)
             .ok_or_else(|| analysis("PIPELINE_DATASET_WITHOUT_FLOW", name.join(".")))?;
         let config = spark.plan_config_with_overrides(flow.sql_conf.clone())?;
-        let scope = GraphScope {
-            graph,
-            resolved: &resolved,
-            reads: Mutex::default(),
-            flow,
-        };
-        let resolver = PlanResolver::new(ctx, config.clone()).with_relation_scope(&scope);
-        if output.kind == OutputType::TemporaryView {
-            let plan = resolver
-                .resolve_named_plan(spec::Plan::Query(flow.query.clone()))
-                .await?;
-            let plan = match plan.fields {
-                Some(fields) => rename_logical_plan(plan.plan, &fields)?,
-                None => plan.plan,
-            };
-            resolved.insert(name, plan);
-            continue;
-        }
+        let resolved =
+            super::reanalysis::resolve_inputs(ctx, graph, &analyzed, name, config.clone()).await?;
+        let scope = GraphScope::new(graph, &resolved, flow);
         run_command(ctx, config, table_write_command(output, flow), Some(&scope)).await?;
-        // Downstream flows scan the newly committed table. They must not inline
-        // and recompute the producer's definition, especially for nondeterminism.
-        resolved.insert(name.clone(), read_output(ctx, name).await?);
     }
     Ok(())
 }
@@ -156,27 +123,4 @@ fn table_write_command(output: &Output, flow: &Flow) -> spec::CommandNode {
         options: vec![],
         table_properties: vec![],
     })
-}
-
-async fn read_output(
-    ctx: &SessionContext,
-    name: super::graph::Name,
-) -> SparkResult<datafusion::logical_expr::LogicalPlan> {
-    let read = spec::QueryPlan::new(spec::QueryNode::Read {
-        read_type: spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
-            name: name.clone().into(),
-            temporal: None,
-            sample: None,
-            options: vec![],
-        })),
-        is_streaming: false,
-    });
-    let plan = PlanResolver::new(ctx, ctx.extension::<SparkSession>()?.plan_config()?)
-        .resolve_named_plan(spec::Plan::Query(read))
-        .await?;
-    let plan = match plan.fields {
-        Some(fields) => rename_logical_plan(plan.plan, &fields)?,
-        None => plan.plan,
-    };
-    Ok(plan)
 }
