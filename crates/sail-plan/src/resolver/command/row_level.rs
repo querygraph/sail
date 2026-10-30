@@ -70,7 +70,7 @@ impl PlanResolver<'_> {
                 let location = path.as_ref().to_string();
                 let metadata = lake_source
                     .infer_metadata(
-                        &self.ctx.state(),
+                        self.provider_session().as_session(),
                         SourceInfo {
                             paths: vec![location.clone()],
                             lakehouse_table: None,

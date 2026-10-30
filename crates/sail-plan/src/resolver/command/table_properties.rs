@@ -42,7 +42,7 @@ impl PlanResolver<'_> {
             let properties = registry
                 .get_lake_source(&format)?
                 .table_properties(
-                    &self.ctx.state(),
+                    self.provider_session().as_session(),
                     SourceInfo {
                         paths: vec![path],
                         lakehouse_table: None,
@@ -86,7 +86,7 @@ impl PlanResolver<'_> {
                     registry
                         .get_lake_source(format)?
                         .table_properties(
-                            &self.ctx.state(),
+                            self.provider_session().as_session(),
                             SourceInfo {
                                 paths: vec![location],
                                 lakehouse_table: Some(context),

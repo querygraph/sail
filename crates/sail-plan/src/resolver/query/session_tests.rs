@@ -319,3 +319,6 @@ mod factories;
 
 #[path = "write_factory_session_tests.rs"]
 mod writers;
+
+#[path = "lake_metadata_session_tests.rs"]
+mod lake_metadata;
