@@ -1,15 +1,19 @@
+mod factory;
 mod listing_options;
 mod metadata;
 mod options;
+mod read;
 mod reader;
 mod requested_schema;
 mod schema;
 mod source;
 mod timezone;
 
+pub use factory::{OrcDataSource, OrcFormatFactory, OrcWriteFormat};
 pub use listing_options::{OrcListingSessionDefaults, OrcReadSessionModes};
 pub use metadata::OrcSchemaBridge;
 pub use options::OrcReadResourceLimits;
+pub use read::OrcReadFormat;
 pub use reader::OrcObjectReader;
 pub use requested_schema::OrcRequestedSchemaAdapter;
 pub use schema::infer_schema as infer_orc_schema;
