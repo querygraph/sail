@@ -1,5 +1,6 @@
 mod hugging_face;
 mod layers;
+pub mod owned_multipart;
 mod path;
 mod registry;
 mod s3;
