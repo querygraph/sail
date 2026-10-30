@@ -47,10 +47,6 @@ pub struct SourceBinding {
 pub struct StaticBinding {
     pub name: Name,
     pub identity: String,
-    #[cfg_attr(
-        test,
-        expect(dead_code, reason = "read by the admission integration unit")
-    )]
     pub provider: Arc<dyn TableProvider>,
 }
 
@@ -64,10 +60,6 @@ pub struct StaticBinding {
 pub struct LocalBinding {
     pub name: Name,
     pub identity: String,
-    #[cfg_attr(
-        test,
-        expect(dead_code, reason = "read by the admission integration unit")
-    )]
     pub provider: Arc<dyn TableProvider>,
 }
 

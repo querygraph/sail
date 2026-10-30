@@ -12,6 +12,7 @@
     expect(dead_code, reason = "wired by the streaming admission unit")
 )]
 
+pub(super) mod admission;
 pub(super) mod binding;
 pub(super) mod intent;
 pub(super) mod source;
