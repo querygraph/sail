@@ -459,3 +459,6 @@ impl PlanResolver<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod session_tests;

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use datafusion::catalog::Session;
 use datafusion::prelude::SessionContext;
 
 use crate::config::PlanConfig;
@@ -16,6 +17,7 @@ pub mod plan;
 mod query;
 mod schema;
 pub mod scope;
+mod session;
 mod state;
 mod tree;
 
@@ -26,6 +28,7 @@ pub struct PlanResolver<'a> {
     ctx: &'a SessionContext,
     config: Arc<PlanConfig>,
     relation_scope: Option<&'a dyn scope::RelationScope>,
+    query_session: Option<&'a dyn Session>,
 }
 
 impl<'a> PlanResolver<'a> {
@@ -34,12 +37,22 @@ impl<'a> PlanResolver<'a> {
             ctx,
             config,
             relation_scope: None,
+            query_session: None,
         }
     }
 
     /// Resolve request-local relations without registering them in a catalog.
     pub fn with_relation_scope(mut self, scope: &'a dyn scope::RelationScope) -> Self {
         self.relation_scope = Some(scope);
+        self
+    }
+
+    /// Use a caller-captured Session for queries executed during resolution.
+    /// The caller retains admission/cleanup and chooses the capture boundary;
+    /// authoritative session commands and catalog name resolution still use ctx.
+    /// Provider factories and final execution require their own propagation.
+    pub fn with_query_session(mut self, session: &'a dyn Session) -> Self {
+        self.query_session = Some(session);
         self
     }
 }

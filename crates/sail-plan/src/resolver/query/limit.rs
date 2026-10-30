@@ -88,12 +88,7 @@ impl PlanResolver<'_> {
             vec![],
             vec![count_expr],
         )?);
-        let count_batches = self
-            .ctx
-            .execute_logical_plan(count_plan)
-            .await?
-            .collect()
-            .await?;
+        let count_batches = self.collect_query(count_plan).await?;
         let count = count_batches[0]
             .column(0)
             .as_primitive::<Int64Type>()
