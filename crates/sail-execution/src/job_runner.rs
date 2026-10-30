@@ -1,19 +1,19 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use datafusion::common::{DataFusionError, Result, internal_datafusion_err, internal_err};
+use datafusion::common::{DataFusionError, Result, internal_datafusion_err};
 use datafusion::execution::SendableRecordBatchStream;
-use datafusion::physical_plan::{ExecutionPlan, execute_stream};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use sail_common::actor::ActorSystem;
 use sail_common_datafusion::session::job::JobRunner;
-use sail_telemetry::telemetry::global_metrics;
-use sail_telemetry::{TracingExecOptions, trace_execution_plan};
 use tokio::sync::oneshot;
 
 use crate::driver::{DriverActor, DriverComponents, DriverHandle, DriverMessage, DriverOptions};
 use crate::job_graph::{JobGraph, JobGraphOptions};
 use crate::shuffle::ShuffleBackendKind;
+
+mod local;
+pub use local::LocalJobRunner;
 
 fn explain_job_graph(
     plan: Arc<dyn ExecutionPlan>,
@@ -22,68 +22,6 @@ fn explain_job_graph(
     JobGraph::try_new(plan, JobGraphOptions { shuffle_backend })
         .map(|graph| graph.to_string())
         .map_err(|e| DataFusionError::External(Box::new(e)))
-}
-
-pub struct LocalJobRunner {
-    session_id: String,
-    next_job_id: AtomicU64,
-    stopped: AtomicBool,
-}
-
-impl LocalJobRunner {
-    pub fn new(session_id: String) -> Self {
-        Self {
-            session_id,
-            next_job_id: AtomicU64::new(1),
-            stopped: AtomicBool::new(false),
-        }
-    }
-}
-
-impl Default for LocalJobRunner {
-    fn default() -> Self {
-        Self::new(String::new())
-    }
-}
-
-#[tonic::async_trait]
-impl JobRunner for LocalJobRunner {
-    fn explain(&self, plan: Arc<dyn ExecutionPlan>) -> Result<String> {
-        explain_job_graph(
-            plan,
-            ShuffleBackendKind::Flight {
-                compression: crate::shuffle::ShuffleCompression::None,
-                connection_count: std::num::NonZeroUsize::MIN,
-                initial_stream_window_size: None,
-                initial_connection_window_size: None,
-            },
-        )
-    }
-
-    async fn execute(
-        &self,
-        ctx: &SessionContext,
-        plan: Arc<dyn ExecutionPlan>,
-    ) -> Result<SendableRecordBatchStream> {
-        if self.stopped.load(Ordering::Relaxed) {
-            return internal_err!("job runner is stopped");
-        }
-        let job_id = self.next_job_id.fetch_add(1, Ordering::Relaxed);
-        let options = TracingExecOptions {
-            metrics: global_metrics(),
-            session_id: Some(self.session_id.clone()),
-            job_id: Some(job_id),
-            stage: None,
-            attempt: None,
-            operator_id: None,
-        };
-        let plan = trace_execution_plan(plan, options)?;
-        Ok(execute_stream(plan, ctx.task_ctx())?)
-    }
-
-    async fn stop(&self) {
-        self.stopped.store(true, Ordering::Relaxed);
-    }
 }
 
 pub struct ClusterJobRunner {
@@ -136,7 +74,12 @@ impl JobRunner for ClusterJobRunner {
             .map_err(|e| internal_datafusion_err!("{e}"))
     }
 
-    async fn stop(&self) {
-        let _ = self.driver.shutdown_and_wait().await;
+    async fn stop(&self) -> Result<()> {
+        // This retains the driver's existing shutdown contract. Driver/worker
+        // acknowledgement and whole-cluster cleanup need separate qualification.
+        self.driver
+            .shutdown_and_wait()
+            .await
+            .map_err(|error| DataFusionError::External(Box::new(error)))
     }
 }

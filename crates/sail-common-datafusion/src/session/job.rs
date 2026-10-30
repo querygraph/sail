@@ -19,7 +19,9 @@ pub trait JobRunner: Send + Sync + 'static {
     /// Returns the distributed execution plan for EXPLAIN output.
     fn explain(&self, plan: Arc<dyn ExecutionPlan>) -> Result<String>;
 
-    async fn stop(&self);
+    /// Stop admission/execution and report shutdown or resource-cleanup errors.
+    /// Implementations specify which local or remote cleanup they can confirm.
+    async fn stop(&self) -> Result<()>;
 }
 
 pub struct JobService {

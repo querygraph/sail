@@ -378,14 +378,14 @@ impl SessionManagerActor {
         let checkpoint_registry = context.extension::<RemoteCheckpointRegistry>().ok();
         let runtime_env = context.runtime_env();
         ctx.spawn(async move {
-            // Stop tasks before deleting the namespace so late attempts cannot recreate objects.
-            service.runner().stop().await;
-            if let Some(checkpoint_registry) = checkpoint_registry
-                && let Err(error) = checkpoint_registry
-                    .cleanup_session(runtime_env.as_ref())
-                    .await
+            if let Err(error) = super::cleanup::stop_and_clean_checkpoints(
+                service.runner(),
+                checkpoint_registry.as_deref(),
+                runtime_env.as_ref(),
+            )
+            .await
             {
-                warn!("failed to clean checkpoints for session {session_id}: {error}");
+                warn!("failed to clean up session {session_id}: {error}");
             }
         });
     }
