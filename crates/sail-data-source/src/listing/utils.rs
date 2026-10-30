@@ -214,7 +214,18 @@ pub fn validate_partitions(
     files: &[ListingFileSample<'_>],
     table_partition_fields: &[FieldRef],
 ) -> Result<()> {
-    if table_partition_fields.is_empty() {
+    let names = table_partition_fields
+        .iter()
+        .map(|field| field.name().clone())
+        .collect::<Vec<_>>();
+    validate_partition_directory_names(files, &names)
+}
+
+pub(super) fn validate_partition_directory_names(
+    files: &[ListingFileSample<'_>],
+    table_partition_names: &[String],
+) -> Result<()> {
+    if table_partition_names.is_empty() {
         return Ok(());
     }
     let inferred = infer_partitions(files)?;
@@ -229,11 +240,6 @@ pub fn validate_partitions(
             perhaps the URL is missing a trailing slash?"
             );
         }
-
-        let table_partition_names = table_partition_fields
-            .iter()
-            .map(|f| f.name().clone())
-            .collect::<Vec<_>>();
 
         if inferred.len() < table_partition_names.len() {
             return plan_err!(

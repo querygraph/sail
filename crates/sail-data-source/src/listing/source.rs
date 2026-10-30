@@ -24,9 +24,11 @@ use sail_common_datafusion::datasource::{
 };
 use url::Url;
 
+use crate::listing::partition::partition_directory_names;
 use crate::listing::table::{ListingTableSource, ListingTableSourceConfig};
 use crate::listing::utils::{
-    infer_partitions, rewrite_unsupported_fields, select_listing_files, validate_partitions,
+    infer_partitions, rewrite_unsupported_fields, select_listing_files,
+    validate_partition_directory_names,
 };
 use crate::listing::write::{FileWriteNode, FileWriteOptions};
 use crate::resolve_listing_urls;
@@ -319,13 +321,16 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
             }
         };
 
-        validate_partitions(&inference_files, &partition_fields)?;
+        let partition_directory_names =
+            partition_directory_names(&partition_fields, &infer_partitions(&inference_files)?)?;
+        validate_partition_directory_names(&inference_files, &partition_directory_names)?;
 
         let source = ListingTableSource::try_new(ListingTableSourceConfig {
             table_paths: urls,
             schema: TableSchema::builder(schema)
                 .with_table_partition_cols(partition_fields)
                 .build(),
+            partition_directory_names,
             constraints,
             file_sort_order: vec![sort_order],
             collect_stat: ctx.config().collect_statistics(),

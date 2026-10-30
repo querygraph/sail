@@ -7,7 +7,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::expr::Sort;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableSource, TableType};
 use datafusion_common::parsers::CompressionTypeVariant;
-use datafusion_common::{Constraints, Result};
+use datafusion_common::{Constraints, Result, plan_err};
 use datafusion_datasource::{ListingTableUrl, TableSchema};
 
 use crate::listing::source::ReadFormat;
@@ -18,6 +18,10 @@ use crate::url::PathGlobFilter;
 pub struct ListingTableSourceConfig {
     pub table_paths: Vec<ListingTableUrl>,
     pub schema: TableSchema,
+    /// Physical directory keys, aligned with the logical partition fields.
+    /// Listing resolves these before scan construction; workers receive values
+    /// in the corresponding field order, not these directory names.
+    pub partition_directory_names: Vec<String>,
     pub constraints: Constraints,
     pub file_sort_order: Vec<Vec<Sort>>,
     pub collect_stat: bool,
@@ -40,6 +44,11 @@ pub struct ListingTableSource {
 
 impl ListingTableSource {
     pub fn try_new(config: ListingTableSourceConfig) -> Result<Self> {
+        if config.partition_directory_names.len() != config.schema.table_partition_cols().len() {
+            return plan_err!(
+                "listing partition directory keys must match the number of partition fields"
+            );
+        }
         Ok(Self { config })
     }
 
