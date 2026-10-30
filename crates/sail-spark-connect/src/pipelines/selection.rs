@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 
-use super::analysis::AnalyzedGraph;
 use super::graph::{GraphDefinition, Name, parse_name};
 use crate::error::{SparkError, SparkResult};
 use crate::spark::connect::OutputType;
@@ -9,7 +8,6 @@ use crate::spark::connect::pipeline_command::StartRun;
 pub(super) struct Selection {
     pub refresh: BTreeSet<Name>,
     pub reset: BTreeSet<Name>,
-    pub required: BTreeSet<Name>,
 }
 
 impl Selection {
@@ -55,32 +53,7 @@ impl Selection {
                 overlap.join(".")
             )));
         }
-        let required = refresh.union(&reset).cloned().collect();
-        Ok(Self {
-            refresh,
-            reset,
-            required,
-        })
-    }
-
-    pub fn with_dependencies(mut self, graph: &GraphDefinition, analyzed: &AnalyzedGraph) -> Self {
-        // A selection names only datasets to run, not their upstream or
-        // downstream tables. Temporary views are expanded to discover the
-        // existing materialized outputs that selected flows need to scan.
-        let mut pending: Vec<_> = self.required.iter().cloned().collect();
-        while let Some(name) = pending.pop() {
-            for input in analyzed.dependencies.get(&name).into_iter().flatten() {
-                if self.required.insert(input.clone())
-                    && graph
-                        .outputs
-                        .iter()
-                        .any(|x| x.name == *input && x.kind == OutputType::TemporaryView)
-                {
-                    pending.push(input.clone());
-                }
-            }
-        }
-        self
+        Ok(Self { refresh, reset })
     }
 
     pub fn runs(&self, name: &Name) -> bool {

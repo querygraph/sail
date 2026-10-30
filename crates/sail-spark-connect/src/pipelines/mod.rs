@@ -161,7 +161,6 @@ pub(crate) async fn handle_command(
                 yield event("Starting pipeline analysis");
                 let run = async {
                     let analyzed = analysis::analyze(&ctx, &definition).await?;
-                    let selection = selection.with_dependencies(&definition, &analyzed);
                     if !command.dry.unwrap_or(false) {
                         execution::execute(&ctx, &definition, analyzed, selection).await?;
                     }
