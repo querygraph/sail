@@ -96,12 +96,7 @@ impl PlanResolver<'_> {
         }))
         .project(expressions)?
         .build()?;
-        let session = self.ctx.state();
-        let analyzed = session.analyzer().execute_and_check(
-            projection,
-            session.config_options().as_ref(),
-            |_, _| {},
-        )?;
+        let analyzed = self.analyze_native(projection)?;
         for ((field, _), actual) in generated.iter().zip(analyzed.schema().fields()) {
             if !same_generated_column_type(field.data_type(), actual.data_type()) {
                 return Err(PlanError::invalid(format!(

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use datafusion::catalog::Session;
 use datafusion::prelude::SessionContext;
+use sail_common_datafusion::session::scoped::ScopedSession;
 
 use crate::config::PlanConfig;
 
@@ -28,7 +29,7 @@ pub struct PlanResolver<'a> {
     ctx: &'a SessionContext,
     config: Arc<PlanConfig>,
     relation_scope: Option<&'a dyn scope::RelationScope>,
-    query_session: Option<&'a dyn Session>,
+    query_session: Option<session::QuerySession<'a>>,
 }
 
 impl<'a> PlanResolver<'a> {
@@ -53,7 +54,16 @@ impl<'a> PlanResolver<'a> {
     /// authoritative session commands and catalog name resolution still use ctx.
     /// Native command analysis and final execution require their own propagation.
     pub fn with_query_session(mut self, session: &'a dyn Session) -> Self {
-        self.query_session = Some(session);
+        self.query_session = Some(session::QuerySession::Generic(session));
+        self
+    }
+
+    /// Also use the captured native analyzer for command validation. The caller
+    /// retains admission/cleanup, chooses the capture boundary, and must keep
+    /// providers valid for this owner. This does not migrate catalog authority,
+    /// session commands, or final execution. The last Session setter wins.
+    pub fn with_scoped_query_session(mut self, session: &'a ScopedSession) -> Self {
+        self.query_session = Some(session::QuerySession::Scoped(session));
         self
     }
 }

@@ -359,12 +359,9 @@ impl PlanResolver<'_> {
         let plan = match spec_plan {
             spec::Plan::Query(query_plan) => match scope {
                 Some(scope) => {
-                    let resolver = PlanResolver::new(self.ctx, self.config.clone())
+                    let mut resolver = PlanResolver::new(self.ctx, self.config.clone())
                         .with_relation_scope(&scope);
-                    let resolver = match self.query_session {
-                        Some(session) => resolver.with_query_session(session),
-                        None => resolver,
-                    };
+                    resolver.query_session = self.query_session;
                     resolver.resolve_query_plan(query_plan, state).await?
                 }
                 None => self.resolve_query_plan(query_plan, state).await?,

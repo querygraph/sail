@@ -11,6 +11,7 @@ use datafusion::execution::context::QueryPlanner;
 use datafusion::execution::object_store::{
     DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl,
 };
+use datafusion::optimizer::AnalyzerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -126,6 +127,11 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> TestResultWith<Self> {
+        Self::with_analyzer(None).await
+    }
+    async fn with_analyzer(
+        rule: Option<Arc<dyn AnalyzerRule + Send + Sync>>,
+    ) -> TestResultWith<Self> {
         let resources = Arc::new(TaskResourceScope::new(Handle::current()));
         let calls = Arc::new(AtomicUsize::new(0));
         let provider = MemoryCatalogProvider::new("catalog".into(), vec!["db"].try_into()?, None);
@@ -147,16 +153,18 @@ impl Fixture {
                 Box::new(DefaultCatalogDisplay::<SparkCatalogObjectDisplay>::default()),
                 Box::new(SparkPlanFormatter),
             )));
-        let ctx = SessionContext::new_with_state(
-            SessionStateBuilder::new()
-                .with_config(config)
-                .with_default_features()
-                .with_query_planner(Arc::new(CheckingPlanner {
-                    resources: resources.clone(),
-                    calls: calls.clone(),
-                }))
-                .build(),
-        );
+        let builder = SessionStateBuilder::new()
+            .with_config(config)
+            .with_default_features()
+            .with_query_planner(Arc::new(CheckingPlanner {
+                resources: resources.clone(),
+                calls: calls.clone(),
+            }));
+        let builder = match rule {
+            Some(rule) => builder.with_analyzer_rules(vec![rule]),
+            None => builder,
+        };
+        let ctx = SessionContext::new_with_state(builder.build());
         let original = Arc::new(InMemory::new());
         original.put(&Path::from("input"), "parent".into()).await?;
         let url = ObjectStoreUrl::parse("memory://resolver")?;
@@ -331,3 +339,6 @@ mod delta_metadata;
 
 #[path = "procedure_factory_session_tests.rs"]
 mod procedures;
+
+#[path = "generated_analyzer_session_tests.rs"]
+mod generated_analyzer;

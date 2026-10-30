@@ -188,3 +188,63 @@ async fn predicate_procedure_uses_selected_session() -> TestResult {
 async fn predicate_procedure_keeps_legacy_authority() -> TestResult {
     procedure(false, true).await
 }
+
+#[derive(Debug)]
+struct CapturedPredicateAnalyzer(Arc<AtomicUsize>);
+impl datafusion::optimizer::AnalyzerRule for CapturedPredicateAnalyzer {
+    fn name(&self) -> &str {
+        "captured_procedure_predicate_probe"
+    }
+    fn analyze(
+        &self,
+        plan: LogicalPlan,
+        config: &datafusion_common::config::ConfigOptions,
+    ) -> Result<LogicalPlan> {
+        assert_eq!(config.execution.target_partitions, 7);
+        assert!(matches!(plan, LogicalPlan::Filter(_)));
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(plan)
+    }
+}
+#[tokio::test]
+async fn predicate_procedure_uses_typed_captured_native_analyzer() -> TestResult {
+    let analyzed = Arc::new(AtomicUsize::new(0));
+    let fixture =
+        Fixture::with_analyzer(Some(Arc::new(CapturedPredicateAnalyzer(analyzed.clone())))).await?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let planned = Arc::new(AtomicUsize::new(0));
+    fixture
+        .ctx
+        .extension::<DataSourceRegistry>()?
+        .register_data_source(Arc::new(ProcedureSource {
+            metadata: CheckingLake::new(Some(fixture.resources.clone()), calls.clone()),
+            predicate: true,
+            planned: planned.clone(),
+        }))?;
+    let result = fixture
+        .resolver()
+        .with_scoped_query_session(&fixture.session)
+        .resolve_command_plan(
+            spec::CommandPlan::new(spec::CommandNode::CallProcedure {
+                procedure: vec!["system", "probe"].into(),
+                arguments: vec![text("delta.`/input`"), text("true")],
+                named_arguments: vec![],
+            }),
+            &mut PlanResolverState::new(),
+        )
+        .await;
+    let error = result.err().ok_or("procedure probe did not stop")?;
+    assert!(
+        error
+            .to_string()
+            .contains("procedure probe stops before implementation planning"),
+        "{error}"
+    );
+    assert_eq!(analyzed.load(Ordering::SeqCst), 1);
+    assert_eq!(planned.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.resources.drain().await?.registered, 2);
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.ctx.state().config().target_partitions(), 9);
+    Ok(())
+}

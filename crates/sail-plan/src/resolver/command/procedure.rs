@@ -370,12 +370,7 @@ impl PlanResolver<'_> {
                 ))
                 .filter(expr)?
                 .build()?;
-                let session = self.ctx.state();
-                let analyzed = session.analyzer().execute_and_check(
-                    plan,
-                    session.config_options().as_ref(),
-                    |_, _| {},
-                )?;
+                let analyzed = self.analyze_native(plan)?;
                 let LogicalPlan::Filter(filter) = analyzed else {
                     return Err(PlanError::invalid("Invalid procedure predicate"));
                 };
