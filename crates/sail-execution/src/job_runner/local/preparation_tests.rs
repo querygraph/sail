@@ -220,3 +220,61 @@ async fn dropping_unpolled_execute_releases_preparation_without_invoking_plan() 
     assert!(runner.lock().active.is_empty());
     Ok(())
 }
+
+/// Exercise the default capture capability independently of the local backend's
+/// eventual opt-in implementation, while retaining its real admission cleanup.
+struct LegacyPreparation<'a> {
+    inner: Box<dyn sail_common_datafusion::session::job::JobPreparation + 'a>,
+}
+#[tonic::async_trait]
+impl sail_common_datafusion::session::job::JobPreparation for LegacyPreparation<'_> {
+    fn resources(&self) -> &Arc<TaskResourceScope> {
+        self.inner.resources()
+    }
+    fn control(&self) -> sail_common_datafusion::managed_stream::ManagedStreamControl {
+        self.inner.control()
+    }
+    fn finish(self: Box<Self>) -> sail_common_datafusion::managed_stream::ManagedStreamControl {
+        self.inner.finish()
+    }
+    fn cancel(self: Box<Self>) -> sail_common_datafusion::managed_stream::ManagedStreamControl {
+        self.inner.cancel()
+    }
+    async fn execute(
+        self: Box<Self>,
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<SendableRecordBatchStream> {
+        self.inner.execute(plan).await
+    }
+}
+
+#[tokio::test]
+async fn unsupported_capture_keeps_cleanup_observable_after_consuming_guard() -> TestResult {
+    let runner = LocalJobRunner::default();
+    let context = SessionContext::new();
+    let underlying = (&runner as &dyn JobRunner).begin_preparation(&context)?;
+    let control = underlying.control();
+    let resources = underlying.resources().clone();
+    let preparation: Box<dyn sail_common_datafusion::session::job::JobPreparation + '_> =
+        Box::new(LegacyPreparation { inner: underlying });
+    let error = preparation
+        .capture(None)
+        .err()
+        .ok_or("legacy backend accepted capture")?;
+    assert!(matches!(error, DataFusionError::NotImplemented(_)));
+    let report = timeout(Duration::from_secs(10), control.completion()).await?;
+    assert!(report.resources_drained);
+    assert!(report.cleanup_result().is_ok());
+    let cancellation = report
+        .result()
+        .err()
+        .ok_or("unsupported capture must cancel admission")?;
+    assert!(cancellation.to_string().contains("canceled"));
+    assert!(!cancellation.to_string().contains("abandoned"));
+    assert_eq!(resources.drain().await?.registered, 0);
+    // The caller retains the typed capability error separately from cleanup.
+    assert!(matches!(error, DataFusionError::NotImplemented(_)));
+    runner.stop().await?;
+    assert!(runner.lock().active.is_empty());
+    Ok(())
+}

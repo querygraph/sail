@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::SendableRecordBatchStream;
+use datafusion::execution::object_store::ObjectStoreRegistry;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 
 use crate::extension::SessionExtension;
 use crate::managed_stream::ManagedStreamControl;
+use crate::session::scoped::ScopedSession;
 use crate::task_resources::TaskResourceScope;
 
 /// An admitted, move-only preparation bound to the runner that created it.
@@ -18,10 +20,38 @@ pub trait JobPreparation: Send + Sync {
     fn control(&self) -> ManagedStreamControl;
     fn finish(self: Box<Self>) -> ManagedStreamControl;
     fn cancel(self: Box<Self>) -> ManagedStreamControl;
+
+    /// Consume admission into a query snapshot after authority mutations.
+    /// The optional registry must already have qualified ownership/routing.
+    /// Retain control before this call to observe cleanup if capture fails.
+    /// The default cancels admission and returns the typed capability error to
+    /// the caller; the control reports cancellation and cleanup separately.
+    /// Backends must opt in; legacy execute keeps its existing capture boundary.
+    fn capture<'a>(
+        self: Box<Self>,
+        _registry: Option<Arc<dyn ObjectStoreRegistry>>,
+    ) -> Result<Box<dyn CapturedJobPreparation + 'a>>
+    where
+        Self: 'a,
+    {
+        self.cancel();
+        Err(DataFusionError::NotImplemented(
+            "captured query preparation is not supported by this runner".into(),
+        ))
+    }
+
     async fn execute(
         self: Box<Self>,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<SendableRecordBatchStream>;
+}
+
+/// An admitted executor whose query snapshot is fixed at capture.
+/// The borrowed view and consuming execute belong to the same preparation;
+/// callers cannot supply a different Session at the execution boundary.
+/// This does not make retained providers reusable after their owner closes.
+pub trait CapturedJobPreparation: JobPreparation {
+    fn session(&self) -> &ScopedSession;
 }
 
 #[tonic::async_trait]
