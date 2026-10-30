@@ -39,10 +39,11 @@ where
 /// Interrupted tasks and provider-internal detached work still require separate
 /// runtime-loss qualification; this function does not establish their outcome.
 pub fn execution_error(error: MultipartError) -> DataFusionError {
-    if error
-        .causes()
-        .iter()
-        .any(|cause| cause.stage == Stage::Complete)
+    if matches!(&error, MultipartError::Interrupted)
+        || error
+            .causes()
+            .iter()
+            .any(|cause| cause.stage == Stage::Complete)
     {
         DataFusionError::Collection(vec![
             DataFusionError::External(Box::new(CommitStateUnknownError(error.to_string()))),

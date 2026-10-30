@@ -88,3 +88,40 @@ async fn cooperative_mutation_cancellation_can_finish_cleanly() -> TestResult {
     assert_eq!(report.registered, 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn interrupted_result_observer_classifies_only_admitted_mutations() -> TestResult {
+    for mutation in [false, true] {
+        let scope = TaskResourceScope::new(Handle::current());
+        let factory = |_| async {
+            std::panic::resume_unwind(Box::new("lost result"));
+            #[expect(unreachable_code)]
+            Ok(())
+        };
+        let result = if mutation {
+            scope.run_mutation(factory).await
+        } else {
+            scope.run(factory).await
+        };
+        let observed = result.err().ok_or("expected interrupted result observer")?;
+        let cause = CommonErrorCause::new::<NoPython>(&observed);
+        assert_eq!(!cause.is_retryable(), mutation);
+        assert_eq!(
+            matches!(cause, CommonErrorCause::CommitStateUnknown(_)),
+            mutation
+        );
+        let errors: &[DataFusionError] = match &observed {
+            DataFusionError::Collection(errors) => errors,
+            error => std::slice::from_ref(error),
+        };
+        assert!(errors.iter().any(|error| matches!(error,
+            DataFusionError::Context(_, source) if matches!(source.as_ref(),
+                DataFusionError::External(source) if source.downcast_ref::<oneshot::error::RecvError>().is_some()
+            )
+        )));
+        let report = scope.drain().await?;
+        assert!(!report.is_clean());
+        assert!(join_error(&report.failures[0].error).is_some_and(JoinError::is_panic));
+    }
+    Ok(())
+}

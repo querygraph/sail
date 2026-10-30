@@ -50,7 +50,11 @@ fn published_put_losing_its_runtime_keeps_nonretryable_drain_failure() -> TestRe
     })?;
     io.shutdown_timeout(Duration::from_secs(5));
     caller.block_on(async {
-        assert!(timeout(Duration::from_secs(5), observer).await??.is_err());
+        let observed = timeout(Duration::from_secs(5), observer).await??
+            .err().ok_or("expected interrupted observer")?;
+        let cause = CommonErrorCause::new::<NoPython>(&observed);
+        assert!(!cause.is_retryable(), "mutation observer was retryable before drainage");
+        assert!(matches!(cause, CommonErrorCause::CommitStateUnknown(_)));
         let report = timeout(Duration::from_secs(5), scope.drain()).await??;
         assert!(!report.is_clean()); assert_eq!(report.registered, 1);
         assert_eq!(report.failures.len(), 1);

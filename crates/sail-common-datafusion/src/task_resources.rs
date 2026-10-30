@@ -243,10 +243,20 @@ impl TaskResourceScope {
             interruption,
         )?;
         receiver.await.map_err(|error| {
-            DataFusionError::Context(
+            let unknown =
+                matches!(interruption, InterruptionPolicy::MutationStateUnknown).then(|| {
+                    DataFusionError::External(Box::new(CommitStateUnknownError(format!(
+                        "mutation result observer interrupted before confirmed settlement: {error}"
+                    ))))
+                });
+            let error = DataFusionError::Context(
                 "owned resource result interrupted".into(),
                 Box::new(DataFusionError::External(Box::new(error))),
-            )
+            );
+            match unknown {
+                Some(unknown) => DataFusionError::Collection(vec![unknown, error]),
+                None => error,
+            }
         })?
     }
 

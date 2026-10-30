@@ -47,7 +47,15 @@ fn runtime_loss_after_actual_publication_retains_nonretryable_uncertainty() -> T
     // alive on a distinct runtime. A failed join cannot prove commit absence.
     io.shutdown_timeout(Duration::from_secs(5));
     let report = caller.block_on(async {
-        assert!(matches!(outcome.await, Err(MultipartError::Interrupted)));
+        let interrupted = outcome.await.err().ok_or("expected interrupted observer")?;
+        assert!(matches!(interrupted, MultipartError::Interrupted));
+        let mapped = execution_error(interrupted);
+        let cause = CommonErrorCause::new::<NoPython>(&mapped);
+        assert!(
+            !cause.is_retryable(),
+            "mutation observer was retryable before drainage"
+        );
+        assert!(matches!(cause, CommonErrorCause::CommitStateUnknown(_)));
         Ok::<_, Box<dyn Error>>(timeout(Duration::from_secs(5), scope.drain()).await??)
     })?;
     assert!(!report.is_clean());
