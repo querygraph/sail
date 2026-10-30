@@ -6,17 +6,16 @@ use sail_catalog::command::CatalogCommand;
 use sail_catalog::manager::CatalogManager;
 use sail_catalog::manager::tracker::CatalogLogicalPlanId;
 use sail_catalog::provider::{
-    CreateTemporaryViewColumnOptions, CreateTemporaryViewOptions, CreateViewColumnOptions,
-    CreateViewOptions, DropTemporaryViewOptions, DropViewOptions,
+    CreateTemporaryViewColumnOptions, CreateTemporaryViewOptions, CreateViewOptions,
+    DropTemporaryViewOptions, DropViewOptions,
 };
 use sail_common::spec;
 use sail_common_datafusion::catalog::TemporaryViewSource;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 
-use crate::error::{PlanError, PlanResult};
+use crate::error::PlanResult;
 use crate::resolver::PlanResolver;
-use crate::resolver::scope::{VIEW_NAMESPACE_PART, VIEW_NAMESPACE_SIZE};
 use crate::resolver::state::PlanResolverState;
 
 impl PlanResolver<'_> {
@@ -38,40 +37,8 @@ impl PlanResolver<'_> {
         // Resolve the query plan to register fields in state and extract column types.
         let resolved_input = self.resolve_query_plan(*input, state).await?;
         let schema = resolved_input.schema();
-        let columns = if let Some(columns) = columns {
-            let field_count = schema.fields().len();
-            if columns.len() != field_count {
-                return Err(PlanError::AnalysisError(format!(
-                    "CREATE VIEW column list has {} columns, but the query produces {} columns",
-                    columns.len(),
-                    field_count
-                )));
-            }
-            columns
-                .into_iter()
-                .zip(schema.fields().iter())
-                .map(|(x, field)| {
-                    let spec::ViewColumnDefinition { name, comment } = x;
-                    CreateViewColumnOptions {
-                        name,
-                        data_type: field.data_type().clone(),
-                        nullable: field.is_nullable(),
-                        comment,
-                    }
-                })
-                .collect()
-        } else {
-            Self::get_field_names(schema, state)?
-                .into_iter()
-                .zip(schema.fields().iter())
-                .map(|(name, field)| CreateViewColumnOptions {
-                    name,
-                    data_type: field.data_type().clone(),
-                    nullable: field.is_nullable(),
-                    comment: None,
-                })
-                .collect()
-        };
+        let columns =
+            publication::columns(schema, columns, || Self::get_field_names(schema, state))?;
         let manager = self.ctx.extension::<CatalogManager>()?;
         let namespace = match self
             .relation_scope
@@ -84,16 +51,7 @@ impl PlanResolver<'_> {
                 namespace
             }
         };
-        // Use Spark's existing catalog properties, preserving the SQL text.
-        properties
-            .retain(|(key, _)| key != VIEW_NAMESPACE_SIZE && !key.starts_with(VIEW_NAMESPACE_PART));
-        properties.push((VIEW_NAMESPACE_SIZE.to_string(), namespace.len().to_string()));
-        properties.extend(
-            namespace
-                .into_iter()
-                .enumerate()
-                .map(|(index, part)| (format!("{VIEW_NAMESPACE_PART}{index}"), part)),
-        );
+        publication::set_namespace(&mut properties, namespace);
         let command = CatalogCommand::CreateView {
             view: view.into(),
             options: CreateViewOptions {
@@ -206,3 +164,5 @@ impl PlanResolver<'_> {
         self.resolve_catalog_command(command)
     }
 }
+
+mod publication;
