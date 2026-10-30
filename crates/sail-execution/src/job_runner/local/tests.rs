@@ -464,3 +464,6 @@ mod preparation;
 
 #[path = "capture_boundary_tests.rs"]
 mod capture_boundary;
+
+#[path = "captured_preparation_tests.rs"]
+mod captured_preparation;

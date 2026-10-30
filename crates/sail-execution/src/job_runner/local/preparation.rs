@@ -1,6 +1,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
+use datafusion::catalog::Session;
 use datafusion::common::{Result, internal_datafusion_err};
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
@@ -8,6 +9,7 @@ use datafusion::prelude::SessionContext;
 use futures::FutureExt;
 use sail_common_datafusion::managed_stream::{ManagedStreamControl, StreamPreparation};
 use sail_common_datafusion::session::job::JobPreparation;
+use sail_common_datafusion::session::scoped::ScopedSession;
 use sail_common_datafusion::task_resources::{ScopedTaskContext, TaskResourceScope};
 use sail_telemetry::telemetry::global_metrics;
 use sail_telemetry::{TracingExecOptions, trace_execution_plan};
@@ -44,6 +46,14 @@ impl LocalJobPreparation<'_> {
     /// admitted before planning. This matches legacy execute's late capture;
     /// it does not claim a frozen query snapshot or install storage routing.
     pub async fn execute(self, plan: Arc<dyn ExecutionPlan>) -> Result<SendableRecordBatchStream> {
+        self.execute_with_snapshot(plan, None).await
+    }
+
+    async fn execute_with_snapshot(
+        self,
+        plan: Arc<dyn ExecutionPlan>,
+        snapshot: Option<ScopedSession>,
+    ) -> Result<SendableRecordBatchStream> {
         let Self {
             runner,
             id,
@@ -61,7 +71,11 @@ impl LocalJobPreparation<'_> {
             ));
         }
         let prepared = catch_unwind(AssertUnwindSafe(|| {
-            let scoped = ScopedTaskContext::from_resources(&context.task_ctx(), resources);
+            let task = match snapshot {
+                Some(session) => session.task_ctx(),
+                None => context.task_ctx(),
+            };
+            let scoped = ScopedTaskContext::from_resources(&task, resources);
             let plan = trace_execution_plan(
                 plan,
                 TracingExecOptions {
@@ -107,6 +121,15 @@ impl JobPreparation for LocalJobPreparation<'_> {
     fn cancel(self: Box<Self>) -> ManagedStreamControl {
         (*self).cancel()
     }
+    fn capture<'a>(
+        self: Box<Self>,
+        registry: Option<Arc<dyn datafusion::execution::object_store::ObjectStoreRegistry>>,
+    ) -> Result<Box<dyn sail_common_datafusion::session::job::CapturedJobPreparation + 'a>>
+    where
+        Self: 'a,
+    {
+        Ok(Box::new((*self).capture_snapshot(registry)?))
+    }
     async fn execute(
         self: Box<Self>,
         plan: Arc<dyn ExecutionPlan>,
@@ -114,3 +137,5 @@ impl JobPreparation for LocalJobPreparation<'_> {
         (*self).execute(plan).await
     }
 }
+
+mod captured;

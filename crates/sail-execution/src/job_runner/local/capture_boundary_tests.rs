@@ -132,3 +132,77 @@ async fn legacy_bound_execution_recaptures_authority_after_scoped_planning() -> 
     assert!(context.extension::<TaskResourceScope>().is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn captured_bound_execution_preserves_planning_snapshot() -> TestResult {
+    let parent: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let child: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let planner = Arc::new(SnapshotPlanner {
+        store: child.clone(),
+        resources: Mutex::new(None),
+        physical: Mutex::new(None),
+        calls: AtomicUsize::new(0),
+    });
+    let context = SessionContext::new_with_state(
+        SessionStateBuilder::new()
+            .with_config(SessionConfig::new().with_target_partitions(7))
+            .with_query_planner(planner.clone())
+            .build(),
+    );
+    let url = ObjectStoreUrl::parse("memory://capture")?;
+    context
+        .runtime_env()
+        .register_object_store(url.as_ref(), parent.clone());
+    let runner = LocalJobRunner::default();
+    let preparation = (&runner as &dyn JobRunner).begin_preparation(&context)?;
+    let resources = preparation.resources().clone();
+    *planner
+        .resources
+        .lock()
+        .map_err(|_| "owner lock poisoned")? = Some(resources.clone());
+    let registry = Arc::new(DefaultObjectStoreRegistry::new());
+    registry.register_store(url.as_ref(), child.clone());
+    let preparation = preparation.capture(Some(registry))?;
+    context
+        .state_ref()
+        .write()
+        .config_mut()
+        .options_mut()
+        .execution
+        .target_partitions = 9;
+
+    let expected = resources.clone();
+    let executed = Arc::new(AtomicBool::new(false));
+    let observed = executed.clone();
+    *planner.physical.lock().map_err(|_| "plan lock poisoned")? = Some(plan(move |ctx| {
+        assert!(Arc::ptr_eq(
+            &ctx.extension::<TaskResourceScope>()?,
+            &expected
+        ));
+        assert_eq!(ctx.session_config().target_partitions(), 7);
+        let store = ctx
+            .runtime_env()
+            .object_store(ObjectStoreUrl::parse("memory://capture")?)?;
+        assert!(Arc::ptr_eq(&store, &child));
+        observed.store(true, Ordering::SeqCst);
+        Ok(stream(|_| Poll::Ready(None)).0)
+    }));
+    let logical = LogicalPlanBuilder::empty(false).build()?;
+    let physical = preparation.session().create_physical_plan(&logical).await?;
+    assert_eq!(planner.calls.load(Ordering::SeqCst), 1);
+    assert!(!executed.load(Ordering::SeqCst));
+    assert!(
+        preparation
+            .execute(physical)
+            .await?
+            .collect::<Vec<_>>()
+            .await
+            .is_empty()
+    );
+    assert!(executed.load(Ordering::SeqCst));
+    assert_eq!(resources.drain().await?.registered, 0);
+    runner.stop().await?;
+    assert!(runner.lock().active.is_empty());
+    assert!(context.extension::<TaskResourceScope>().is_err());
+    Ok(())
+}
