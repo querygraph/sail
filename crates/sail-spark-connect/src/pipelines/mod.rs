@@ -7,6 +7,7 @@ mod schema;
 mod schema_merge;
 mod selection;
 mod sql;
+mod streaming;
 mod topology;
 
 use std::collections::HashMap;
