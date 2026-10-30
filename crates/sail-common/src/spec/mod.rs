@@ -4,6 +4,7 @@ mod expression;
 mod literal;
 mod plan;
 mod snapshot_reference;
+mod subqueries;
 mod time;
 
 pub use column_change::*;
