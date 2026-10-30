@@ -18,7 +18,7 @@
 use std::io::Read;
 
 use bytes::{BufMut, BytesMut};
-use snafu::OptionExt;
+use snafu::ensure;
 
 use crate::{
     encoding::{
@@ -33,7 +33,7 @@ use crate::{
         },
         util::read_u8,
     },
-    error::{OrcError, OutOfSpecSnafu, Result},
+    error::{OutOfSpecSnafu, Result},
 };
 
 use super::NInt;
@@ -67,36 +67,31 @@ pub fn read_delta_values<N: NInt, R: Read, S: EncodingSign>(
 
     let second_byte = read_u8(reader)?;
     let length = extract_run_length_from_header(header, second_byte);
+    ensure!(
+        delta_bit_width == 0 || length >= 2,
+        OutOfSpecSnafu {
+            msg: "variable delta run must contain at least two values",
+        }
+    );
 
     let base_value = read_varint_zigzagged::<N, _, S>(reader)?;
     out_ints.push(base_value);
 
     // Always signed since can be decreasing sequence
     let delta_base = read_varint_zigzagged::<i64, _, SignedEncoding>(reader)?;
-    // TODO: does this get inlined?
-    let op: fn(N, i64) -> Option<N> = if delta_base.is_positive() {
-        |acc, delta| acc.add_i64(delta)
-    } else {
-        |acc, delta| acc.sub_i64(delta)
-    };
-    let delta_base = delta_base.abs(); // TODO: i64::MIN?
 
     if delta_bit_width == 0 {
         // If width is 0 then all values have fixed delta of delta_base
         // Skip first value since that's base_value
-        (1..length).try_fold(base_value, |acc, _| {
-            let acc = op(acc, delta_base).context(OutOfSpecSnafu {
-                msg: "over/underflow when decoding delta integer",
-            })?;
+        let mut acc = base_value;
+        for _ in 1..length {
+            acc = delta_value(acc.as_i64().wrapping_add(delta_base))?;
             out_ints.push(acc);
-            Ok::<_, OrcError>(acc)
-        })?;
+        }
     } else {
         deltas.clear();
         // Add delta base and first value
-        let second_value = op(base_value, delta_base).context(OutOfSpecSnafu {
-            msg: "over/underflow when decoding delta integer",
-        })?;
+        let second_value = delta_value(base_value.as_i64().wrapping_add(delta_base))?;
         out_ints.push(second_value);
         // Run length includes base value and first delta, so skip them
         let length = length - 2;
@@ -106,13 +101,31 @@ pub fn read_delta_values<N: NInt, R: Read, S: EncodingSign>(
         let mut acc = second_value;
         // Each element is the delta, so find actual value using running accumulator
         for delta in deltas {
-            acc = op(acc, *delta).context(OutOfSpecSnafu {
-                msg: "over/underflow when decoding delta integer",
-            })?;
+            let value = if delta_base < 0 {
+                acc.as_i64().wrapping_sub(*delta)
+            } else {
+                acc.as_i64().wrapping_add(*delta)
+            };
+            acc = delta_value(value)?;
             out_ints.push(acc);
         }
     }
     Ok(())
+}
+
+fn delta_value<N: NInt>(value: i64) -> Result<N> {
+    // Apache ORC's Java reader uses wrapping long arithmetic. This also
+    // handles unsigned packed magnitudes whose high bit is set and a signed
+    // first delta of i64::MIN without taking its unrepresentable absolute value.
+    // Retain the existing target-width check for Short and Integer decoding.
+    let narrowed = N::from_i64(value);
+    ensure!(
+        narrowed.as_i64() == value,
+        OutOfSpecSnafu {
+            msg: "over/underflow when decoding delta integer",
+        }
+    );
+    Ok(narrowed)
 }
 
 pub fn write_varying_delta<N: NInt, S: EncodingSign>(
@@ -182,6 +195,10 @@ fn derive_delta_header(delta_width: usize, run_length: usize) -> [u8; 2] {
 }
 
 #[cfg(test)]
+#[path = "delta/safety_tests.rs"]
+mod safety_tests;
+
+#[cfg(test)]
 mod tests {
     use std::io::Cursor;
 
@@ -238,13 +255,13 @@ mod tests {
 
         let mut buf = BytesMut::new();
         let mut out = vec![];
-        let mut deltas = vec![];
+        let mut scratch = vec![];
         write_varying_delta::<i64, UnsignedEncoding>(&mut buf, 0, 10, max, &deltas);
         let header = buf[0];
         read_delta_values::<i64, _, UnsignedEncoding>(
             &mut Cursor::new(&buf[1..]),
             &mut out,
-            &mut deltas,
+            &mut scratch,
             header,
         )
         .unwrap();
@@ -265,13 +282,13 @@ mod tests {
 
         let mut buf = BytesMut::new();
         let mut out = vec![];
-        let mut deltas = vec![];
+        let mut scratch = vec![];
         write_varying_delta::<i64, UnsignedEncoding>(&mut buf, 10_000, -1, max, &deltas);
         let header = buf[0];
         read_delta_values::<i64, _, UnsignedEncoding>(
             &mut Cursor::new(&buf[1..]),
             &mut out,
-            &mut deltas,
+            &mut scratch,
             header,
         )
         .unwrap();

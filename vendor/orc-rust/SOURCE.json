@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/datafusion-contrib/orc-rust",
-  "commit": "5937e8a8f1154aff333818dc365ffc6367c84d5f",
+  "commit": "133c0c5ea13578bd6905070dee11f0e66750cd9a",
   "source_kind": "Locally patched upstream package; patch revisions have not been published to the upstream repository.",
   "upstream_tag": "v0.9.0",
   "upstream_commit": "d21a6e4d2f8b5f4465fa5c0cad046c7ec2284307",
@@ -68,11 +68,15 @@
     {
       "commit": "5937e8a8f1154aff333818dc365ffc6367c84d5f",
       "subject": "fix: build ORC dictionaries from bounded length chunks"
+    },
+    {
+      "commit": "133c0c5ea13578bd6905070dee11f0e66750cd9a",
+      "subject": "fix: decode ORC delta extremes without arithmetic panics"
     }
   ],
   "package": {
     "command": "cargo +1.98.1 package --locked --no-verify",
-    "sha256": "f504451f9d2ae1315f67438a12da397e3a916cc6d1264844c3fc8dfc4d8ef718",
+    "sha256": "b3d8677ecc760a15e6b443212e530941b169cea8c59af912ed5019951ce1546c",
     "excluded_files": [
       "Cargo.lock"
     ],
@@ -82,7 +86,7 @@
     "note": "Cargo-normalized manifest; upstream package omits integration fixtures and benchmarks. Source tests were run in the full detached source checkout."
   },
   "files_sha256": {
-    ".cargo_vcs_info.json": "a074112ad3e62445961ba5e5dfd7560dcf0847de372e3a876d5189ef9beea1c3",
+    ".cargo_vcs_info.json": "73a8df77a99adab418812e34422a8eb2d278c60d628c39d27dba9b5c38386c71",
     "Cargo.toml": "0a69cbe6449e27e1be0f020c1f0e9393a135b99fa00a115e45a0e7e7b8726385",
     "Cargo.toml.orig": "58ccc950aa988bb2c70c7850de74c1ac9ad182773452dc9a08a0b25cceeb7874",
     "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
@@ -120,7 +124,8 @@
     "src/encoding/float.rs": "53874dc57316a2cd85cecc9656509988903bb31de1868b1c54b76835add07b9d",
     "src/encoding/integer/mod.rs": "c70e33c0d89a58cbff70bf855eb299a427a1ae43717f8c75a33eb9d4763c0844",
     "src/encoding/integer/rle_v1.rs": "1ed93a9ee1c0f155df4a44f62908637630ae73138248749171a16714f06f6963",
-    "src/encoding/integer/rle_v2/delta.rs": "485e44a55fce837a4bbf353a79d9ccf035126c84e4eed19df82df1e2510ff49b",
+    "src/encoding/integer/rle_v2/delta.rs": "25ffed5c7248603c682ff423e538bae22ec55c53f540d94a2fb744aa81c75906",
+    "src/encoding/integer/rle_v2/delta/safety_tests.rs": "1586fd7079e510d75fe54994550c53bf6ee7df6be16fe540757d738b3017f97f",
     "src/encoding/integer/rle_v2/direct.rs": "090ea39a0379c97a1628202082e6055677659420949f2752cec4f751fbba71a3",
     "src/encoding/integer/rle_v2/mod.rs": "f3de74a9ce05b4e9ec0db40f569d9f500a4a3cf8bacf8204952c78fbf171aaa6",
     "src/encoding/integer/rle_v2/patched_base.rs": "9819d500be4f28823075373ff2f7e29a00e4221c3c47711fd02b8e9b6e9d6444",
