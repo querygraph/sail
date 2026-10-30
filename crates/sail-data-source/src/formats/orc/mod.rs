@@ -9,6 +9,7 @@ mod schema;
 mod source;
 mod timezone;
 mod write_options;
+mod write_schema;
 
 pub use factory::{OrcDataSource, OrcFormatFactory, OrcWriteFormat};
 pub use listing_options::{OrcListingSessionDefaults, OrcReadSessionModes};
@@ -21,6 +22,7 @@ pub use schema::infer_schema as infer_orc_schema;
 pub use source::OrcSource;
 pub use timezone::OrcJavaTimeZoneConfig;
 pub use write_options::{OrcWriteCompression, OrcWriteConfig, OrcWriteSessionDefaults};
+pub use write_schema::OrcWriteSchema;
 
 #[cfg(test)]
 mod fixture_tests;

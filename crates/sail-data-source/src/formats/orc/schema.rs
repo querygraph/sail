@@ -13,7 +13,7 @@ use sail_sql_parser::ast::data_type::DataType as AstDataType;
 
 const CATALYST_TYPE: &str = "spark.sql.catalyst.type";
 const SPARK_VERSION: &str = "org.apache.spark.version";
-const CHAR_VARCHAR_TYPE: &str = "__CHAR_VARCHAR_TYPE_STRING";
+pub(super) const CHAR_VARCHAR_TYPE: &str = "__CHAR_VARCHAR_TYPE_STRING";
 
 struct LogicalType {
     data_type: DataType,
