@@ -342,3 +342,6 @@ mod procedures;
 
 #[path = "generated_analyzer_session_tests.rs"]
 mod generated_analyzer;
+
+#[path = "view_publication_tests.rs"]
+mod view_publication;

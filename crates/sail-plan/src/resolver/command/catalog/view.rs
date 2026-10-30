@@ -25,6 +25,33 @@ impl PlanResolver<'_> {
         definition: spec::ViewDefinition,
         state: &mut PlanResolverState,
     ) -> PlanResult<LogicalPlan> {
+        let (_input, options) = self.resolve_view_definition(definition, state).await?;
+        self.resolve_catalog_command(CatalogCommand::CreateView {
+            view: view.into(),
+            options,
+        })
+    }
+
+    /// Resolve a view query once and return its plan plus publication metadata.
+    /// The returned options contain no provider plan and do not publish the view.
+    /// Keep the plan within its planning owner; options retain the resolved column
+    /// schema, original SQL and creation namespace independently of that owner.
+    pub async fn resolve_view_publication(
+        &self,
+        definition: spec::ViewDefinition,
+    ) -> PlanResult<(crate::resolver::plan::NamedPlan, CreateViewOptions)> {
+        let mut state = PlanResolverState::new();
+        let (plan, options) = self.resolve_view_definition(definition, &mut state).await?;
+        let plan = Self::preserve_order_sensitive_aggregate_sorts(plan)?;
+        let fields = Some(Self::get_field_names(plan.schema(), &state)?);
+        Ok((crate::resolver::plan::NamedPlan { plan, fields }, options))
+    }
+
+    async fn resolve_view_definition(
+        &self,
+        definition: spec::ViewDefinition,
+        state: &mut PlanResolverState,
+    ) -> PlanResult<(LogicalPlan, CreateViewOptions)> {
         let spec::ViewDefinition {
             definition,
             input,
@@ -52,9 +79,9 @@ impl PlanResolver<'_> {
             }
         };
         publication::set_namespace(&mut properties, namespace);
-        let command = CatalogCommand::CreateView {
-            view: view.into(),
-            options: CreateViewOptions {
+        Ok((
+            resolved_input,
+            CreateViewOptions {
                 definition,
                 columns,
                 comment,
@@ -62,8 +89,7 @@ impl PlanResolver<'_> {
                 replace,
                 properties,
             },
-        };
-        self.resolve_catalog_command(command)
+        ))
     }
 
     pub(in super::super) async fn resolve_catalog_create_temporary_view(
