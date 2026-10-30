@@ -21,6 +21,7 @@ struct HeldPublication {
     release: Option<oneshot::Receiver<()>>,
     disposed: Option<oneshot::Sender<()>>,
     aborts: Arc<AtomicUsize>,
+    fail_after_publish: bool,
 }
 
 impl Drop for HeldPublication {
@@ -53,7 +54,18 @@ impl MultipartUpload for HeldPublication {
                     source: Box::new(error),
                 })?;
         }
-        self.store.put(&self.path, "late publication".into()).await
+        let result = self
+            .store
+            .put(&self.path, "late publication".into())
+            .await?;
+        if self.fail_after_publish {
+            Err(object_store::Error::Generic {
+                store: "HeldPublication",
+                source: "publication response lost".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     async fn abort(&mut self) -> Result<()> {
@@ -79,6 +91,7 @@ async fn canceled_completion_can_republish_after_namespace_deletion()
         release: Some(release_rx),
         disposed: Some(disposed),
         aborts: aborts.clone(),
+        fail_after_publish: false,
     };
     let mut upload = RuntimeAwareMultipartUpload::new(Box::new(inner), Handle::current());
     let caller = tokio::spawn(async move { upload.complete().await });
@@ -100,3 +113,6 @@ async fn canceled_completion_can_republish_after_namespace_deletion()
     // must join it before deleting the namespace; aborting the caller is insufficient.
     Ok(())
 }
+
+#[path = "runtime_owned_effect_tests.rs"]
+mod owned;

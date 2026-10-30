@@ -198,6 +198,9 @@ struct RuntimeAwareMultipartUpload {
     handle: Handle,
     parts: TaskTracker,
     parts_cancel: CancellationToken,
+    // History, not confirmation: an attempted complete may have published even
+    // when its response/future is lost. Only an informed caller may abort then.
+    abort_on_drop: bool,
 }
 
 #[derive(Debug)]
@@ -217,6 +220,7 @@ impl RuntimeAwareMultipartUpload {
             handle,
             parts: TaskTracker::new(),
             parts_cancel: CancellationToken::new(),
+            abort_on_drop: true,
         }
     }
 }
@@ -257,6 +261,9 @@ impl MultipartUpload for RuntimeAwareMultipartUpload {
     }
 
     async fn complete(&mut self) -> Result<PutResult> {
+        // Fence the Drop backstop before the runtime hop, not only after the
+        // spawned task obtains the upload lock. Unpolled calls do not enter here.
+        self.abort_on_drop = false;
         let inner = self.inner.clone();
         self.handle
             .spawn(async move {
@@ -277,7 +284,8 @@ impl MultipartUpload for RuntimeAwareMultipartUpload {
         self.parts.close();
         let _ = timeout(Duration::from_secs(15), self.parts.wait()).await;
         let inner = self.inner.clone();
-        self.handle
+        let result = self
+            .handle
             .spawn(async move {
                 let mut inner = inner.lock().await;
                 if inner.finished {
@@ -289,7 +297,11 @@ impl MultipartUpload for RuntimeAwareMultipartUpload {
                 }
                 result
             })
-            .await?
+            .await?;
+        if result.is_ok() {
+            self.abort_on_drop = false;
+        }
+        result
     }
 }
 
@@ -297,6 +309,9 @@ impl Drop for RuntimeAwareMultipartUpload {
     fn drop(&mut self) {
         self.parts_cancel.cancel();
         self.parts.close();
+        if !self.abort_on_drop {
+            return;
+        }
         let parts = self.parts.clone();
         let inner = self.inner.clone();
         self.handle.spawn(async move {
