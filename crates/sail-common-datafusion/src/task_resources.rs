@@ -38,6 +38,43 @@ impl ResourceDrainReport {
     pub fn is_clean(&self) -> bool {
         self.failures.is_empty()
     }
+
+    /// Retain each original typed cause while adding its resource identity.
+    /// The returned errors keep this shared report alive without cloning or
+    /// flattening the non-Clone supervisor errors.
+    pub fn errors(self: &Arc<Self>) -> Vec<DataFusionError> {
+        self.failures
+            .iter()
+            .enumerate()
+            .map(|(index, failure)| {
+                DataFusionError::Context(
+                    format!("resource {} completion or cleanup", failure.id.0),
+                    Box::new(DataFusionError::External(Box::new(ResourceError {
+                        report: self.clone(),
+                        index,
+                    }))),
+                )
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug)]
+struct ResourceError {
+    report: Arc<ResourceDrainReport>,
+    index: usize,
+}
+
+impl std::fmt::Display for ResourceError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.report.failures[self.index].error, formatter)
+    }
+}
+
+impl std::error::Error for ResourceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.report.failures[self.index].error)
+    }
 }
 
 type Drain = Shared<BoxFuture<'static, Arc<ResourceDrainReport>>>;

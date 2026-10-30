@@ -1,4 +1,4 @@
-//! Shared ownership of a prepared stream and its registered resource cleanup.
+//! Shared ownership of stream preparation, consumption, and resource cleanup.
 //!
 //! Upstream polling stays on the consumer's thread, with no prefetch. A control
 //! handle can cancel even if the consumer retains an unpolled stream. Completion
@@ -21,13 +21,16 @@ use futures::{FutureExt, Stream};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
-use crate::task_resources::{ResourceDrainReport, TaskResourceScope};
+use crate::task_resources::TaskResourceScope;
 
 /// Query outcome and cleanup qualification are deliberately separate.
 #[derive(Debug)]
 pub struct StreamCompletion {
     pub error: Option<Arc<DataFusionError>>,
     pub cleanup_errors: Vec<Arc<DataFusionError>>,
+    /// Every registered supervisor was joined, even if some returned failures.
+    /// This is false when drainage failed or the cleanup task was interrupted.
+    pub resources_drained: bool,
 }
 
 impl StreamCompletion {
@@ -47,6 +50,7 @@ impl StreamCompletion {
 }
 
 enum Phase {
+    Preparing,
     Ready(SendableRecordBatchStream),
     Polling,
     Draining,
@@ -72,9 +76,15 @@ pub struct ManagedStreamControl(Arc<Inner>);
 
 impl ManagedStreamControl {
     /// Latch cancellation, seal resource admission, and initiate disposal.
-    /// A synchronous upstream poll must return before its lease can be disposed.
+    /// Preparation or a synchronous upstream poll must relinquish its ownership
+    /// before cleanup can finish.
     pub fn cancel(&self) -> Result<()> {
         self.0.cancel()
+    }
+
+    /// Inspect the immutable completion report without starting a waiter.
+    pub fn completed(&self) -> Option<Arc<StreamCompletion>> {
+        self.0.completion.borrow().clone()
     }
 
     /// Waiters do not own cleanup. Dropping one leaves cleanup running, and
@@ -100,33 +110,25 @@ pub struct ManagedRecordBatchStream {
 
 impl ManagedRecordBatchStream {
     /// The caller supplies the already-known schema so construction invokes no
-    /// upstream methods. Preparation/admission must be owned by the caller.
+    /// upstream methods. Use [`StreamPreparation`] to own earlier preparation.
     pub fn new(
         schema: SchemaRef,
         stream: SendableRecordBatchStream,
         resources: Arc<TaskResourceScope>,
         runtime: Handle,
     ) -> (Self, ManagedStreamControl) {
-        let control = ManagedStreamControl(Arc::new(Inner {
-            state: Mutex::new(State {
-                phase: Phase::Ready(stream),
-                canceled: false,
-                consumer: None,
-            }),
-            resources,
-            runtime,
-            completion: watch::channel(None).0,
-        }));
+        let (preparation, control) = StreamPreparation::new(resources, runtime);
+        (preparation.complete(schema, stream), control)
+    }
+
+    fn from_control(schema: SchemaRef, control: ManagedStreamControl) -> Self {
         let waiter = control.clone();
-        (
-            Self {
-                schema,
-                control: control.clone(),
-                completion: async move { waiter.completion().await }.boxed(),
-                terminal: false,
-            },
+        Self {
+            schema,
             control,
-        )
+            completion: async move { waiter.completion().await }.boxed(),
+            terminal: false,
+        }
     }
 }
 
@@ -217,7 +219,7 @@ impl Inner {
             (stream, state.consumer.take())
         };
         let result = match stream {
-            Some(stream) => self.drain(stream, None),
+            Some(stream) => self.drain(Some(stream), None),
             None => self.resources.cancel(),
         };
         if let Some(consumer) = consumer {
@@ -228,16 +230,17 @@ impl Inner {
 
     fn drain(
         self: &Arc<Self>,
-        stream: SendableRecordBatchStream,
+        stream: Option<SendableRecordBatchStream>,
         error: Option<DataFusionError>,
     ) -> Result<()> {
         // Construct the guard before spawning: dropping a never-polled task on
         // runtime shutdown must still dispose and publish unresolved cleanup.
         let mut cleanup = Cleanup {
             owner: self.clone(),
-            stream: Some(stream),
+            stream,
             primary: error.map(Arc::new),
             failures: vec![],
+            resources_drained: false,
             published: false,
         };
         let admission = if cleanup.primary.is_some() || self.lock().canceled {
@@ -288,7 +291,7 @@ impl PollLease {
             _ => None,
         };
         let stream = self.stream.take()?;
-        let _ = self.owner.drain(stream, error);
+        let _ = self.owner.drain(Some(stream), error);
         None
     }
 }
@@ -298,7 +301,7 @@ impl Drop for PollLease {
         if let Some(stream) = self.stream.take() {
             self.owner.lock().phase = Phase::Draining;
             let _ = self.owner.drain(
-                stream,
+                Some(stream),
                 Some(DataFusionError::Internal(
                     "managed stream poll handoff interrupted".into(),
                 )),
@@ -312,6 +315,7 @@ struct Cleanup {
     stream: Option<SendableRecordBatchStream>,
     primary: Option<Arc<DataFusionError>>,
     failures: Vec<Arc<DataFusionError>>,
+    resources_drained: bool,
     published: bool,
 }
 
@@ -338,16 +342,9 @@ impl Cleanup {
         self.dispose();
         match self.owner.resources.drain().await {
             Ok(report) => {
+                self.resources_drained = true;
                 self.failures
-                    .extend(report.failures.iter().enumerate().map(|(index, failure)| {
-                        Arc::new(DataFusionError::Context(
-                            format!("resource {} completion or cleanup", failure.id.0),
-                            Box::new(DataFusionError::External(Box::new(ResourceError {
-                                report: report.clone(),
-                                index,
-                            }))),
-                        ))
-                    }));
+                    .extend(report.errors().into_iter().map(Arc::new));
             }
             Err(error) => self.failures.push(Arc::new(error)),
         }
@@ -378,6 +375,7 @@ impl Cleanup {
             .send_replace(Some(Arc::new(StreamCompletion {
                 error,
                 cleanup_errors: std::mem::take(&mut self.failures),
+                resources_drained: self.resources_drained,
             })));
         if let Some(consumer) = consumer {
             consumer.wake();
@@ -385,28 +383,10 @@ impl Cleanup {
     }
 }
 
-/// Keep the original non-Clone error alive without flattening its typed cause.
-#[derive(Debug)]
-struct ResourceError {
-    report: Arc<ResourceDrainReport>,
-    index: usize,
-}
-
-impl std::fmt::Display for ResourceError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.report.failures[self.index].error, formatter)
-    }
-}
-
-impl std::error::Error for ResourceError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.report.failures[self.index].error)
-    }
-}
-
 impl Drop for Cleanup {
     fn drop(&mut self) {
         if !self.published {
+            self.resources_drained = false;
             self.cancel_resources();
             self.dispose();
             self.failures.push(Arc::new(DataFusionError::Internal(
@@ -439,3 +419,6 @@ fn panic_error(operation: &str, payload: Box<dyn Any + Send>) -> DataFusionError
 #[cfg(test)]
 #[path = "managed_stream_tests.rs"]
 mod tests;
+
+mod preparation;
+pub use preparation::StreamPreparation;

@@ -470,6 +470,7 @@ fn runtime_shutdown_before_cleanup_poll_and_during_drain_reports_uncertainty() -
             matches!(CommonErrorCause::new::<NoPython>(&cleanup), CommonErrorCause::Internal(message) if message.contains("cleanup interrupted"))
         );
         assert!(report.result().is_err());
+        assert!(!report.resources_drained);
         assert_eq!(counts.polls.load(Ordering::SeqCst), 0);
         assert_eq!(counts.drops.load(Ordering::SeqCst), 1);
         drop(release);
@@ -510,6 +511,7 @@ async fn batches_pass_unchanged_only_on_demand_and_finish_cleanly() -> TestResul
     let completion = control.completion().await;
     completion.result()?;
     completion.cleanup_result()?;
+    assert!(completion.resources_drained);
     assert_eq!(counts.polls.load(Ordering::SeqCst), 3);
     assert_eq!(counts.drops.load(Ordering::SeqCst), 1);
     assert!(stream.next().await.is_none());
@@ -540,6 +542,7 @@ async fn resource_failure_turns_apparent_eof_into_terminal_failure() -> TestResu
     );
     let report = control.completion().await;
     assert!(report.result().is_err());
+    assert!(report.resources_drained);
     let cleanup = report
         .cleanup_result()
         .err()
