@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use fixture::{Gate, Injected, State, Upload};
 use futures::FutureExt;
 use object_store::ObjectStoreExt;
 use sail_common_datafusion::error::{
@@ -13,9 +14,7 @@ use tokio::runtime::Handle;
 use tokio::time::timeout;
 
 use super::*;
-#[path = "owned_multipart_test_upload.rs"]
-mod fixture;
-use fixture::{Gate, Injected, State, Upload};
+use crate::owned_multipart_test_upload as fixture;
 type TestResult = std::result::Result<(), Box<dyn Error>>;
 
 struct NoPython;

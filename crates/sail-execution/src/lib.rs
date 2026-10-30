@@ -4,6 +4,7 @@ mod id;
 mod job_graph;
 pub mod job_runner;
 pub mod owned_multipart;
+pub mod owned_store;
 mod plan;
 mod proto;
 mod rpc;
@@ -19,3 +20,6 @@ pub use worker::entrypoint::run_worker;
 
 #[cfg(test)]
 mod checkpoint_writer_error_tests;
+
+#[cfg(test)]
+mod owned_multipart_test_upload;
