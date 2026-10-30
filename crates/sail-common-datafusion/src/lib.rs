@@ -20,6 +20,7 @@ pub mod rename;
 pub mod scan;
 pub mod schema;
 pub mod schema_evolution;
+pub mod schema_merge;
 pub mod session;
 pub mod statistics;
 pub mod streaming;
