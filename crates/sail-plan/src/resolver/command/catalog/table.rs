@@ -1,4 +1,7 @@
-use datafusion_expr::LogicalPlan;
+use std::sync::Arc;
+
+use datafusion_common::DFSchema;
+use datafusion_expr::{EmptyRelation, Extension, LogicalPlan};
 use sail_catalog::command::CatalogCommand;
 use sail_catalog::manager::CatalogManager;
 use sail_catalog::provider::{
@@ -11,6 +14,7 @@ use sail_common_datafusion::catalog::{
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_common_datafusion::utils::items::ItemTaker;
+use sail_logical_plan::barrier::BarrierNode;
 
 use crate::error::{PlanError, PlanResult};
 use crate::resolver::PlanResolver;
@@ -205,7 +209,20 @@ impl PlanResolver<'_> {
             .with_table_is_external(is_external)
             .with_options(write_options);
 
-        self.resolve_write_with_builder(input, builder, state).await
+        let write = self
+            .resolve_write_with_builder(input, builder, state)
+            .await?;
+        // CTAS has no result rows. Execute the write as a barrier precondition
+        // so suppressing its internal row count cannot eliminate the mutation.
+        Ok(LogicalPlan::Extension(Extension {
+            node: Arc::new(BarrierNode::new(
+                vec![Arc::new(write)],
+                Arc::new(LogicalPlan::EmptyRelation(EmptyRelation {
+                    produce_one_row: false,
+                    schema: Arc::new(DFSchema::empty()),
+                })),
+            )),
+        }))
     }
 
     pub(in super::super) async fn resolve_default_table_location(

@@ -396,3 +396,13 @@ def test_append_matches_mixed_case_columns_by_name(spark, tmp_path, table_format
     actual = spark.sql("SELECT * FROM t2").toPandas()
     expected = pd.DataFrame({"ColumnOne": ["col_one"], "ColumnTwo": ["col_two"]})
     assert_frame_equal(actual, expected)
+
+
+@pytest.mark.parametrize("row_count", [0, 3])
+def test_ctas_collect_returns_empty_result_after_writing(spark, tmp_path, row_count):
+    location = escape_sql_string_literal(str(tmp_path / "ctas_result"))
+    result = spark.sql(f"CREATE TABLE t2 USING parquet LOCATION '{location}' AS SELECT * FROM RANGE({row_count})")
+    assert result.columns == []
+    assert result.collect() == []
+    assert spark.table("t2").columns == ["id"]
+    assert [row.id for row in spark.table("t2").orderBy("id").collect()] == list(range(row_count))
