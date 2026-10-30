@@ -266,6 +266,17 @@ impl TaskResourceScope {
         self.begin_drain(true).map(|_| ())
     }
 
+    /// Observe the latched cancellation request, including cancellation before
+    /// this future's first poll. Observation neither seals admission nor joins
+    /// resources. Owners must still relinquish preparation and await drainage.
+    /// A borrowed planning future can be selected against this on its caller's
+    /// task; no detached planning or result-forwarding task is required.
+    pub async fn cancelled(&self) {
+        let mut receiver = self.cancellation.subscribe();
+        // This future borrows the scope, so its sender outlives the receiver.
+        let _ = receiver.wait_for(|requested| *requested).await;
+    }
+
     /// Synchronously seal admission without canceling successful supervisors.
     /// The owner must still await `drain` to qualify their completion.
     pub fn seal(&self) -> Result<()> {
@@ -355,3 +366,7 @@ pub use context::ScopedTaskContext;
 #[cfg(test)]
 #[path = "task_resources_mutation_tests.rs"]
 mod mutation_tests;
+
+#[cfg(test)]
+#[path = "task_resources_cancellation_tests.rs"]
+mod cancellation_tests;
