@@ -43,6 +43,11 @@ pub fn parse_spark_bool(key: &str, value: &str) -> DataSourceResult<bool> {
     }
 }
 
+/// Parse the untrimmed Java boolean syntax used by ORC configuration.
+pub fn parse_java_bool(_key: &str, value: &str) -> DataSourceResult<bool> {
+    Ok(value.eq_ignore_ascii_case("true"))
+}
+
 pub fn parse_u16(key: &str, value: &str) -> DataSourceResult<u16> {
     value
         .parse::<u16>()

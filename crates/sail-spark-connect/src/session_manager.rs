@@ -89,11 +89,12 @@ fn spark_session_config(mut config: SessionConfig, spark: SparkSession) -> Resul
             .session_timezone
             .to_string(),
     );
-    let orc_defaults = spark
-        .orc_listing_defaults()
+    let (orc_defaults, orc_modes) = spark
+        .orc_read_config()
         .map_err(|e| internal_datafusion_err!("{e}"))?;
     Ok(config
         .with_extension(Arc::new(orc_defaults))
+        .with_extension(Arc::new(orc_modes))
         .with_extension(Arc::new(spark)))
 }
 
@@ -136,3 +137,7 @@ pub async fn create_spark_session_manager_with_factory(
 #[cfg(test)]
 #[path = "session_manager/orc_options_tests.rs"]
 mod orc_options_tests;
+
+#[cfg(test)]
+#[path = "session_manager/orc_modes_tests.rs"]
+mod orc_modes_tests;

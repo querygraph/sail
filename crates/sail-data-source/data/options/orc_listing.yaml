@@ -1,5 +1,29 @@
 # Planning-only listing options. Physical reader resource options remain in orc.yaml.
 
+- key: force_positional_evolution
+  description: |
+    Whether ORC explicitly forces positional schema evolution.
+    True is rejected at the read boundary until that mode is implemented.
+    ORC uses Java Boolean.parseBoolean: untrimmed true enables it, other text does not.
+  default:
+    value: "false"
+    parser: crate::options::parsers::parse_java_bool
+  supported: true
+  rust_type: bool
+  scopes:
+    - read
+  origins:
+    - type: option
+      keys:
+        - orc.force.positional.evolution
+      case_sensitive: false
+      parser: crate::options::parsers::parse_java_bool
+    - type: table_property
+      keys:
+        - option.orc.force.positional.evolution
+      case_sensitive: false
+      parser: crate::options::parsers::parse_java_bool
+
 - key: merge_schema
   description: |
     Whether schema inference merges all eligible ORC file schemas.

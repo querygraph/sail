@@ -13,6 +13,7 @@ use crate::spark::config::{
 use crate::spark::connect;
 
 mod orc;
+pub(crate) use orc::affects_orc_read_config;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd)]
 pub struct ConfigKeyValue {

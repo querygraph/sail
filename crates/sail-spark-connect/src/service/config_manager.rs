@@ -11,7 +11,7 @@ use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_plan::resolver::PlanResolver;
 use sail_sql_analyzer::parser::parse_native_config_value;
 
-use crate::config::ConfigKeyValue;
+use crate::config::{ConfigKeyValue, affects_orc_read_config};
 use crate::error::{SparkError, SparkResult};
 use crate::service::time_zone::is_valid_time_zone;
 use crate::session::SparkSession;
@@ -189,11 +189,9 @@ pub(crate) fn handle_config_set(
         let key = SparkConfigKey::SPARK_SQL_SESSION_TIME_ZONE.to_string();
         kv.iter().any(|pair| pair.key == key)
     };
-    let sets_orc_merge_schema = kv
-        .iter()
-        .any(|pair| pair.key == SparkConfigKey::SPARK_SQL_ORC_MERGE_SCHEMA);
-    if sets_orc_merge_schema {
-        update_orc_listing_defaults(ctx, &spark, || spark.set_config(kv))?;
+    let sets_orc_config = kv.iter().any(|pair| affects_orc_read_config(&pair.key));
+    if sets_orc_config {
+        update_orc_read_config(ctx, &spark, || spark.set_config(kv))?;
     } else {
         spark.set_config(kv)?;
     }
@@ -278,11 +276,9 @@ pub(crate) fn handle_config_unset(
         let key = SparkConfigKey::SPARK_SQL_SESSION_TIME_ZONE.to_string();
         keys.iter().any(|k| k == &key)
     };
-    let unsets_orc_merge_schema = keys
-        .iter()
-        .any(|key| key == SparkConfigKey::SPARK_SQL_ORC_MERGE_SCHEMA);
-    if unsets_orc_merge_schema {
-        update_orc_listing_defaults(ctx, &spark, || spark.unset_config(keys))?;
+    let unsets_orc_config = keys.iter().any(|key| affects_orc_read_config(key));
+    if unsets_orc_config {
+        update_orc_read_config(ctx, &spark, || spark.unset_config(keys))?;
     } else {
         spark.unset_config(keys)?;
     }
@@ -306,7 +302,7 @@ pub(crate) fn handle_config_unset(
     })
 }
 
-fn update_orc_listing_defaults(
+fn update_orc_read_config(
     ctx: &SessionContext,
     spark: &SparkSession,
     update: impl FnOnce() -> SparkResult<()>,
@@ -316,14 +312,15 @@ fn update_orc_listing_defaults(
     let state_ref = ctx.state_ref();
     let mut state = state_ref.write();
     let result = update();
-    let defaults = spark.orc_listing_defaults();
-    if let Ok(defaults) = &defaults {
+    let config = spark.orc_read_config();
+    if let Ok((defaults, modes)) = &config {
         state.config_mut().set_extension(Arc::new(*defaults));
+        state.config_mut().set_extension(Arc::new(modes.clone()));
     }
     // A multi-key request may have changed ORC before a later entry failed.
     // Refresh the snapshot in that case and preserve the original error.
     result?;
-    defaults.map(|_| ())
+    config.map(|_| ())
 }
 
 pub(crate) fn handle_config_is_modifiable(

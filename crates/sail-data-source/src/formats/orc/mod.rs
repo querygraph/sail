@@ -7,7 +7,7 @@ mod schema;
 mod source;
 mod timezone;
 
-pub use listing_options::OrcListingSessionDefaults;
+pub use listing_options::{OrcListingSessionDefaults, OrcReadSessionModes};
 pub use metadata::OrcSchemaBridge;
 pub use options::OrcReadResourceLimits;
 pub use reader::OrcObjectReader;

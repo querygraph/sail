@@ -49,7 +49,8 @@ fn resolved(state: &SessionState) -> TestResult<OrcListingReadOptions> {
 fn assert_effective(ctx: &SessionContext, expected: bool) -> TestResult {
     assert_eq!(
         ctx.extension::<SparkSession>()?
-            .orc_listing_defaults()?
+            .orc_read_config()?
+            .0
             .merge_schema,
         expected
     );
