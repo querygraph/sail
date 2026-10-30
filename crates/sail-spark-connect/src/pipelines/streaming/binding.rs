@@ -480,7 +480,6 @@ impl Walker<'_> {
         match expr {
             E::Literal(_)
             | E::UnresolvedAttribute { .. }
-            | E::UnresolvedStar { .. }
             | E::UnresolvedRegex { .. }
             | E::UnresolvedNamedLambdaVariable(_)
             | E::DefaultColumnValue
@@ -488,6 +487,14 @@ impl Walker<'_> {
             | E::UnresolvedDate { .. }
             | E::UnresolvedTime { .. }
             | E::UnresolvedTimestamp { .. } => Ok(()),
+            E::UnresolvedStar {
+                wildcard_options, ..
+            } => {
+                for replacement in wildcard_options.replace_columns.iter().flatten() {
+                    self.expr(&replacement.expression, cte_scope)?;
+                }
+                Ok(())
+            }
             E::UnresolvedFunction(function) => {
                 self.exprs(&function.arguments, cte_scope)?;
                 for (_, argument) in &function.named_arguments {
@@ -847,3 +854,7 @@ impl Walker<'_> {
 #[cfg(test)]
 #[path = "binding_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "binding_wildcard_tests.rs"]
+mod wildcard_tests;
