@@ -26,6 +26,22 @@ pub(super) struct GraphScope<'a> {
     pub flow: &'a Flow,
 }
 
+impl<'a> GraphScope<'a> {
+    /// A scope over `resolved` relations for `flow`, recording nothing yet.
+    pub fn new(
+        graph: &'a GraphDefinition,
+        resolved: &'a BTreeMap<Name, LogicalPlan>,
+        flow: &'a Flow,
+    ) -> Self {
+        Self {
+            graph,
+            resolved,
+            reads: Mutex::default(),
+            flow,
+        }
+    }
+}
+
 impl RelationScope for GraphScope<'_> {
     fn resolve(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>> {
         let raw: Name = name.iter().map(|x| x.to_ascii_lowercase()).collect();
