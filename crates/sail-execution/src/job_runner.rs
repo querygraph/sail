@@ -13,7 +13,7 @@ use crate::job_graph::{JobGraph, JobGraphOptions};
 use crate::shuffle::ShuffleBackendKind;
 
 mod local;
-pub use local::LocalJobRunner;
+pub use local::{LocalJobPreparation, LocalJobRunner};
 
 fn explain_job_graph(
     plan: Arc<dyn ExecutionPlan>,

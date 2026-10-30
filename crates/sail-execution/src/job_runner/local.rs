@@ -5,16 +5,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use datafusion::common::{DataFusionError, Result, internal_datafusion_err};
 use datafusion::execution::SendableRecordBatchStream;
-use datafusion::physical_plan::{ExecutionPlan, execute_stream};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use futures::future::join_all;
 use sail_common_datafusion::error::CommonErrorCause;
 use sail_common_datafusion::managed_stream::{ManagedStreamControl, StreamPreparation};
-use sail_common_datafusion::session::job::JobRunner;
-use sail_common_datafusion::task_resources::{ScopedTaskContext, TaskResourceScope};
+use sail_common_datafusion::session::job::{JobPreparation, JobRunner};
+use sail_common_datafusion::task_resources::TaskResourceScope;
 use sail_python_udf::error::PyErrExtractor;
-use sail_telemetry::telemetry::global_metrics;
-use sail_telemetry::{TracingExecOptions, trace_execution_plan};
 use tokio::runtime::Handle;
 
 use super::explain_job_graph;
@@ -93,6 +91,27 @@ impl LocalJobRunner {
                 failures: Failures::default(),
             }),
         }
+    }
+
+    /// Publish the preparation to stop before any caller-side planning. Keep
+    /// the authoritative context shared; no execution snapshot is frozen here.
+    pub fn begin_preparation(&self, ctx: &SessionContext) -> Result<LocalJobPreparation<'_>> {
+        let runtime =
+            Handle::try_current().map_err(|error| DataFusionError::External(Box::new(error)))?;
+        let resources = Arc::new(TaskResourceScope::new(runtime.clone()));
+        let (preparation, control) = StreamPreparation::new(resources.clone(), runtime);
+        let id = self.admit(Job {
+            control: control.clone(),
+            resources: resources.clone(),
+        })?;
+        Ok(LocalJobPreparation {
+            runner: self,
+            id,
+            context: ctx.clone(),
+            resources,
+            preparation,
+            control,
+        })
     }
 
     fn lock(&self) -> MutexGuard<'_, Jobs> {
@@ -254,6 +273,10 @@ impl Drop for LocalJobRunner {
 
 #[tonic::async_trait]
 impl JobRunner for LocalJobRunner {
+    fn begin_preparation(&self, ctx: &SessionContext) -> Result<Box<dyn JobPreparation + '_>> {
+        Ok(Box::new(LocalJobRunner::begin_preparation(self, ctx)?))
+    }
+
     fn explain(&self, plan: Arc<dyn ExecutionPlan>) -> Result<String> {
         explain_job_graph(
             plan,
@@ -271,43 +294,7 @@ impl JobRunner for LocalJobRunner {
         ctx: &SessionContext,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<SendableRecordBatchStream> {
-        let runtime =
-            Handle::try_current().map_err(|error| DataFusionError::External(Box::new(error)))?;
-        let scoped = ScopedTaskContext::new(&ctx.task_ctx(), runtime.clone());
-        let (preparation, control) = StreamPreparation::new(scoped.resources.clone(), runtime);
-        let id = self.admit(Job {
-            control: control.clone(),
-            resources: scoped.resources,
-        })?;
-        let prepared = catch_unwind(AssertUnwindSafe(|| {
-            let plan = trace_execution_plan(
-                plan,
-                TracingExecOptions {
-                    metrics: global_metrics(),
-                    session_id: Some(self.session_id.clone()),
-                    job_id: Some(id),
-                    stage: None,
-                    attempt: None,
-                    operator_id: None,
-                },
-            )?;
-            let schema = plan.schema();
-            let stream = execute_stream(plan, scoped.context)?;
-            Ok::<_, DataFusionError>((schema, stream))
-        }))
-        .unwrap_or_else(|payload| Err(panic_error("preparation", payload)));
-        match prepared {
-            Ok((schema, stream)) => Ok(Box::pin(preparation.complete(schema, stream))),
-            Err(error) => {
-                preparation.fail(error);
-                let report = control.completion().await;
-                self.reap();
-                report.result()?;
-                Err(internal_datafusion_err!(
-                    "failed preparation had no error report"
-                ))
-            }
-        }
+        self.begin_preparation(ctx)?.execute(plan).await
     }
 
     /// Await owned preparation, stream disposal and registered supervisors.
@@ -328,3 +315,6 @@ fn panic_error(operation: &str, payload: Box<dyn Any + Send>) -> DataFusionError
 
 #[cfg(test)]
 mod tests;
+
+mod preparation;
+pub use preparation::LocalJobPreparation;

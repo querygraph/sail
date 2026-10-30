@@ -10,7 +10,7 @@ use tokio::runtime::Handle;
 use super::TaskResourceScope;
 use crate::extension::SessionExtensionAccessor;
 
-/// A fresh resource scope and a context preserving the parent's execution state.
+/// A resource owner and a context preserving the parent's execution state.
 /// Creating this value does not install or drain it in a job/task runner.
 pub struct ScopedTaskContext {
     pub context: Arc<TaskContext>,

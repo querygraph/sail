@@ -458,3 +458,6 @@ fn interrupted_completion_is_retained_until_stop_joins_the_resource_scope() -> T
     })?;
     Ok(())
 }
+
+#[path = "preparation_tests.rs"]
+mod preparation;
