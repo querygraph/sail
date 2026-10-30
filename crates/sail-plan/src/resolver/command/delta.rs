@@ -205,7 +205,7 @@ impl PlanResolver<'_> {
             read_case_sensitive: self.config.case_sensitive,
         };
         let metadata = match lake_source
-            .infer_metadata(&self.ctx.state(), source_info)
+            .infer_metadata(self.provider_session().as_session(), source_info)
             .await
         {
             Ok(metadata) => metadata,
@@ -646,7 +646,10 @@ impl PlanResolver<'_> {
             }],
             read_case_sensitive: self.config.case_sensitive,
         };
-        match lake_source.infer_metadata(&self.ctx.state(), source).await {
+        match lake_source
+            .infer_metadata(self.provider_session().as_session(), source)
+            .await
+        {
             Ok(metadata) => Ok(Some(metadata)),
             Err(e) => {
                 log::debug!(

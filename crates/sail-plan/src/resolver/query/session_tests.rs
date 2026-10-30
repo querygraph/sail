@@ -325,3 +325,6 @@ mod lake_metadata;
 
 #[path = "row_factory_session_tests.rs"]
 mod row_factories;
+
+#[path = "delta_metadata_session_tests.rs"]
+mod delta_metadata;
