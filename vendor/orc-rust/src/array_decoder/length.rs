@@ -38,7 +38,7 @@ fn check_allocation_size<T>(count: usize) -> Result<()> {
     Ok(())
 }
 
-fn check_offset_buffer_size<O>(count: usize) -> Result<()> {
+pub(super) fn check_offset_buffer_size<O>(count: usize) -> Result<()> {
     let offsets = count.checked_add(1).context(OutOfSpecSnafu {
         msg: "Array offset count overflows usize",
     })?;

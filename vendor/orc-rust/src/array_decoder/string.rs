@@ -40,6 +40,8 @@ use super::length::{
 };
 use super::{ArrayBatchDecoder, Int64ArrayDecoder, PresentDecoder};
 
+mod dictionary;
+
 // TODO: reduce duplication with string below
 pub fn new_binary_decoder(column: &Column, stripe: &Stripe) -> Result<Box<dyn ArrayBatchDecoder>> {
     let present = PresentDecoder::from_stripe(stripe, column);
@@ -66,12 +68,12 @@ pub fn new_string_decoder(column: &Column, stripe: &Stripe) -> Result<Box<dyn Ar
             )))
         }
         ColumnEncodingKind::Dictionary | ColumnEncodingKind::DictionaryV2 => {
-            let bytes = Box::new(stripe.stream_map().get(column, Kind::DictionaryData));
+            let mut bytes = stripe.stream_map().get(column, Kind::DictionaryData);
+            let mut lengths = lengths;
             // TODO: is this always guaranteed to be set for all dictionaries?
             let dictionary_size = column.dictionary_size();
-            // We assume here we have fetched all the dictionary strings (according to size above)
-            let dictionary_strings = DirectStringArrayDecoder::new(bytes, lengths, None)
-                .next_byte_batch(dictionary_size, None)?;
+            let dictionary_strings =
+                dictionary::read_dictionary(&mut bytes, lengths.as_mut(), dictionary_size)?;
             let dictionary_strings = Arc::new(dictionary_strings);
 
             let indexes = stripe.stream_map().get(column, Kind::Data);

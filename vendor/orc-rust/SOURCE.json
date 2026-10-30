@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/datafusion-contrib/orc-rust",
-  "commit": "e9690a1eaefa35963554f44d45b8a54fd0ab0196",
+  "commit": "5937e8a8f1154aff333818dc365ffc6367c84d5f",
   "source_kind": "Locally patched upstream package; patch revisions have not been published to the upstream repository.",
   "upstream_tag": "v0.9.0",
   "upstream_commit": "d21a6e4d2f8b5f4465fa5c0cad046c7ec2284307",
@@ -64,11 +64,15 @@
     {
       "commit": "e9690a1eaefa35963554f44d45b8a54fd0ab0196",
       "subject": "fix: validate ORC skip counts and exact byte consumption"
+    },
+    {
+      "commit": "5937e8a8f1154aff333818dc365ffc6367c84d5f",
+      "subject": "fix: build ORC dictionaries from bounded length chunks"
     }
   ],
   "package": {
     "command": "cargo +1.98.1 package --locked --no-verify",
-    "sha256": "df909e3bde27b53f3ae06bae3fee5998b2e42ab2da35dbb03154b819f7c63bce",
+    "sha256": "f504451f9d2ae1315f67438a12da397e3a916cc6d1264844c3fc8dfc4d8ef718",
     "excluded_files": [
       "Cargo.lock"
     ],
@@ -78,19 +82,20 @@
     "note": "Cargo-normalized manifest; upstream package omits integration fixtures and benchmarks. Source tests were run in the full detached source checkout."
   },
   "files_sha256": {
-    ".cargo_vcs_info.json": "9fa99ca86b04862a15d7be0396fc95c317a298e6d8b325000770ad3181a267e2",
+    ".cargo_vcs_info.json": "a074112ad3e62445961ba5e5dfd7560dcf0847de372e3a876d5189ef9beea1c3",
     "Cargo.toml": "0a69cbe6449e27e1be0f020c1f0e9393a135b99fa00a115e45a0e7e7b8726385",
     "Cargo.toml.orig": "58ccc950aa988bb2c70c7850de74c1ac9ad182773452dc9a08a0b25cceeb7874",
     "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
     "README.md": "88394b7c22866cbaf2b95bbf93659ae9ed2ccfa2bacb57f7b9cb328f26cd815f",
     "src/array_decoder/decimal.rs": "dc5f37e42304a4ac84d521ab5c0c1823f55a49549f225d5c27995f0bcbcf540d",
-    "src/array_decoder/length.rs": "f676f24ad202eaf8a15789b38e0558317538ad2725cd6cec0544300f0c3e4c9a",
+    "src/array_decoder/length.rs": "1b40b8aac1b051269efde813953cd672360e76744313d4ae403963b1b85301d0",
     "src/array_decoder/length/tests.rs": "cb3a05d0bb4357b7fa5829b2706453ad1d8a56d1d061cfa3419288e07d7c7756",
     "src/array_decoder/list.rs": "c46f8a4ee46e2ed872c635c8e3cab7e4f2ab2aef3c9e06c2aad89c185335acc2",
     "src/array_decoder/map.rs": "dcd55994e3c63934d6a9110d96325a117b58948cd025dec140928fabb8334e5e",
     "src/array_decoder/mod.rs": "9cfeb86f38957f8bf4d236c3b64b7e42b59ef24b224ce2f4332a8ca9e6f39de7",
     "src/array_decoder/present_tests.rs": "d7f568735cc7a85a3993aef7be89becd13ce77e14f5e215b48414acac2063182",
-    "src/array_decoder/string.rs": "f767627788f67d45e56927657c9b157d3b6afb8709eb33ffc12de655cc2a382f",
+    "src/array_decoder/string.rs": "d655b02dac286f061c7fd21e930438da7625f6ac534671329883eea866821a36",
+    "src/array_decoder/string/dictionary.rs": "7eb2fe2c3ffe43421ce4392800ffeba579717e836b6848dff86ed7b6a3495760",
     "src/array_decoder/struct_decoder.rs": "521c29e4ef19fa36a1c301a6214b69c851496f535b2f0666205e6731b49a97a2",
     "src/array_decoder/timestamp.rs": "97fa9d02382de00cb16b813fef94e9bc7b0cf92236d5e20ddd90a803be2a5496",
     "src/array_decoder/union.rs": "461b9b9ab606f34b83e877fabe3eaae1c0ab9c1db15a4af8aa80b9724909f953",
