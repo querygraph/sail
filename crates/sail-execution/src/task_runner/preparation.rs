@@ -57,7 +57,7 @@ impl TaskPreparation {
         context: Arc<TaskContext>,
     ) -> ExecutionResult<SendableRecordBatchStream> {
         let plan = proto_to_physical_plan(&context, &RemoteExecutionCodec, proto)?;
-        let plan = self.rewrite_file_scans(plan)?;
+        let plan = Self::rewrite_file_scans(plan)?;
         let plan = self.rewrite_shuffle(
             key,
             &definition.inputs,
@@ -89,10 +89,7 @@ impl TaskPreparation {
         Ok(plan.execute(key.partition, context)?)
     }
 
-    fn rewrite_file_scans(
-        &self,
-        plan: Arc<dyn ExecutionPlan>,
-    ) -> ExecutionResult<Arc<dyn ExecutionPlan>> {
+    fn rewrite_file_scans(plan: Arc<dyn ExecutionPlan>) -> ExecutionResult<Arc<dyn ExecutionPlan>> {
         let result = plan.transform(|node| {
             if let Some(ds) = node.downcast_ref::<DataSourceExec>()
                 && let Some(base_config) = ds.data_source().downcast_ref::<FileScanConfig>()
@@ -112,9 +109,12 @@ impl TaskPreparation {
                         Arc::new(SchemaEvolutionPhysicalExprAdapterFactory {});
                     builder = builder.with_expr_adapter(Some(adapter_factory));
                 }
-                return Ok(Transformed::yes(
-                    DataSourceExec::from_data_source(builder.build()) as Arc<dyn ExecutionPlan>,
-                ));
+                // Decoded checkpoints can carry partitioning on the execution
+                // node separately from the file config. This rewrite changes
+                // neither the file groups nor the projected output columns.
+                let scan = DataSourceExec::new(Arc::new(builder.build()))
+                    .with_partitioning(ds.properties().output_partitioning().clone());
+                return Ok(Transformed::yes(Arc::new(scan) as Arc<dyn ExecutionPlan>));
             }
             Ok(Transformed::no(node))
         });
@@ -158,6 +158,10 @@ impl TaskPreparation {
         Ok(Arc::new(ShuffleWriteExec::new(plan, writer, partitioning)))
     }
 }
+
+#[cfg(test)]
+#[path = "preparation/file_scan_tests.rs"]
+mod file_scan_tests;
 
 /// Dropping the pending stream cancels preparation cooperatively. The blocking task owns
 /// its inputs and result, so Tokio drops an abandoned result even after the monitor exits.
