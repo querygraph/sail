@@ -13,7 +13,7 @@ use datafusion_common::{DataFusionError, Result, internal_datafusion_err};
 use futures::FutureExt;
 use futures::future::{BoxFuture, Shared, join_all};
 use tokio::runtime::Handle;
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::extension::SessionExtension;
@@ -153,6 +153,42 @@ impl TaskResourceScope {
         resources.push(Resource { id, handle });
         *next_id = following;
         Ok(id)
+    }
+
+    /// Run an admitted supervisor and observe its completed result. Losing the
+    /// observer does not cancel the supervisor; `drain` still joins it. Returned
+    /// factory errors retain the same typed cause in the observer and drain report.
+    ///
+    /// Factories must finish required completion/cleanup before returning. This
+    /// is for completed values, not resource handles requiring async disposal
+    /// when a consumer disappears (such as a newly created multipart upload).
+    /// Task interruption fails the observer; drainage retains the task join failure.
+    pub async fn run<T, F, Fut>(&self, factory: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(watch::Receiver<bool>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
+        let (result, receiver) = oneshot::channel();
+        self.spawn(move |canceled| async move {
+            match factory(canceled).await {
+                Ok(value) => {
+                    let _ = result.send(Ok(value));
+                    Ok(())
+                }
+                Err(error) => {
+                    let error = Arc::new(error);
+                    let _ = result.send(Err(DataFusionError::Shared(error.clone())));
+                    Err(DataFusionError::Shared(error))
+                }
+            }
+        })?;
+        receiver.await.map_err(|error| {
+            DataFusionError::Context(
+                "owned resource result interrupted".into(),
+                Box::new(DataFusionError::External(Box::new(error))),
+            )
+        })?
     }
 
     /// Synchronously seal admission and latch cooperative cancellation.
