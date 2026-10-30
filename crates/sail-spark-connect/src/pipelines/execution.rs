@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
+use sail_catalog::command::CatalogCommand;
 use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
@@ -106,6 +108,21 @@ pub(super) async fn run_command(
         scope,
     )
     .await?;
+    execute_command_plan(ctx, physical).await
+}
+
+pub(super) async fn run_catalog_command(
+    ctx: &SessionContext,
+    command: CatalogCommand,
+) -> SparkResult<()> {
+    let (physical, _) = sail_plan::prepare_catalog_command(ctx, command).await?;
+    execute_command_plan(ctx, physical).await
+}
+
+async fn execute_command_plan(
+    ctx: &SessionContext,
+    physical: Arc<dyn ExecutionPlan>,
+) -> SparkResult<()> {
     let service = ctx.extension::<JobService>()?;
     let mut stream = service.runner().execute(ctx, physical).await?;
     while stream.try_next().await?.is_some() {}

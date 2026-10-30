@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DFSchema;
 use datafusion::logical_expr::{EmptyRelation, LogicalPlan};
 use datafusion::prelude::SessionContext;
+use sail_catalog::provider::CreateViewOptions;
 use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
@@ -93,7 +95,8 @@ impl RelationScope for GraphScope<'_> {
 pub(super) struct AnalyzedGraph {
     pub order: Vec<Name>,
     pub dependencies: BTreeMap<Name, BTreeSet<Name>>,
-    pub relations: BTreeMap<Name, LogicalPlan>,
+    pub schemas: BTreeMap<Name, SchemaRef>,
+    pub publications: BTreeMap<Name, CreateViewOptions>,
 }
 
 pub(super) async fn analyze(
@@ -105,6 +108,7 @@ pub(super) async fn analyze(
     let mut resolved = BTreeMap::new();
     let mut order = vec![];
     let mut dependencies = BTreeMap::new();
+    let mut publications = BTreeMap::new();
     while order.len() < graph.outputs.len() {
         let before = order.len();
         for output in &graph.outputs {
@@ -123,9 +127,20 @@ pub(super) async fn analyze(
                 };
                 let config = spark.plan_config_with_overrides(flow.sql_conf.clone())?;
                 let resolver = PlanResolver::new(ctx, config).with_relation_scope(&scope);
-                let result = resolver
-                    .resolve_named_plan(spec::Plan::Query(flow.query.clone()))
-                    .await;
+                let result = match &output.view {
+                    Some(definition) => resolver
+                        .resolve_view_publication(definition.clone())
+                        .await
+                        .map(|(plan, options)| {
+                            publications.insert(output.name.clone(), options);
+                            plan
+                        }),
+                    None => {
+                        resolver
+                            .resolve_named_plan(spec::Plan::Query(flow.query.clone()))
+                            .await
+                    }
+                };
                 inputs.extend(scope.reads.into_inner()?);
                 match result {
                     Ok(plan) => {
@@ -211,7 +226,11 @@ pub(super) async fn analyze(
     Ok(AnalyzedGraph {
         order: super::topology::order(&dependencies)?,
         dependencies,
-        relations: resolved,
+        schemas: resolved
+            .into_iter()
+            .map(|(name, plan)| (name, Arc::new(plan.schema().as_arrow().clone())))
+            .collect(),
+        publications,
     })
 }
 

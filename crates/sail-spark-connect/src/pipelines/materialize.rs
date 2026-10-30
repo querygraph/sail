@@ -1,6 +1,5 @@
-use std::sync::Mutex;
-
 use datafusion::prelude::SessionContext;
+use sail_catalog::command::CatalogCommand;
 use sail_catalog::error::{CatalogError, CatalogObject};
 use sail_catalog::manager::CatalogManager;
 use sail_common::spec;
@@ -9,8 +8,8 @@ use sail_common_datafusion::datasource::DataSourceRegistry;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_plan::error::PlanError;
 
-use super::analysis::{AnalyzedGraph, GraphScope};
-use super::execution::run_command;
+use super::analysis::AnalyzedGraph;
+use super::execution::{run_catalog_command, run_command};
 use super::graph::{GraphDefinition, analysis, quoted};
 use super::selection::Selection;
 use crate::error::{SparkError, SparkResult};
@@ -69,11 +68,10 @@ pub(super) async fn tables(
             return Err(SparkError::unsupported("pipeline table clustering"));
         }
         let schema = analyzed
-            .relations
+            .schemas
             .get(&output.name)
             .ok_or_else(|| SparkError::internal("analyzed output missing"))?
-            .schema()
-            .as_arrow();
+            .as_ref();
         let columns = super::schema::table_columns(output, schema)?;
         let table: spec::ObjectName = output.name.clone().into();
         let existing = match manager.get_table_or_view(&output.name).await {
@@ -249,37 +247,28 @@ pub(super) async fn views(
     graph: &GraphDefinition,
     analyzed: &AnalyzedGraph,
 ) -> SparkResult<()> {
-    let spark = ctx.extension::<SparkSession>()?;
     for name in &analyzed.order {
         let output = graph
             .outputs
             .iter()
             .find(|output| &output.name == name)
             .ok_or_else(|| SparkError::internal("analyzed output missing"))?;
-        let Some(mut definition) = output.view.clone() else {
+        if output.view.is_none() {
             continue;
-        };
-        let flow = graph
-            .flows
-            .iter()
-            .find(|flow| &flow.target == name)
-            .ok_or_else(|| analysis("PIPELINE_DATASET_WITHOUT_FLOW", quoted(name)))?;
-        let scope = GraphScope {
-            graph,
-            resolved: &analyzed.relations,
-            reads: Mutex::default(),
-            flow,
-        };
-        definition.replace = true;
-        definition.if_not_exists = false;
-        run_command(
+        }
+        let mut options = analyzed
+            .publications
+            .get(name)
+            .cloned()
+            .ok_or_else(|| SparkError::internal("analyzed view publication missing"))?;
+        options.replace = true;
+        options.if_not_exists = false;
+        run_catalog_command(
             ctx,
-            spark.plan_config_with_overrides(flow.sql_conf.clone())?,
-            spec::CommandNode::CreateView {
-                view: name.clone().into(),
-                definition,
+            CatalogCommand::CreateView {
+                view: name.clone(),
+                options,
             },
-            Some(&scope),
         )
         .await?;
     }
