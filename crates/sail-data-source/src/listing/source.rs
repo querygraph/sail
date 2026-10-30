@@ -70,6 +70,44 @@ pub trait ReadFormat: Debug + Send + Sync + 'static {
         compression: CompressionTypeVariant,
     ) -> Result<SchemaRef>;
 
+    /// Prepare a supplied schema before partition columns are separated.
+    ///
+    /// The default retains legacy name reconciliation and physical-schema
+    /// inference. An empty schema returns `None`, requesting ordinary inference.
+    /// Formats can instead retain an explicit schema (including an empty one)
+    /// and defer per-file compatibility checks by returning `Some` without a
+    /// physical schema. This hook is not called when no schema was supplied.
+    async fn prepare_explicit_schema(
+        &self,
+        ctx: &dyn Session,
+        schema: Schema,
+        files: &[ListingFileSample<'_>],
+        compression: CompressionTypeVariant,
+        read_case_sensitive: bool,
+    ) -> Result<Option<PreparedExplicitSchema>> {
+        if schema.fields().is_empty() {
+            return Ok(None);
+        }
+        let physical = if self.requires_explicit_schema_validation() {
+            Some(self.infer_schema(ctx, files, compression).await?)
+        } else if read_case_sensitive {
+            None
+        } else {
+            self.infer_schema(ctx, files, compression).await.ok()
+        };
+        // Reconcile names so readers and file statistics that resolve columns
+        // by exact name can find the requested case-insensitive columns.
+        let schema = if read_case_sensitive {
+            schema
+        } else if let Some(physical) = &physical {
+            reconcile_schema_names_case_insensitive(schema, physical)?
+        } else {
+            // Keep the user schema when optional physical inference fails.
+            schema
+        };
+        Ok(Some(PreparedExplicitSchema { schema, physical }))
+    }
+
     /// Infer file-level metadata needed for planning.
     /// The metadata includes statistics and ordering.
     async fn infer_file_meta(
@@ -123,6 +161,16 @@ pub struct ListingFileSample<'a> {
     pub url: &'a ListingTableUrl,
     pub store: Arc<dyn ObjectStore>,
     pub objects: Vec<ObjectMeta>,
+}
+
+/// A format's supplied schema before partition-column extraction.
+#[derive(Debug)]
+pub struct PreparedExplicitSchema {
+    /// Logical schema, including any supplied directory partition columns.
+    pub schema: Schema,
+    /// When present, validate the remaining file schema against this physical
+    /// schema after partition-column extraction.
+    pub physical: Option<SchemaRef>,
 }
 
 #[derive(Debug, Clone)]
@@ -208,34 +256,22 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
         .await?;
         let compression = read_format.infer_compression(ctx, &inference_files).await?;
 
-        let (schema, partition_fields) = match schema {
-            Some(schema) if !schema.fields().is_empty() => {
-                let physical = if read_format.requires_explicit_schema_validation() {
-                    Some(
-                        read_format
-                            .infer_schema(ctx, &inference_files, compression)
-                            .await?,
+        let prepared = match schema {
+            Some(schema) => {
+                read_format
+                    .prepare_explicit_schema(
+                        ctx,
+                        schema,
+                        &inference_files,
+                        compression,
+                        read_case_sensitive,
                     )
-                } else if read_case_sensitive {
-                    None
-                } else {
-                    read_format
-                        .infer_schema(ctx, &inference_files, compression)
-                        .await
-                        .ok()
-                };
-                // Spark matches a user-specified schema against the physical file
-                // columns case-insensitively by default (`spark.sql.caseSensitive=false`).
-                // Reconcile the user column names to the physical names up front so that both
-                // the file stats and reader (which resolve columns by exact name) find the data.
-                let schema = if read_case_sensitive {
-                    schema
-                } else if let Some(physical) = &physical {
-                    reconcile_schema_names_case_insensitive(schema, physical)?
-                } else {
-                    // Keeps the user schema if physical schema inference is unavailable.
-                    schema
-                };
+                    .await?
+            }
+            None => None,
+        };
+        let (schema, partition_fields) = match prepared {
+            Some(PreparedExplicitSchema { schema, physical }) => {
                 // When the partition columns are not specified, auto-discover
                 // them from `key=value` segments in the listing paths.
                 // Without this, columns that exist only in the directory tree
@@ -261,7 +297,7 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
                 }
                 (Arc::new(schema), partition_fields)
             }
-            _ => {
+            None => {
                 let schema = read_format
                     .infer_schema(ctx, &inference_files, compression)
                     .await?;
@@ -413,3 +449,7 @@ mod case_sensitivity_tests;
 #[cfg(test)]
 #[path = "inference_selection_tests.rs"]
 mod inference_selection_tests;
+
+#[cfg(test)]
+#[path = "explicit_schema_tests.rs"]
+mod explicit_schema_tests;
