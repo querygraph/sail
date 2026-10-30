@@ -30,6 +30,7 @@ impl ReadFormat for AvroReadFormat {
         _ctx: &dyn Session,
         files: &[ListingFileSample<'_>],
         _compression: CompressionTypeVariant,
+        _read_case_sensitive: bool,
     ) -> Result<SchemaRef> {
         let mut schemas = vec![];
         for group in files {

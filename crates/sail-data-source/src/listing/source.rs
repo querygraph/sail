@@ -68,11 +68,16 @@ pub trait ReadFormat: Debug + Send + Sync + 'static {
     ) -> Result<CompressionTypeVariant>;
 
     /// Infer the file schema from the given files.
+    ///
+    /// `read_case_sensitive` is the policy captured in [`SourceInfo`] for this
+    /// read. Formats that use it must not derive it from SQL identifier
+    /// normalization or other session settings.
     async fn infer_schema(
         &self,
         ctx: &dyn Session,
         files: &[ListingFileSample<'_>],
         compression: CompressionTypeVariant,
+        read_case_sensitive: bool,
     ) -> Result<SchemaRef>;
 
     /// Prepare a supplied schema before partition columns are separated.
@@ -94,11 +99,16 @@ pub trait ReadFormat: Debug + Send + Sync + 'static {
             return Ok(None);
         }
         let physical = if self.requires_explicit_schema_validation() {
-            Some(self.infer_schema(ctx, files, compression).await?)
+            Some(
+                self.infer_schema(ctx, files, compression, read_case_sensitive)
+                    .await?,
+            )
         } else if read_case_sensitive {
             None
         } else {
-            self.infer_schema(ctx, files, compression).await.ok()
+            self.infer_schema(ctx, files, compression, read_case_sensitive)
+                .await
+                .ok()
         };
         // Reconcile names so readers and file statistics that resolve columns
         // by exact name can find the requested case-insensitive columns.
@@ -291,7 +301,7 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
             }
             None => {
                 let schema = read_format
-                    .infer_schema(ctx, &inference_files, compression)
+                    .infer_schema(ctx, &inference_files, compression, read_case_sensitive)
                     .await?;
                 let schema = rewrite_unsupported_fields(schema);
 

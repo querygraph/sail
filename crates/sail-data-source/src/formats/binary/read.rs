@@ -30,6 +30,7 @@ impl ReadFormat for BinaryReadFormat {
         ctx: &dyn Session,
         _files: &[ListingFileSample<'_>],
         _compression: CompressionTypeVariant,
+        _read_case_sensitive: bool,
     ) -> Result<SchemaRef> {
         let tz = Arc::from(
             ctx.config()

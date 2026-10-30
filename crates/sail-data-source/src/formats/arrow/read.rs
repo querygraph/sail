@@ -56,6 +56,7 @@ impl ReadFormat for ArrowReadFormat {
         _ctx: &dyn Session,
         files: &[ListingFileSample<'_>],
         _compression: CompressionTypeVariant,
+        _read_case_sensitive: bool,
     ) -> Result<SchemaRef> {
         let _ = self;
         let mut schemas = vec![];

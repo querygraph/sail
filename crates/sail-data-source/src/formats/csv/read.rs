@@ -49,6 +49,7 @@ impl ReadFormat for CsvReadFormat {
         ctx: &dyn Session,
         files: &[ListingFileSample<'_>],
         compression: CompressionTypeVariant,
+        _read_case_sensitive: bool,
     ) -> Result<SchemaRef> {
         let mut options = self.options.clone().into_table_options()?;
         options.compression = compression;

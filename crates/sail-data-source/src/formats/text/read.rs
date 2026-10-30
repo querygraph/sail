@@ -40,6 +40,7 @@ impl ReadFormat for TextReadFormat {
         _ctx: &dyn Session,
         _files: &[ListingFileSample<'_>],
         _compression: CompressionTypeVariant,
+        _read_case_sensitive: bool,
     ) -> Result<SchemaRef> {
         Ok(Arc::new(Schema::new(vec![Field::new(
             "value",

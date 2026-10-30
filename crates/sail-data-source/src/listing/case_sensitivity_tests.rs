@@ -16,7 +16,10 @@ use super::*;
 use crate::listing::planner::ListingPhysicalPlanner;
 
 #[derive(Debug, Default)]
-struct ScanObservations(Mutex<Vec<bool>>);
+struct ScanObservations {
+    inference: Mutex<Vec<(bool, bool)>>,
+    scans: Mutex<Vec<bool>>,
+}
 
 #[derive(Debug, Default)]
 struct CaseFormatFactory;
@@ -55,10 +58,15 @@ impl ReadFormat for CaseReadFormat {
 
     async fn infer_schema(
         &self,
-        _ctx: &dyn Session,
+        ctx: &dyn Session,
         _files: &[ListingFileSample<'_>],
         _compression: CompressionTypeVariant,
+        read_case_sensitive: bool,
     ) -> Result<SchemaRef> {
+        self.0.inference.lock().unwrap().push((
+            read_case_sensitive,
+            ctx.config_options().sql_parser.enable_ident_normalization,
+        ));
         Ok(Arc::new(Schema::new(vec![Field::new(
             "Value",
             DataType::Int64,
@@ -67,7 +75,7 @@ impl ReadFormat for CaseReadFormat {
     }
 
     async fn scan(&self, _ctx: &dyn Session, input: ListingScanInput) -> Result<FileScanConfig> {
-        self.0.0.lock().unwrap().push(input.read_case_sensitive);
+        self.0.scans.lock().unwrap().push(input.read_case_sensitive);
         Ok(FileScanConfigBuilder::new(
             input.object_store_url,
             Arc::new(JsonSource::new(input.schema)),
@@ -154,6 +162,60 @@ async fn source_read_case_policy_reaches_the_format_scan() -> Result<()> {
             .unwrap();
         assert_eq!(physical.schema().field(0).name(), expected_name);
     }
-    assert_eq!(observations.0.lock().unwrap().as_slice(), &[false, true]);
+    assert_eq!(
+        observations.scans.lock().unwrap().as_slice(),
+        &[false, true]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn inferred_schemas_use_the_source_case_policy_independently_of_sql_normalization()
+-> Result<()> {
+    for normalize_identifiers in [false, true] {
+        for read_case_sensitive in [false, true] {
+            let observations = Arc::new(ScanObservations::default());
+            let mut config = SessionConfig::new().with_extension(observations.clone());
+            config.options_mut().sql_parser.enable_ident_normalization = normalize_identifiers;
+            let context = SessionContext::new_with_config(config);
+            let store = Arc::new(InMemory::new());
+            store
+                .put(
+                    &Path::from("data/part.json"),
+                    Bytes::from_static(b"{\"Value\":1}\n").into(),
+                )
+                .await?;
+            context.register_object_store(&Url::parse("memory://case-policy").unwrap(), store);
+            for schema in [None, Some(Schema::empty())] {
+                // Both ordinary inference and the legacy explicit-empty
+                // fallback must receive this read's captured policy.
+                let source = ListingDataSource::<CaseFormatFactory>::default()
+                    .create_source(
+                        &context.state(),
+                        SourceInfo {
+                            paths: vec!["memory://case-policy/data/".to_string()],
+                            lakehouse_table: None,
+                            schema,
+                            constraints: datafusion_common::Constraints::default(),
+                            partition_by: vec![],
+                            bucket_by: None,
+                            sort_order: vec![],
+                            options: vec![],
+                            read_case_sensitive,
+                        },
+                    )
+                    .await?;
+                assert_eq!(source.schema().field(0).name(), "Value");
+            }
+            assert_eq!(
+                observations.inference.lock().unwrap().as_slice(),
+                &[
+                    (read_case_sensitive, normalize_identifiers),
+                    (read_case_sensitive, normalize_identifiers),
+                ]
+            );
+            assert!(observations.scans.lock().unwrap().is_empty());
+        }
+    }
     Ok(())
 }

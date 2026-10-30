@@ -47,6 +47,7 @@ impl ReadFormat for JsonReadFormat {
         _ctx: &dyn Session,
         files: &[ListingFileSample<'_>],
         compression: CompressionTypeVariant,
+        _read_case_sensitive: bool,
     ) -> Result<SchemaRef> {
         let mut schemas: Vec<Schema> = vec![];
         let mut records_to_read = self.options.schema_infer_max_records;

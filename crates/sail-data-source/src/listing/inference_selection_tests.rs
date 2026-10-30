@@ -147,6 +147,7 @@ impl ReadFormat for SampleReadFormat {
         _ctx: &dyn Session,
         files: &[ListingFileSample<'_>],
         _compression: CompressionTypeVariant,
+        _read_case_sensitive: bool,
     ) -> Result<SchemaRef> {
         *self.0.schema.lock().unwrap() = files.iter().map(|g| g.objects.clone()).collect();
         let mut names = BTreeSet::new();
@@ -194,8 +195,11 @@ impl ReadFormat for AllReadFormat {
         ctx: &dyn Session,
         files: &[ListingFileSample<'_>],
         compression: CompressionTypeVariant,
+        read_case_sensitive: bool,
     ) -> Result<SchemaRef> {
-        self.0.infer_schema(ctx, files, compression).await
+        self.0
+            .infer_schema(ctx, files, compression, read_case_sensitive)
+            .await
     }
 
     async fn scan(&self, ctx: &dyn Session, input: ListingScanInput) -> Result<FileScanConfig> {

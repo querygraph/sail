@@ -113,6 +113,7 @@ impl ReadFormat for ParquetReadFormat {
         ctx: &dyn Session,
         files: &[ListingFileSample<'_>],
         _compression: CompressionTypeVariant,
+        _read_case_sensitive: bool,
     ) -> Result<SchemaRef> {
         let options = self.options.clone().into_table_options();
         fail_for_encryption_factory(&options)?;

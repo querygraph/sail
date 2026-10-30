@@ -15,6 +15,7 @@ use super::*;
 struct Calls {
     compression: usize,
     inference: usize,
+    inference_case_policies: Vec<bool>,
     prepared: Vec<Schema>,
     validated: Vec<(Schema, Schema)>,
 }
@@ -95,8 +96,13 @@ impl ReadFormat for DefaultReadFormat {
         _ctx: &dyn Session,
         _files: &[ListingFileSample<'_>],
         _compression: CompressionTypeVariant,
+        read_case_sensitive: bool,
     ) -> Result<SchemaRef> {
-        self.0.calls.lock().unwrap().inference += 1;
+        {
+            let mut calls = self.0.calls.lock().unwrap();
+            calls.inference += 1;
+            calls.inference_case_policies.push(read_case_sensitive);
+        }
         if self.0.fail_inference {
             return plan_err!("test physical inference failure");
         }
@@ -140,8 +146,11 @@ impl ReadFormat for PreservingReadFormat {
         ctx: &dyn Session,
         files: &[ListingFileSample<'_>],
         compression: CompressionTypeVariant,
+        read_case_sensitive: bool,
     ) -> Result<SchemaRef> {
-        self.0.infer_schema(ctx, files, compression).await
+        self.0
+            .infer_schema(ctx, files, compression, read_case_sensitive)
+            .await
     }
 
     async fn prepare_explicit_schema(
@@ -268,6 +277,10 @@ async fn default_case_policy_and_post_partition_validation_are_unchanged() -> Re
             let inferred = require_validation || !case_sensitive;
             assert_eq!(calls.compression, 1);
             assert_eq!(calls.inference, usize::from(inferred));
+            assert_eq!(
+                calls.inference_case_policies,
+                vec![case_sensitive; usize::from(inferred)]
+            );
             assert_eq!(calls.validated.len(), usize::from(inferred));
             if inferred {
                 // The directory-only p column must be removed before validation.
@@ -314,6 +327,10 @@ async fn default_inference_errors_remain_optional_only_for_case_reconciliation()
         }
         let calls = policy.calls.lock().unwrap();
         assert_eq!(calls.inference, expected_inference);
+        assert_eq!(
+            calls.inference_case_policies,
+            vec![case_sensitive; expected_inference]
+        );
         assert!(calls.validated.is_empty());
     }
     Ok(())
