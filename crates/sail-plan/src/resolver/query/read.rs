@@ -230,7 +230,9 @@ impl PlanResolver<'_> {
                 let info = SourceInfo {
                     paths: location.map(|x| vec![x]).unwrap_or_default(),
                     lakehouse_table: Some(lakehouse_table),
-                    schema: Some(schema),
+                    // An empty stored catalog schema requests runtime inference, as in Spark.
+                    // Explicit schemas in direct data source reads retain their empty/nonempty distinction.
+                    schema: (!schema.fields().is_empty()).then_some(schema),
                     constraints,
                     partition_by: partition_by.into_iter().map(|field| field.column).collect(),
                     bucket_by: bucket_by.map(|x| x.into()),
