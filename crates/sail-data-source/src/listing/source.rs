@@ -3,7 +3,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+#[cfg(test)]
+use datafusion::arrow::datatypes::{DataType, Field};
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::datasource::physical_plan::FileSinkConfig;
 use datafusion::execution::object_store::ObjectStoreUrl;
@@ -20,11 +22,12 @@ use futures::TryStreamExt;
 use object_store::{ObjectMeta, ObjectStore};
 use sail_common_datafusion::datasource::{
     DataSource, OptionLayer, SinkInfo, SinkMode, SourceInfo, find_path_in_options,
-    get_partition_columns_and_file_schema,
 };
 use url::Url;
 
-use crate::listing::partition::partition_directory_names;
+use crate::listing::partition::{
+    inferred_partition_fields, partition_directory_names, prepare_explicit_partitions,
+};
 use crate::listing::table::{ListingTableSource, ListingTableSourceConfig};
 use crate::listing::utils::{
     infer_partitions, rewrite_unsupported_fields, select_listing_files,
@@ -272,32 +275,19 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
             }
             None => None,
         };
-        let (schema, partition_fields) = match prepared {
+        let (schema, partition_fields, discovered_partitions) = match prepared {
             Some(PreparedExplicitSchema { schema, physical }) => {
-                // When the partition columns are not specified, auto-discover
-                // them from `key=value` segments in the listing paths.
-                // Without this, columns that exist only in the directory tree
-                // are treated as file columns, and the file reader fails
-                // because the file itself does not contain them.
-                let partition_by = if partition_by.is_empty() {
-                    infer_partitions(&inference_files)?
-                        .into_iter()
-                        .filter(|name| {
-                            schema
-                                .fields()
-                                .iter()
-                                .any(|f| f.name().eq_ignore_ascii_case(name))
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    partition_by
-                };
-                let (partition_fields, schema) =
-                    get_partition_columns_and_file_schema(&schema, partition_by)?;
+                let discovered_partitions = infer_partitions(&inference_files)?;
+                let (schema, partition_fields) = prepare_explicit_partitions(
+                    &schema,
+                    &discovered_partitions,
+                    &partition_by,
+                    read_case_sensitive,
+                )?;
                 if let Some(physical) = physical {
                     read_format.validate_explicit_schema(&schema, &physical)?;
                 }
-                (Arc::new(schema), partition_fields)
+                (Arc::new(schema), partition_fields, discovered_partitions)
             }
             None => {
                 let schema = read_format
@@ -305,24 +295,16 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
                     .await?;
                 let schema = rewrite_unsupported_fields(schema);
 
-                let partition_by = if partition_by.is_empty() {
-                    infer_partitions(&inference_files)?
-                } else {
-                    partition_by
-                };
-
-                // TODO: infer concrete partition types from observed values to match
-                //   the `spark.sql.sources.partitionColumnTypeInference.enabled` option.
-                let partition_fields = partition_by
-                    .into_iter()
-                    .map(|col| Arc::new(Field::new(col, DataType::Utf8, false)))
-                    .collect();
-                (schema, partition_fields)
+                let discovered_partitions = infer_partitions(&inference_files)?;
+                // With no prepared supplied schema, Spark uses all discovered
+                // partitions even when explicit selectors were provided.
+                let partition_fields = inferred_partition_fields(&discovered_partitions);
+                (schema, partition_fields, discovered_partitions)
             }
         };
 
         let partition_directory_names =
-            partition_directory_names(&partition_fields, &infer_partitions(&inference_files)?)?;
+            partition_directory_names(&partition_fields, &discovered_partitions)?;
         validate_partition_directory_names(&inference_files, &partition_directory_names)?;
 
         let source = ListingTableSource::try_new(ListingTableSourceConfig {

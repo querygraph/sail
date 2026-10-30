@@ -435,3 +435,27 @@ async fn explicit_empty_override_is_distinct_from_absent_schema() -> Result<()> 
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn explicit_empty_override_keeps_discovered_partitions_without_file_inference() -> Result<()>
+{
+    let (context, policy) = fixture(
+        Policy {
+            fail_inference: true,
+            ..Default::default()
+        },
+        true,
+    )
+    .await?;
+    let output =
+        source::<PreservingReadFormat>(&context, Some(Schema::empty()), false, vec![]).await?;
+    assert_eq!(
+        output.schema().as_ref(),
+        &Schema::new(vec![Field::new("p", DataType::Utf8, true)])
+    );
+    let calls = policy.calls.lock().unwrap();
+    assert_eq!(calls.prepared, [Schema::empty()]);
+    assert_eq!(calls.inference, 0);
+    assert!(calls.validated.is_empty());
+    Ok(())
+}
