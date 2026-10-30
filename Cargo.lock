@@ -7932,6 +7932,7 @@ dependencies = [
  "sail-telemetry",
  "serde",
  "serde_json",
+ "sha2",
  "syn 3.0.9",
  "thiserror",
  "tokio",

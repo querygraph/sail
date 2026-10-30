@@ -15,6 +15,7 @@
 pub(super) mod admission;
 pub(super) mod binding;
 pub(super) mod intent;
+pub(super) mod lower;
 pub(super) mod source;
 pub(super) mod test_source;
 
