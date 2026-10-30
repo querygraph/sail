@@ -31,7 +31,9 @@ use crate::proto::stream::Kind;
 use crate::error::{ArrowSnafu, Result};
 use crate::stripe::Stripe;
 
-use super::length::{check_length_buffer_size, checked_total_length, new_length_buffer};
+use super::length::{
+    check_length_buffer_size, checked_total_length, new_length_buffer, skip_lengths,
+};
 use super::{array_decoder_factory, ArrayBatchDecoder, PresentDecoder};
 
 pub struct ListArrayDecoder {
@@ -94,15 +96,9 @@ impl ArrayBatchDecoder for ListArrayDecoder {
         let non_null_count =
             skip_present_and_get_non_null_count(&mut self.present, parent_present, n)?;
 
-        // Decode lengths to determine how many child values to skip
-        let mut lengths = vec![0; non_null_count];
-        self.lengths.decode(&mut lengths)?;
-        let total_length: i64 = lengths.iter().sum();
-
-        // Skip the child values (children don't have parent_present from list)
-        self.inner.skip_values(total_length as usize, None)?;
-
-        Ok(())
+        skip_lengths(self.lengths.as_mut(), non_null_count, |length| {
+            self.inner.skip_values(length, None)
+        })
     }
 }
 
@@ -116,7 +112,8 @@ mod tests {
 
     use super::*;
     use crate::array_decoder::length::tests::{
-        assert_error, malformed_cases, unsigned_literals, Unread,
+        assert_error, malformed_cases, many_unsigned_literals, negative_cases, unsigned_literals,
+        Skipped, Unread,
     };
     use crate::array_decoder::Int64ArrayDecoder;
     use crate::encoding::integer::{get_signed_int_decoder, RleVersion};
@@ -198,5 +195,88 @@ mod tests {
                 .unwrap(),
             &Int64Array::from(vec![7, 8, 9])
         );
+    }
+
+    #[test]
+    fn malformed_skip_lengths_never_invoke_the_list_child() {
+        for case in negative_cases() {
+            let skips = Arc::default();
+            let mut decoder = ListArrayDecoder {
+                inner: Box::new(Skipped(Arc::clone(&skips))),
+                present: None,
+                lengths: case.decoder(),
+                field: field(),
+            };
+            assert_error(
+                decoder.skip_values(case.count, None).unwrap_err(),
+                case.expected,
+            );
+            assert!(skips.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn list_skips_across_length_chunks_and_parent_nulls_preserve_the_next_value() {
+        let count = super::super::length::SKIP_BATCH_SIZE + 1;
+        let mut lengths = vec![0; count - 1];
+        lengths.extend([2, 1]);
+        let mut decoder = ListArrayDecoder {
+            inner: Box::new(Int64ArrayDecoder::new(
+                get_signed_int_decoder(
+                    Cursor::new(unsigned_literals(&[14, 16, 18])),
+                    RleVersion::V1,
+                ),
+                None,
+            )),
+            present: None,
+            lengths: get_unsigned_int_decoder(
+                Cursor::new(many_unsigned_literals(&lengths)),
+                RleVersion::V1,
+            ),
+            field: field(),
+        };
+        let mut parent = vec![true; count + 1];
+        parent[0] = false;
+        decoder
+            .skip_values(count + 1, Some(&NullBuffer::from(parent)))
+            .unwrap();
+        let next = decoder.next_batch(1, None).unwrap();
+        let next = next.as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(next.value_offsets(), &[0, 1]);
+        assert_eq!(
+            next.values().as_any().downcast_ref::<Int64Array>().unwrap(),
+            &Int64Array::from(vec![9])
+        );
+    }
+
+    #[test]
+    fn list_skip_propagates_truncated_child_values() {
+        let mut decoder = ListArrayDecoder {
+            inner: Box::new(Int64ArrayDecoder::new(
+                get_signed_int_decoder(Cursor::new(unsigned_literals(&[14])), RleVersion::V1),
+                None,
+            )),
+            present: None,
+            lengths: get_unsigned_int_decoder(Cursor::new(unsigned_literals(&[2])), RleVersion::V1),
+            field: field(),
+        };
+        assert!(decoder.skip_values(1, None).is_err());
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn list_skip_counts_can_exceed_materialized_offsets_and_usize_in_total() {
+        let skips = Arc::default();
+        let mut decoder = ListArrayDecoder {
+            inner: Box::new(Skipped(Arc::clone(&skips))),
+            present: None,
+            lengths: get_unsigned_int_decoder(
+                Cursor::new(unsigned_literals(&[i64::MAX as u64, i64::MAX as u64, 2])),
+                RleVersion::V1,
+            ),
+            field: field(),
+        };
+        decoder.skip_values(3, None).unwrap();
+        assert_eq!(*skips.lock().unwrap(), vec![usize::MAX - 1, 2]);
     }
 }

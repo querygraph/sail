@@ -256,3 +256,61 @@ fn valid_string_nulls_and_nested_parent_child_nulls_are_preserved() {
         assert!(actual.nulls().is_none());
     }
 }
+
+#[test]
+fn skip_present_counts_bounded_chunks_and_preserves_the_next_bit() {
+    struct BoundedBoolean(BooleanDecoder<Cursor<Vec<u8>>>);
+    impl PrimitiveValueDecoder<bool> for BoundedBoolean {
+        fn decode(&mut self, out: &mut [bool]) -> Result<()> {
+            assert!(out.len() <= length::SKIP_BATCH_SIZE);
+            self.0.decode(out)
+        }
+
+        fn skip(&mut self, _n: usize) -> Result<()> {
+            panic!("PRESENT must be decoded to count non-null values");
+        }
+    }
+
+    // 1,024 alternating bits, followed by true, false, true, then false.
+    let mut bytes = vec![0x80]; // Byte RLE: 128 literal bytes.
+    bytes.extend([0xaa; 128]);
+    bytes.extend([0xff, 0xa0]);
+    let mut present = Some(PresentDecoder {
+        inner: Box::new(BoundedBoolean(BooleanDecoder::new(Cursor::new(bytes)))),
+    });
+    assert_eq!(
+        skip_present_and_get_non_null_count(&mut present, None, 1027).unwrap(),
+        514
+    );
+    assert_eq!(
+        present.as_mut().unwrap().next_buffer(1).unwrap(),
+        NullBuffer::from(vec![false])
+    );
+}
+
+#[test]
+fn skip_present_preserves_absent_and_nested_parent_null_semantics() {
+    let mut absent = None;
+    assert_eq!(
+        skip_present_and_get_non_null_count(&mut absent, None, usize::MAX).unwrap(),
+        usize::MAX
+    );
+    let parent = NullBuffer::from(vec![true, false, true]);
+    assert_eq!(
+        skip_present_and_get_non_null_count(&mut absent, Some(&parent), 3).unwrap(),
+        2
+    );
+
+    let mut present = Some(PresentDecoder {
+        // false, true among the two non-null parents; next value is true.
+        inner: Box::new(BooleanDecoder::new(Cursor::new(vec![0xff, 0x60]))),
+    });
+    assert_eq!(
+        skip_present_and_get_non_null_count(&mut present, Some(&parent), 3).unwrap(),
+        1
+    );
+    assert_eq!(
+        present.as_mut().unwrap().next_buffer(1).unwrap(),
+        NullBuffer::from(vec![true])
+    );
+}

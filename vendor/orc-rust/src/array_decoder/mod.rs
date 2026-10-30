@@ -259,34 +259,24 @@ fn skip_present_and_get_non_null_count(
     parent_present: Option<&NullBuffer>,
     n: usize,
 ) -> Result<usize> {
-    match (present, parent_present) {
-        (Some(present), Some(parent_present)) => {
-            // Parent has nulls, so we need to decode parent present to know how many
-            // of our present values to skip
-            let non_null_in_parent = parent_present.len() - parent_present.null_count();
-
-            // Skip our present values for non-null parents and count non-nulls
-            let mut our_present = vec![false; non_null_in_parent];
-            present.inner.decode(&mut our_present)?;
-            let our_non_null_count = our_present.iter().filter(|&&v| v).count();
-
-            Ok(our_non_null_count)
-        }
-        (Some(present), None) => {
-            // No parent present, skip n values and count non-nulls
-            let mut present_values = vec![false; n];
-            present.inner.decode(&mut present_values)?;
-            Ok(present_values.iter().filter(|&&v| v).count())
-        }
-        (None, Some(parent_present)) => {
-            // No our present stream, all non-null parents have data
-            Ok(parent_present.len() - parent_present.null_count())
-        }
-        (None, None) => {
-            // No nulls at all, all n values have data
-            Ok(n)
-        }
+    let count = parent_present
+        .map(|parent| parent.len() - parent.null_count())
+        .unwrap_or(n);
+    let Some(present) = present else {
+        return Ok(count);
+    };
+    let mut remaining = count;
+    let mut non_null_count = 0;
+    let mut scratch = [false; length::SKIP_BATCH_SIZE];
+    while remaining > 0 {
+        let chunk_size = remaining.min(scratch.len());
+        let chunk = &mut scratch[..chunk_size];
+        present.inner.decode(chunk)?;
+        // The count cannot exceed the original usize-sized request.
+        non_null_count += chunk.iter().filter(|&&value| value).count();
+        remaining -= chunk_size;
     }
+    Ok(non_null_count)
 }
 
 pub struct NaiveStripeDecoder {

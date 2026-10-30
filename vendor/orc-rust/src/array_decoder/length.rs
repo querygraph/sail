@@ -20,7 +20,10 @@ use std::mem::size_of;
 
 use snafu::{ensure, OptionExt, ResultExt};
 
+use crate::encoding::PrimitiveValueDecoder;
 use crate::error::{IoSnafu, OffsetOverflowSnafu, OutOfSpecSnafu, Result};
+
+pub(super) const SKIP_BATCH_SIZE: usize = 1024;
 
 fn check_allocation_size<T>(count: usize) -> Result<()> {
     let bytes = count.checked_mul(size_of::<T>()).context(OutOfSpecSnafu {
@@ -91,6 +94,57 @@ pub(super) fn checked_total_length(lengths: &[i64]) -> Result<usize> {
         }
         .build()
     })
+}
+
+fn checked_skip_length(length: i64) -> Result<usize> {
+    ensure!(
+        length >= 0,
+        OutOfSpecSnafu {
+            msg: "Decoded array length is negative"
+        }
+    );
+    usize::try_from(length).map_err(|_| {
+        OutOfSpecSnafu {
+            msg: "Decoded array length does not fit usize",
+        }
+        .build()
+    })
+}
+
+/// Decode lengths with bounded scratch, then skip each validated chunk.
+/// Skipping does not construct Arrow offsets: aggregate work may exceed i32,
+/// i64 or usize, so split requests before their usize counts would overflow.
+pub(super) fn skip_lengths(
+    lengths: &mut (dyn PrimitiveValueDecoder<i64> + Send),
+    mut count: usize,
+    mut skip: impl FnMut(usize) -> Result<()>,
+) -> Result<()> {
+    let mut scratch = [0_i64; SKIP_BATCH_SIZE];
+    while count > 0 {
+        let chunk_size = count.min(scratch.len());
+        let chunk = &mut scratch[..chunk_size];
+        lengths.decode(chunk)?;
+        // Reject malformed lengths in this chunk before dependent work.
+        for &length in chunk.iter() {
+            checked_skip_length(length)?;
+        }
+        let mut total = 0_usize;
+        for &length in chunk.iter() {
+            let length = checked_skip_length(length)?;
+            total = match total.checked_add(length) {
+                Some(total) => total,
+                None => {
+                    skip(total)?;
+                    length
+                }
+            };
+        }
+        if total > 0 {
+            skip(total)?;
+        }
+        count -= chunk_size;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -35,7 +35,9 @@ use crate::proto::column_encoding::Kind as ColumnEncodingKind;
 use crate::proto::stream::Kind;
 use crate::stripe::Stripe;
 
-use super::length::{check_length_buffer_size, checked_total_length, new_length_buffer};
+use super::length::{
+    check_length_buffer_size, checked_total_length, new_length_buffer, skip_lengths,
+};
 use super::{ArrayBatchDecoder, Int64ArrayDecoder, PresentDecoder};
 
 // TODO: reduce duplication with string below
@@ -168,20 +170,25 @@ impl<T: ByteArrayType> ArrayBatchDecoder for GenericByteArrayDecoder<T> {
         let non_null_count =
             skip_present_and_get_non_null_count(&mut self.present, parent_present, n)?;
 
-        // Decode lengths to determine how many bytes to skip
-        let mut lengths = vec![0; non_null_count];
-        self.lengths.decode(&mut lengths)?;
-        let total_bytes: i64 = lengths.iter().sum();
-
-        // Skip the data bytes
-        // TODO: can we use the decompressor to skip the bytes?
-        std::io::copy(
-            &mut self.bytes.by_ref().take(total_bytes as u64),
-            &mut std::io::sink(),
-        )
-        .context(IoSnafu)?;
-
-        Ok(())
+        skip_lengths(self.lengths.as_mut(), non_null_count, |length| {
+            let length = u64::try_from(length).map_err(|_| {
+                crate::error::OutOfSpecSnafu {
+                    msg: "Skipped byte count does not fit u64",
+                }
+                .build()
+            })?;
+            // TODO: can we use the decompressor to skip the bytes?
+            let copied = io::copy(&mut self.bytes.by_ref().take(length), &mut io::sink())
+                .context(IoSnafu)?;
+            if copied != length {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "ORC byte payload ended before all skipped bytes were consumed",
+                ))
+                .context(IoSnafu);
+            }
+            Ok(())
+        })
     }
 }
 
@@ -236,9 +243,13 @@ mod tests {
 
     use super::*;
     use crate::array_decoder::length::tests::{
-        assert_error, malformed_cases, unsigned_literals, Unread,
+        assert_error, malformed_cases, many_unsigned_literals, negative_cases, unsigned_literals,
+        Unread,
     };
+    use crate::compression::Compression;
+    use crate::encoding::boolean::BooleanDecoder;
     use crate::encoding::integer::RleVersion;
+    use crate::error::OrcError;
 
     fn malformed<T: ByteArrayType>() {
         let payload = Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]);
@@ -303,5 +314,130 @@ mod tests {
                 Some(b"c".as_slice())
             ])
         );
+    }
+
+    fn malformed_skip<T: ByteArrayType>() {
+        let payload = Bytes::from_static(b"abcd");
+        for case in negative_cases() {
+            let mut decoder = GenericByteArrayDecoder::<T>::new(
+                Box::new(Decompressor::new(payload.clone(), None, vec![])),
+                case.decoder(),
+                None,
+            );
+            assert_error(
+                decoder.skip_values(case.count, None).unwrap_err(),
+                case.expected,
+            );
+            let mut remaining = vec![];
+            decoder.bytes.read_to_end(&mut remaining).unwrap();
+            assert_eq!(remaining.as_slice(), payload.as_ref());
+        }
+    }
+
+    #[test]
+    fn malformed_string_and_binary_skip_lengths_leave_payload_unread() {
+        malformed_skip::<GenericStringType<i32>>();
+        malformed_skip::<GenericBinaryType<i32>>();
+    }
+
+    fn truncated_skip<T: ByteArrayType>() {
+        // The second request exceeds materialized i32 offsets, but must reach
+        // the payload without allocating its declared size or rejecting it.
+        for lengths in [vec![2], vec![i32::MAX as u64, 1]] {
+            let mut decoder = GenericByteArrayDecoder::<T>::new(
+                Box::new(Decompressor::new(Bytes::from_static(b"a"), None, vec![])),
+                get_unsigned_int_decoder(Cursor::new(unsigned_literals(&lengths)), RleVersion::V1),
+                None,
+            );
+            let OrcError::IoError { source, .. } =
+                decoder.skip_values(lengths.len(), None).unwrap_err()
+            else {
+                panic!("expected skipped payload EOF");
+            };
+            assert_eq!(source.kind(), io::ErrorKind::UnexpectedEof);
+        }
+    }
+
+    #[test]
+    fn string_and_binary_skips_require_all_promised_payload_bytes() {
+        truncated_skip::<GenericStringType<i32>>();
+        truncated_skip::<GenericBinaryType<i32>>();
+    }
+
+    #[test]
+    fn skipped_payload_preserves_the_original_decompressor_error() {
+        // An incomplete compression header fails as InvalidData, not the
+        // synthesized UnexpectedEof used for a successful short payload read.
+        let mut decoder = DirectStringArrayDecoder::new(
+            Box::new(Decompressor::new(
+                Bytes::from_static(&[0xff]),
+                Compression::from_proto(crate::proto::CompressionKind::Zlib, None),
+                vec![],
+            )),
+            get_unsigned_int_decoder(Cursor::new(unsigned_literals(&[1])), RleVersion::V1),
+            None,
+        );
+        let OrcError::IoError { source, .. } = decoder.skip_values(1, None).unwrap_err() else {
+            panic!("expected original decompressor I/O error");
+        };
+        assert_eq!(source.kind(), io::ErrorKind::InvalidData);
+        assert!(source
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<OrcError>()
+            .is_some());
+    }
+
+    fn skip_then_read<T: ByteArrayType>() -> GenericByteArray<T> {
+        let count = super::super::length::SKIP_BATCH_SIZE + 1;
+        let mut lengths = vec![0; count - 1];
+        lengths.extend([2, 1]);
+        let mut decoder = GenericByteArrayDecoder::<T>::new(
+            Box::new(Decompressor::new(Bytes::from_static(b"abc"), None, vec![])),
+            get_unsigned_int_decoder(
+                Cursor::new(many_unsigned_literals(&lengths)),
+                RleVersion::V1,
+            ),
+            None,
+        );
+        let mut parent = vec![true; count + 1];
+        parent[0] = false;
+        decoder
+            .skip_values(count + 1, Some(&NullBuffer::from(parent)))
+            .unwrap();
+        decoder.next_byte_batch(1, None).unwrap()
+    }
+
+    #[test]
+    fn string_and_binary_skips_across_chunks_and_nulls_preserve_the_next_value() {
+        assert_eq!(
+            skip_then_read::<GenericStringType<i32>>(),
+            StringArray::from(vec!["c"])
+        );
+        assert_eq!(
+            skip_then_read::<GenericBinaryType<i32>>(),
+            BinaryArray::from(vec![b"c".as_slice()])
+        );
+    }
+
+    #[test]
+    fn skip_present_failure_precedes_lengths_and_all_null_parents_read_neither() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut decoder = DirectStringArrayDecoder::new(
+            Box::new(Decompressor::empty()),
+            Box::new(Unread(calls.clone())),
+            Some(PresentDecoder {
+                inner: Box::new(BooleanDecoder::new(Cursor::new(vec![0xff]))),
+            }),
+        );
+        decoder
+            .skip_values(3, Some(&NullBuffer::from(vec![false; 3])))
+            .unwrap();
+        let OrcError::IoError { source, .. } = decoder.skip_values(usize::MAX, None).unwrap_err()
+        else {
+            panic!("expected PRESENT EOF before LENGTH decoding");
+        };
+        assert_eq!(source.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
     }
 }
