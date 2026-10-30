@@ -231,3 +231,6 @@ pub(crate) async fn handle_command(
         rx,
     ))
 }
+
+#[cfg(test)]
+mod catalog_preparation_tests;

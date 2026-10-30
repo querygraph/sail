@@ -5,10 +5,12 @@ use datafusion::physical_plan::{ExecutionPlan, displayable};
 use datafusion::prelude::SessionContext;
 use datafusion_common::Result;
 use datafusion_common::display::{PlanType, StringifiedPlan, ToStringifiedPlan};
-use datafusion_expr::LogicalPlan;
+use datafusion_expr::{Extension, LogicalPlan};
+use sail_catalog::command::CatalogCommand;
 use sail_common::spec;
 use sail_common_datafusion::rename::physical_plan::rename_physical_plan;
 
+use crate::catalog::CatalogCommandNode;
 use crate::config::PlanConfig;
 use crate::error::PlanResult;
 use crate::resolver::PlanResolver;
@@ -49,13 +51,33 @@ pub async fn resolve_and_execute_plan_with_scope(
     plan: spec::Plan,
     scope: Option<&dyn RelationScope>,
 ) -> PlanResult<(Arc<dyn ExecutionPlan>, Vec<StringifiedPlan>)> {
-    let mut info = vec![];
     let resolver = PlanResolver::new(ctx, config);
     let resolver = match scope {
         Some(scope) => resolver.with_relation_scope(scope),
         None => resolver,
     };
-    let NamedPlan { plan, fields } = resolver.resolve_named_plan(plan).await?;
+    let named = resolver.resolve_named_plan(plan).await?;
+    prepare_named_plan(ctx, named).await
+}
+
+/// Prepare catalog metadata through Sail's ordinary planning stages without
+/// resolving SQL or its source query again. This does not admit a job or execute
+/// the returned stream; callers retain those responsibilities.
+pub async fn prepare_catalog_command(
+    ctx: &SessionContext,
+    command: CatalogCommand,
+) -> PlanResult<(Arc<dyn ExecutionPlan>, Vec<StringifiedPlan>)> {
+    let plan = LogicalPlan::Extension(Extension {
+        node: Arc::new(CatalogCommandNode::try_new(ctx, command)?),
+    });
+    prepare_named_plan(ctx, NamedPlan { plan, fields: None }).await
+}
+
+async fn prepare_named_plan(
+    ctx: &SessionContext,
+    NamedPlan { plan, fields }: NamedPlan,
+) -> PlanResult<(Arc<dyn ExecutionPlan>, Vec<StringifiedPlan>)> {
+    let mut info = vec![];
     info.push(plan.to_stringified(PlanType::InitialLogicalPlan));
     let df = execute_logical_plan(ctx, plan).await?;
     let (session_state, plan) = df.into_parts();
