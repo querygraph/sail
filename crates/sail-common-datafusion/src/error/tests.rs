@@ -77,3 +77,87 @@ fn unknown_commit_keeps_precedence_over_structured_execution_error() {
     assert!(!cause.is_retryable());
     assert!(matches!(cause, CommonErrorCause::CommitStateUnknown(_)));
 }
+
+fn uncertain_storage() -> object_store::Error {
+    object_store::Error::Generic {
+        store: "owned-operation",
+        source: Box::new(DataFusionError::Collection(vec![
+            DataFusionError::External(Box::new(fixture())),
+            DataFusionError::External(Box::new(CommitStateUnknownError("response lost".into()))),
+        ])),
+    }
+}
+
+#[test]
+fn storage_format_and_io_wrappers_keep_nonretryable_commit_uncertainty() {
+    use datafusion::parquet::errors::ParquetError;
+    let errors = [
+        DataFusionError::ObjectStore(Box::new(uncertain_storage())),
+        DataFusionError::IoError(std::io::Error::other(uncertain_storage())),
+        DataFusionError::ParquetError(Box::new(ParquetError::External(Box::new(
+            std::io::Error::other(uncertain_storage()),
+        )))),
+        DataFusionError::ArrowError(
+            Box::new(ArrowError::IoError(
+                "writer".into(),
+                std::io::Error::other(uncertain_storage()),
+            )),
+            None,
+        ),
+    ];
+    for error in errors {
+        let cause = CommonErrorCause::new::<NoPython>(&error);
+        assert!(!cause.is_retryable(), "lost nested policy: {error:?}");
+        assert!(matches!(cause, CommonErrorCause::CommitStateUnknown(_)));
+    }
+    let direct = ArrowError::IoError("writer".into(), std::io::Error::other(uncertain_storage()));
+    assert!(!CommonErrorCause::new::<NoPython>(&direct).is_retryable());
+}
+
+#[test]
+fn ordinary_storage_format_and_io_categories_and_messages_are_unchanged() -> TestResult {
+    use datafusion::parquet::errors::ParquetError;
+    let errors = [
+        DataFusionError::ObjectStore(Box::new(object_store::Error::Generic {
+            store: "ordinary",
+            source: Box::new(fixture()),
+        })),
+        DataFusionError::IoError(std::io::Error::other(fixture())),
+        DataFusionError::ArrowError(
+            Box::new(ArrowError::IoError(
+                "writer".into(),
+                std::io::Error::other(fixture()),
+            )),
+            None,
+        ),
+        DataFusionError::ParquetError(Box::new(ParquetError::External(Box::new(fixture())))),
+    ];
+    for error in errors {
+        let expected = match &error {
+            DataFusionError::ObjectStore(e) => CommonErrorCause::Io(e.to_string()),
+            DataFusionError::IoError(e) => CommonErrorCause::Io(e.to_string()),
+            DataFusionError::ArrowError(e, _) => {
+                let ArrowError::IoError(_, inner) = e.as_ref() else {
+                    unreachable!()
+                };
+                // Unchanged production baseline: the boxed Arrow wrapper's
+                // source traversal reaches its inner display-only fallback.
+                CommonErrorCause::Unknown(inner.to_string())
+            }
+            DataFusionError::ParquetError(e) => CommonErrorCause::FormatParquet(e.to_string()),
+            _ => unreachable!(),
+        };
+        let actual = CommonErrorCause::new::<NoPython>(&error);
+        assert_eq!(
+            serde_json::to_value(&actual)?,
+            serde_json::to_value(&expected)?
+        );
+        assert!(actual.is_retryable());
+    }
+    let direct = ArrowError::IoError("writer".into(), std::io::Error::other(fixture()));
+    let CommonErrorCause::Io(message) = CommonErrorCause::new::<NoPython>(&direct) else {
+        return Err("direct Arrow I/O category changed".into());
+    };
+    assert_eq!(message, format!("writer: {}", fixture()));
+    Ok(())
+}

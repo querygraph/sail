@@ -146,7 +146,9 @@ impl CommonErrorCause {
                 ArrowError::ArithmeticOverflow(x) => Self::ArrowArithmeticOverflow(x.clone()),
                 ArrowError::CsvError(x) => Self::FormatCsv(x.clone()),
                 ArrowError::JsonError(x) => Self::FormatJson(x.clone()),
-                ArrowError::IoError(message, e) => Self::Io(format!("{message}: {e}")),
+                ArrowError::IoError(message, e) => {
+                    Self::preserve_nonretryable::<Py>(e, Self::Io(format!("{message}: {e}")), seen)
+                }
                 ArrowError::IpcError(x) => Self::ArrowIpc(x.clone()),
                 ArrowError::InvalidArgumentError(x) => Self::InvalidArgument(x.clone()),
                 ArrowError::ParquetError(x) => Self::FormatParquet(x.clone()),
@@ -167,9 +169,17 @@ impl CommonErrorCause {
         if let Some(e) = error.downcast_ref::<DataFusionError>() {
             return match e {
                 DataFusionError::ArrowError(e, _) => Self::build::<Py>(e, seen),
-                DataFusionError::ParquetError(e) => Self::FormatParquet(e.to_string()),
-                DataFusionError::ObjectStore(e) => Self::Io(e.to_string()),
-                DataFusionError::IoError(e) => Self::Io(e.to_string()),
+                DataFusionError::ParquetError(e) => Self::preserve_nonretryable::<Py>(
+                    e.as_ref(),
+                    Self::FormatParquet(e.to_string()),
+                    seen,
+                ),
+                DataFusionError::ObjectStore(e) => {
+                    Self::preserve_nonretryable::<Py>(e.as_ref(), Self::Io(e.to_string()), seen)
+                }
+                DataFusionError::IoError(e) => {
+                    Self::preserve_nonretryable::<Py>(e, Self::Io(e.to_string()), seen)
+                }
                 DataFusionError::NotImplemented(x) => Self::NotImplemented(x.clone()),
                 DataFusionError::Internal(x) => Self::Internal(x.clone()),
                 DataFusionError::Plan(x) => Self::Plan(x.clone()),
@@ -215,6 +225,22 @@ impl CommonErrorCause {
             Self::build::<Py>(e, seen)
         } else {
             Self::Unknown(error.to_string())
+        }
+    }
+
+    // Storage/format wrappers keep their existing public category unless a typed
+    // nested cause forbids replay. Writers can publish before returning an I/O
+    // error, so converting those wrappers to display text first loses policy.
+    fn preserve_nonretryable<Py: PythonErrorCauseExtractor>(
+        error: &(dyn std::error::Error + 'static),
+        fallback: Self,
+        seen: &mut HashSet<*const dyn std::error::Error>,
+    ) -> Self {
+        let cause = Self::build::<Py>(error, seen);
+        if cause.is_retryable() {
+            fallback
+        } else {
+            cause
         }
     }
 

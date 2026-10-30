@@ -16,3 +16,6 @@ pub mod worker_manager;
 
 pub use id::{DriverId, IdGenerator};
 pub use worker::entrypoint::run_worker;
+
+#[cfg(test)]
+mod checkpoint_writer_error_tests;
