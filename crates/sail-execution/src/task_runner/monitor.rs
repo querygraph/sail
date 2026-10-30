@@ -1,12 +1,16 @@
 use std::any::Any;
+use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
 
+use datafusion::common::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use fastrace::Span;
 use fastrace::future::FutureExt;
-use futures::StreamExt;
+use futures::{FutureExt as _, StreamExt};
 use sail_common::actor::ActorHandle;
 use sail_common::telemetry::SpanAttribute;
 use sail_common_datafusion::error::CommonErrorCause;
+use sail_common_datafusion::task_resources::TaskResourceScope;
 use sail_python_udf::error::PyErrExtractor;
 use tokio::sync::oneshot;
 use tokio_util::task::AbortOnDropHandle;
@@ -20,6 +24,7 @@ pub struct TaskMonitor {
     key: TaskKey,
     stream: SendableRecordBatchStream,
     signal: oneshot::Receiver<()>,
+    resources: Arc<TaskResourceScope>,
 }
 
 impl TaskMonitor {
@@ -28,12 +33,14 @@ impl TaskMonitor {
         key: TaskKey,
         stream: SendableRecordBatchStream,
         signal: oneshot::Receiver<()>,
+        resources: Arc<TaskResourceScope>,
     ) -> Self {
         Self {
             handle,
             key,
             stream,
             signal,
+            resources,
         }
     }
 
@@ -43,18 +50,17 @@ impl TaskMonitor {
             key,
             stream,
             signal,
+            resources,
         } = self;
         let _ = handle.send(Self::running(key.clone())).await;
-        let message = tokio::select! {
-            x = Self::execute(key.clone(), stream) => x,
-            x = Self::cancel(key.clone(), signal) => x,
-        };
+        let message = Self::run_to_terminal(key, stream, signal, &resources).await;
         let _ = handle.send(message).await;
     }
 
     pub async fn supervise(self) {
         let handle = self.handle.clone();
         let key = self.key.clone();
+        let resources = self.resources.clone();
         // Admission now has one span per batch. Preserve task identity on the monitor
         // so preparation and execution spans can still be attributed to each attempt.
         let span = Span::enter_with_local_parent("TaskMonitor::run").with_properties(|| {
@@ -70,7 +76,102 @@ impl TaskMonitor {
         });
         let monitor = AbortOnDropHandle::new(tokio::spawn(self.run().in_span(span)));
         if let Some(message) = Self::monitor_failure(key, monitor).await {
+            // Retain ownership even when the monitor panics outside execution.
+            let message = Self::drain_resources(message, &resources).await;
             let _ = handle.send(message).await;
+        }
+    }
+
+    async fn run_to_terminal(
+        key: TaskKey,
+        stream: SendableRecordBatchStream,
+        mut signal: oneshot::Receiver<()>,
+        resources: &TaskResourceScope,
+    ) -> TaskRunnerMessage {
+        // Catch both stream polling and destruction of the losing select future.
+        let message = AssertUnwindSafe(async {
+            tokio::select! {
+                x = Self::execute(key.clone(), stream) => x,
+                x = Self::cancel(key.clone(), &mut signal) => x,
+            }
+        })
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|payload| Self::panicked(key.clone(), payload));
+
+        if matches!(
+            message,
+            TaskRunnerMessage::ReportTaskStatus {
+                status: TaskStatus::Succeeded,
+                ..
+            }
+        ) {
+            // EOF can precede resource completion. StopTask must still interrupt
+            // that wait, signal the supervisors, and await their cleanup reports.
+            tokio::select! {
+                x = Self::drain_resources(message, resources) => x,
+                x = Self::cancel(key, &mut signal) => Self::drain_resources(x, resources).await,
+            }
+        } else {
+            Self::drain_resources(message, resources).await
+        }
+    }
+
+    async fn drain_resources(
+        mut message: TaskRunnerMessage,
+        resources: &TaskResourceScope,
+    ) -> TaskRunnerMessage {
+        if !matches!(
+            message,
+            TaskRunnerMessage::ReportTaskStatus {
+                status: TaskStatus::Succeeded,
+                ..
+            }
+        ) && let Err(error) = resources.cancel()
+        {
+            Self::resource_error(&mut message, "resource cancellation", &error);
+        }
+        match resources.drain().await {
+            Ok(report) => {
+                for failure in &report.failures {
+                    Self::resource_error(
+                        &mut message,
+                        &format!("resource {} completion or cleanup", failure.id.0),
+                        &failure.error,
+                    );
+                }
+            }
+            Err(error) => Self::resource_error(&mut message, "resource drainage", &error),
+        }
+        message
+    }
+
+    fn resource_error(message: &mut TaskRunnerMessage, context: &str, error: &DataFusionError) {
+        if let TaskRunnerMessage::ReportTaskStatus {
+            status,
+            message,
+            cause,
+            ..
+        } = message
+        {
+            *status = TaskStatus::Failed;
+            let secondary = CommonErrorCause::new::<PyErrExtractor>(error);
+            // Match error-collection precedence: preserve the primary cause,
+            // except that an uncertain commit must prohibit automatic replay.
+            if cause
+                .as_ref()
+                .is_none_or(|primary| primary.is_retryable() && !secondary.is_retryable())
+            {
+                *cause = Some(secondary);
+            }
+            let detail = format!("{context}: {error}");
+            match message {
+                Some(message) => {
+                    message.push_str("; ");
+                    message.push_str(&detail);
+                }
+                None => *message = Some(detail),
+            }
         }
     }
 
@@ -81,15 +182,7 @@ impl TaskMonitor {
         match monitor.await {
             Ok(()) => None,
             Err(error) if error.is_cancelled() => None,
-            Err(error) if error.is_panic() => {
-                let message = format!("task panicked: {}", Self::panic_message(error.into_panic()));
-                Some(Self::status(
-                    key,
-                    TaskStatus::Failed,
-                    Some(message.clone()),
-                    Some(CommonErrorCause::Internal(message)),
-                ))
-            }
+            Err(error) if error.is_panic() => Some(Self::panicked(key, error.into_panic())),
             Err(error) => {
                 let message = format!("task monitor failed: {error}");
                 Some(Self::status(
@@ -131,8 +224,18 @@ impl TaskMonitor {
         }
     }
 
+    fn panicked(key: TaskKey, payload: Box<dyn Any + Send>) -> TaskRunnerMessage {
+        let message = format!("task panicked: {}", Self::panic_message(payload));
+        Self::status(
+            key,
+            TaskStatus::Failed,
+            Some(message.clone()),
+            Some(CommonErrorCause::Internal(message)),
+        )
+    }
+
     /// Waits for a cancellation signal and builds a canceled status message.
-    async fn cancel(key: TaskKey, signal: oneshot::Receiver<()>) -> TaskRunnerMessage {
+    async fn cancel(key: TaskKey, signal: &mut oneshot::Receiver<()>) -> TaskRunnerMessage {
         let _ = signal.await;
         Self::status(
             key.clone(),
@@ -158,6 +261,10 @@ impl TaskMonitor {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "monitor_resource_tests.rs"]
+mod resource_tests;
 
 #[cfg(test)]
 mod tests {

@@ -8,6 +8,8 @@ use log::{error, warn};
 use prost::Message;
 use sail_common::actor::{ActorAction, ActorContext};
 use sail_common_datafusion::error::CommonErrorCause;
+use sail_common_datafusion::task_resources::ScopedTaskContext;
+use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 
 use crate::driver::{DriverMessage, TaskStatus};
@@ -65,6 +67,7 @@ impl TaskRunnerActor {
         self.tasks.record_batch(job_id, stage, &tasks);
         for task in tasks {
             let key = task.task_key(job_id, stage);
+            let scoped = ScopedTaskContext::new(context.as_ref(), Handle::current());
             let stream = TaskPreparation {
                 session_id: self.session_id.clone(),
                 handle: ctx.handle().clone(),
@@ -74,11 +77,14 @@ impl TaskRunnerActor {
                 key.clone(),
                 definition.clone(),
                 proto.clone(),
-                context.clone(),
+                scoped.context,
             );
             let (tx, rx) = oneshot::channel();
             self.signals.insert(key.clone(), tx);
-            ctx.spawn(TaskMonitor::new(ctx.handle().clone(), key, stream, rx).supervise());
+            ctx.spawn(
+                TaskMonitor::new(ctx.handle().clone(), key, stream, rx, scoped.resources)
+                    .supervise(),
+            );
         }
         Ok(())
     }
