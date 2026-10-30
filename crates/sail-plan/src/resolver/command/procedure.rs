@@ -345,7 +345,7 @@ impl PlanResolver<'_> {
                 };
                 let metadata = registry
                     .get_lake_source(&call.lake_source)?
-                    .infer_metadata(&self.ctx.state(), *info.clone())
+                    .infer_metadata(self.provider_session().as_session(), *info.clone())
                     .await?;
                 let names = state.register_fields(metadata.schema.fields());
                 let schema = Arc::new(DFSchema::try_from(
@@ -409,9 +409,9 @@ impl PlanResolver<'_> {
                 );
             }
         }
-        let session = self.ctx.state();
+        let session = self.provider_session();
         let plan = provider
-            .plan_procedure(&session, planning_target, &call)
+            .plan_procedure(session.as_session(), planning_target, &call)
             .await?;
         Ok(LogicalPlan::Extension(Extension {
             node: Arc::new(LakeProcedureNode::try_new(

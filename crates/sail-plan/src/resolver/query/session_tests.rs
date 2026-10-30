@@ -328,3 +328,6 @@ mod row_factories;
 
 #[path = "delta_metadata_session_tests.rs"]
 mod delta_metadata;
+
+#[path = "procedure_factory_session_tests.rs"]
+mod procedures;
