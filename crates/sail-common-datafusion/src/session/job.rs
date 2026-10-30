@@ -23,6 +23,8 @@ pub trait JobPreparation: Send + Sync {
 
     /// Consume admission into a query snapshot after authority mutations.
     /// The optional registry must already have qualified ownership/routing.
+    /// It replaces the registry in the captured runtime; supply all required
+    /// stores or an explicitly composed registry, not a partial registration.
     /// Retain control before this call to observe cleanup if capture fails.
     /// The default cancels admission and returns the typed capability error to
     /// the caller; the control reports cancellation and cleanup separately.
@@ -50,6 +52,10 @@ pub trait JobPreparation: Send + Sync {
 /// The borrowed view and consuming execute belong to the same preparation;
 /// callers cannot supply a different Session at the execution boundary.
 /// This does not make retained providers reusable after their owner closes.
+/// Calling inherited `capture` again is unsupported: like any failed consuming
+/// transition it consumes this guard, and the default cancels its admission.
+/// Keep the control to observe cleanup; a failed second capture cannot recover
+/// the original guard for execution.
 pub trait CapturedJobPreparation: JobPreparation {
     fn session(&self) -> &ScopedSession;
 }
