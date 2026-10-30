@@ -19,7 +19,13 @@ pub struct ScopedTaskContext {
 
 impl ScopedTaskContext {
     pub fn new(parent: &TaskContext, runtime: Handle) -> Self {
-        let resources = Arc::new(TaskResourceScope::new(runtime));
+        Self::from_resources(parent, Arc::new(TaskResourceScope::new(runtime)))
+    }
+
+    /// Preserve the parent's execution state while attaching this exact existing
+    /// owner. This does not admit a job, create another scope, or qualify cleanup;
+    /// the runner must already own admission and the scope's lifecycle.
+    pub fn from_resources(parent: &TaskContext, resources: Arc<TaskResourceScope>) -> Self {
         let config = parent
             .session_config()
             .clone()

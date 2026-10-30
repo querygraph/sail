@@ -133,3 +133,25 @@ async fn cancellation_isolated_from_sibling_and_parent_contexts() -> TestResult 
 }
 #[path = "task_resources_registry_context_tests.rs"]
 mod registry;
+
+#[tokio::test]
+async fn externally_admitted_owner_is_reused_without_affecting_parent() -> TestResult {
+    let parent = parent();
+    let original = parent.extension::<TaskResourceScope>()?;
+    let resources = Arc::new(TaskResourceScope::new(Handle::current()));
+    let child = ScopedTaskContext::from_resources(&parent, resources.clone());
+    assert!(Arc::ptr_eq(&resources, &child.resources));
+    assert!(Arc::ptr_eq(
+        &resources,
+        &child.context.extension::<TaskResourceScope>()?
+    ));
+    resources.cancel()?;
+    assert!(child.resources.spawn(|_| async { Ok(()) }).is_err());
+    original.spawn(|canceled| async move {
+        assert!(!*canceled.borrow());
+        Ok(())
+    })?;
+    assert_eq!(original.drain().await?.registered, 1);
+    assert_eq!(resources.drain().await?.registered, 0);
+    Ok(())
+}
