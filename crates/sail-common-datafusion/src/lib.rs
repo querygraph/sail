@@ -24,6 +24,7 @@ pub mod schema_merge;
 pub mod session;
 pub mod statistics;
 pub mod streaming;
+pub mod task_resources;
 pub mod type_coercion;
 pub mod udf;
 pub mod utils;
