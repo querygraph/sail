@@ -775,3 +775,50 @@ async fn codex_lower_snapshot_distinguishes_declared_local_versions() -> TestRes
     );
     Ok(())
 }
+
+/// A provider error type the lowerer must never name.
+#[derive(Debug)]
+struct ProviderFailure(u32);
+
+impl std::fmt::Display for ProviderFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "provider failure {}", self.0)
+    }
+}
+
+impl std::error::Error for ProviderFailure {}
+
+#[test]
+fn lower_errors_expose_their_typed_causes_through_the_standard_chain() {
+    // A typed provider error wrapped through DataFusionError → SparkError →
+    // LowerError is recovered by walking source() and downcasting.
+    let provider: Box<dyn std::error::Error + Send + Sync> = Box::new(ProviderFailure(87));
+    let datafusion = datafusion::error::DataFusionError::External(provider);
+    let spark = SparkError::from(datafusion);
+    let error = LowerError::Resolution(spark);
+    assert!(error.to_string().contains("provider failure 87"));
+    let mut found = false;
+    let mut current: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(&error);
+    while let Some(cause) = current {
+        if let Some(failure) = cause.downcast_ref::<ProviderFailure>() {
+            assert_eq!(failure.0, 87);
+            found = true;
+            break;
+        }
+        current = cause.source();
+    }
+    assert!(
+        found,
+        "the provider failure was not reachable through source()"
+    );
+    // A binding refusal is the source of a Binding error.
+    let binding = LowerError::Binding(BindingError::Tail);
+    let source = std::error::Error::source(&binding);
+    assert_eq!(
+        source.and_then(|cause| cause.downcast_ref::<BindingError>()),
+        Some(&BindingError::Tail)
+    );
+    // A rejection carries evidence, not a cause.
+    let rejected = LowerError::NotAdmitted(Box::default());
+    assert!(std::error::Error::source(&rejected).is_none());
+}

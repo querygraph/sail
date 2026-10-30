@@ -110,7 +110,19 @@ impl fmt::Display for LowerError {
     }
 }
 
-impl std::error::Error for LowerError {}
+impl std::error::Error for LowerError {
+    /// The underlying typed cause, so ordinary chain inspection and
+    /// downcasting reach it: the binding refusal, or the resolver's
+    /// `SparkError` (which itself chains to a carried DataFusion or provider
+    /// error). A rejection has evidence, not a cause.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Binding(error) => Some(error),
+            Self::Resolution(error) => Some(error),
+            Self::NotAdmitted(_) => None,
+        }
+    }
+}
 
 /// Lowers the flow of `inputs` over its bindings.
 ///
