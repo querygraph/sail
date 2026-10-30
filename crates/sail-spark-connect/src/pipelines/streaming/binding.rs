@@ -451,6 +451,18 @@ impl Walker<'_> {
         expr.visit_subqueries(&mut |query| self.walk(query, cte_scope))
     }
 
+    fn sample(
+        &mut self,
+        sample: &spec::TableSample,
+        cte_scope: &HashSet<String>,
+    ) -> Result<(), BindingError> {
+        match &sample.method {
+            spec::TableSampleMethod::Percent { value }
+            | spec::TableSampleMethod::Rows { value } => self.expr(value, cte_scope),
+            spec::TableSampleMethod::Bucket { .. } => Ok(()),
+        }
+    }
+
     fn walk(
         &mut self,
         plan: &spec::QueryPlan,
@@ -461,7 +473,15 @@ impl Walker<'_> {
             N::Read {
                 read_type,
                 is_streaming,
-            } => self.read(read_type, *is_streaming, cte_scope),
+            } => {
+                self.read(read_type, *is_streaming, cte_scope)?;
+                if let spec::ReadType::NamedTable(table) = read_type
+                    && let Some(sample) = &table.sample
+                {
+                    self.sample(sample, cte_scope)?;
+                }
+                Ok(())
+            }
             // Leaves without query inputs; literal rows and an inline table
             // function still carry expressions.
             N::LocalRelation { .. }
@@ -506,8 +526,11 @@ impl Walker<'_> {
             | N::ToSchema { input, .. }
             | N::DropNa { input, .. }
             | N::Replace { input, .. }
-            | N::TableAlias { input, .. }
-            | N::TableSample { input, .. } => self.walk(input, cte_scope),
+            | N::TableAlias { input, .. } => self.walk(input, cte_scope),
+            N::TableSample { input, sample } => {
+                self.sample(sample, cte_scope)?;
+                self.walk(input, cte_scope)
+            }
             // One required input with expressions.
             N::Filter { input, condition } => {
                 self.expr(condition, cte_scope)?;
@@ -725,3 +748,7 @@ mod tests;
 #[cfg(test)]
 #[path = "binding_wildcard_tests.rs"]
 mod wildcard_tests;
+
+#[cfg(test)]
+#[path = "binding_sample_tests.rs"]
+mod sample_tests;
