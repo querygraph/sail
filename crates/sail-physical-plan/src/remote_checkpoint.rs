@@ -689,9 +689,13 @@ async fn commit_checkpoint(
                 .await
             {
                 Ok(()) => Err(error),
-                Err(cleanup_error) => Err(internal_datafusion_err!(
-                    "checkpoint failed: {error}; additionally failed to clean {prefix}: {cleanup_error}"
-                )),
+                Err(cleanup_error) => Err(DataFusionError::Collection(vec![
+                    error,
+                    DataFusionError::Context(
+                        format!("failed to clean checkpoint {prefix}"),
+                        Box::new(cleanup_error),
+                    ),
+                ])),
             }
         }
     }
@@ -1110,3 +1114,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "remote_checkpoint_cleanup_tests.rs"]
+mod cleanup_error_tests;
