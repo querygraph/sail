@@ -10,7 +10,7 @@ from pyspark.errors.exceptions.connect import AnalysisException
 client = pytest.importorskip("pyspark.pipelines.spark_connect_pipeline")
 
 
-@pytest.mark.parametrize("file_format", ["parquet", "json", "csv"])
+@pytest.mark.parametrize("file_format", ["parquet", "orc", "json", "csv"])
 def test_batch_pipeline_reads_file_source(pipeline_spark, pipeline, tmp_path, file_format):
     directory = tmp_path / ("input_" + file_format)
     directory.mkdir()
