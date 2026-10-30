@@ -21,6 +21,10 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::{AbortOnDropHandle, TaskTracker};
 use tonic::codegen::Bytes;
 
+#[cfg(test)]
+#[path = "runtime_effect_tests.rs"]
+mod effect_tests;
+
 #[derive(Debug)]
 pub struct RuntimeAwareObjectStore {
     inner: Arc<dyn ObjectStore>,
