@@ -58,12 +58,40 @@ impl StreamPreparation {
         wrapper
     }
 
-    /// Preserve the preparation error while disposing registered resources.
-    pub fn fail(mut self, error: DataFusionError) {
-        self.finish(error);
+    /// Finish preparation without producing a stream. This seals admission
+    /// without requesting cancellation, unless a control already canceled it.
+    /// The caller retains its own typed result; the returned control reports
+    /// resource cleanup separately. No artificial stream or schema is needed.
+    pub fn finish(self) -> ManagedStreamControl {
+        self.finish_without_stream(false)
     }
 
-    fn finish(&mut self, error: DataFusionError) {
+    /// Cancel preparation without taking ownership of the caller's typed error.
+    /// Cleanup remains independently owned even if its observer disappears.
+    /// The control's cancellation outcome is distinct from that caller result.
+    pub fn cancel(self) -> ManagedStreamControl {
+        self.finish_without_stream(true)
+    }
+
+    fn finish_without_stream(mut self, cancel: bool) -> ManagedStreamControl {
+        {
+            let mut state = self.control.0.lock();
+            state.canceled |= cancel;
+            state.phase = Phase::Draining;
+        }
+        self.finished = true;
+        // drain installs its cleanup guard before cancellation notifications
+        // or spawning. Admission/cleanup failures remain in the shared report.
+        let _ = self.control.0.drain(None, None);
+        self.control.clone()
+    }
+
+    /// Preserve the preparation error while disposing registered resources.
+    pub fn fail(mut self, error: DataFusionError) {
+        self.finish_error(error);
+    }
+
+    fn finish_error(&mut self, error: DataFusionError) {
         self.control.0.lock().phase = Phase::Draining;
         self.finished = true;
         let _ = self.control.0.drain(None, Some(error));
@@ -73,7 +101,7 @@ impl StreamPreparation {
 impl Drop for StreamPreparation {
     fn drop(&mut self) {
         if !self.finished {
-            self.finish(DataFusionError::Internal(
+            self.finish_error(DataFusionError::Internal(
                 "managed stream preparation abandoned".into(),
             ));
         }
@@ -83,3 +111,7 @@ impl Drop for StreamPreparation {
 #[cfg(test)]
 #[path = "preparation_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "preparation_finish_tests.rs"]
+mod finish_tests;
