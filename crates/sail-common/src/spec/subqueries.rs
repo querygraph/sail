@@ -146,7 +146,9 @@ impl Window {
                             | WindowFrameBoundary::Value(expr) => {
                                 expr.visit_subqueries(visitor)?;
                             }
-                            _ => {}
+                            WindowFrameBoundary::CurrentRow
+                            | WindowFrameBoundary::UnboundedPreceding
+                            | WindowFrameBoundary::UnboundedFollowing => {}
                         }
                     }
                 }

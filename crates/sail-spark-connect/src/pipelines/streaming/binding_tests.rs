@@ -726,3 +726,16 @@ fn a_static_inline_table_function_still_classifies_reads_in_its_arguments() -> T
     );
     Ok(())
 }
+
+#[test]
+fn query_navigation_reports_the_first_expression_read_before_its_input() {
+    let plan = filter(read("body", false), exists(read("condition", false)));
+    assert_eq!(
+        validate(plan, &[], &[]),
+        Err(BindingError::UnboundCatalogRead(name(&[
+            "c",
+            "d",
+            "condition"
+        ])))
+    );
+}

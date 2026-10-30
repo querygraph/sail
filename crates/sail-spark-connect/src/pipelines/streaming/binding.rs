@@ -419,48 +419,9 @@ impl Walker<'_> {
         Ok(())
     }
 
-    fn exprs(
-        &mut self,
-        exprs: &[spec::Expr],
-        cte_scope: &HashSet<String>,
-    ) -> Result<(), BindingError> {
-        exprs.iter().try_for_each(|expr| self.expr(expr, cte_scope))
-    }
-
-    fn sort_orders(
-        &mut self,
-        orders: &[spec::SortOrder],
-        cte_scope: &HashSet<String>,
-    ) -> Result<(), BindingError> {
-        orders
-            .iter()
-            .try_for_each(|order| self.expr(&order.child, cte_scope))
-    }
-
-    fn window(
-        &mut self,
-        window: &spec::Window,
-        cte_scope: &HashSet<String>,
-    ) -> Result<(), BindingError> {
-        window.visit_subqueries(&mut |query| self.walk(query, cte_scope))
-    }
-
-    /// Follow embedded queries through the shared typed expression traversal.
     /// Query/CTE scope and admission policy remain this walker's responsibility.
     fn expr(&mut self, expr: &spec::Expr, cte_scope: &HashSet<String>) -> Result<(), BindingError> {
         expr.visit_subqueries(&mut |query| self.walk(query, cte_scope))
-    }
-
-    fn sample(
-        &mut self,
-        sample: &spec::TableSample,
-        cte_scope: &HashSet<String>,
-    ) -> Result<(), BindingError> {
-        match &sample.method {
-            spec::TableSampleMethod::Percent { value }
-            | spec::TableSampleMethod::Rows { value } => self.expr(value, cte_scope),
-            spec::TableSampleMethod::Bucket { .. } => Ok(()),
-        }
     }
 
     fn walk(
@@ -469,34 +430,15 @@ impl Walker<'_> {
         cte_scope: &HashSet<String>,
     ) -> Result<(), BindingError> {
         use spec::QueryNode as N;
+        // Admission policy stays here; structural traversal has no refusals.
         match &plan.node {
             N::Read {
                 read_type,
                 is_streaming,
             } => {
                 self.read(read_type, *is_streaming, cte_scope)?;
-                if let spec::ReadType::NamedTable(table) = read_type
-                    && let Some(sample) = &table.sample
-                {
-                    self.sample(sample, cte_scope)?;
-                }
-                Ok(())
             }
-            // Leaves without query inputs; literal rows and an inline table
-            // function still carry expressions.
-            N::LocalRelation { .. }
-            | N::CachedLocalRelation { .. }
-            | N::CachedRemoteRelation { .. }
-            | N::Range(_)
-            | N::Empty { .. } => Ok(()),
-            N::Values(rows) => rows.iter().try_for_each(|row| self.exprs(row, cte_scope)),
             N::CommonInlineUserDefinedTableFunction(function) => {
-                // Without a declared return type the schema comes from the
-                // UDTF's `analyze`, which `resolve_python_udtf_plan` runs in
-                // Python during resolution (`query/udtf.rs`): an unowned
-                // helper, refused here until Python analysis has an owner.
-                // A declared return type resolves without it, so the
-                // arguments keep their classification.
                 if let spec::TableFunctionDefinition::PythonUdtf {
                     return_type: None, ..
                 } = &function.function
@@ -505,211 +447,19 @@ impl Walker<'_> {
                         "dynamic inline table function",
                     ));
                 }
-                self.exprs(&function.arguments, cte_scope)
             }
-            // Constructs whose resolution executes a helper plan.
-            N::Tail { .. } => Err(BindingError::Tail),
-            N::Pivot(pivot) if pivot.values.is_empty() => Err(BindingError::PivotInference),
-            N::StatSummary { .. } => Err(BindingError::StatHelper("summary")),
-            N::StatDescribe { .. } => Err(BindingError::StatHelper("describe")),
-            N::StatCrosstab { .. } => Err(BindingError::StatHelper("crosstab")),
-            N::StatCov { .. } => Err(BindingError::StatHelper("covariance")),
-            N::StatCorr { .. } => Err(BindingError::StatHelper("correlation")),
-            N::StatApproxQuantile { .. } => Err(BindingError::StatHelper("approximate quantile")),
-            N::StatFreqItems { .. } => Err(BindingError::StatHelper("frequent items")),
-            N::StatSampleBy { .. } => Err(BindingError::StatHelper("sample by")),
-            // One required input, no expressions.
-            N::SubqueryAlias { input, .. }
-            | N::Repartition { input, .. }
-            | N::ToDf { input, .. }
-            | N::WithColumnsRenamed { input, .. }
-            | N::ToSchema { input, .. }
-            | N::DropNa { input, .. }
-            | N::Replace { input, .. }
-            | N::TableAlias { input, .. } => self.walk(input, cte_scope),
-            N::TableSample { input, sample } => {
-                self.sample(sample, cte_scope)?;
-                self.walk(input, cte_scope)
+            N::Tail { .. } => return Err(BindingError::Tail),
+            N::Pivot(pivot) if pivot.values.is_empty() => return Err(BindingError::PivotInference),
+            N::StatSummary { .. } => return Err(BindingError::StatHelper("summary")),
+            N::StatDescribe { .. } => return Err(BindingError::StatHelper("describe")),
+            N::StatCrosstab { .. } => return Err(BindingError::StatHelper("crosstab")),
+            N::StatCov { .. } => return Err(BindingError::StatHelper("covariance")),
+            N::StatCorr { .. } => return Err(BindingError::StatHelper("correlation")),
+            N::StatApproxQuantile { .. } => {
+                return Err(BindingError::StatHelper("approximate quantile"));
             }
-            // One required input with expressions.
-            N::Filter { input, condition } => {
-                self.expr(condition, cte_scope)?;
-                self.walk(input, cte_scope)
-            }
-            N::Sort { input, order, .. } => {
-                self.sort_orders(order, cte_scope)?;
-                self.walk(input, cte_scope)
-            }
-            N::Limit { input, skip, limit } => {
-                for expr in [skip, limit].into_iter().flatten() {
-                    self.expr(expr, cte_scope)?;
-                }
-                self.walk(input, cte_scope)
-            }
-            N::Drop { input, columns, .. } => {
-                self.exprs(columns, cte_scope)?;
-                self.walk(input, cte_scope)
-            }
-            N::WithColumns { input, aliases } => {
-                self.exprs(aliases, cte_scope)?;
-                self.walk(input, cte_scope)
-            }
-            N::Hint {
-                input, parameters, ..
-            } => {
-                self.exprs(parameters, cte_scope)?;
-                self.walk(input, cte_scope)
-            }
-            N::RepartitionByExpression {
-                input,
-                partition_expressions,
-                ..
-            } => {
-                self.exprs(partition_expressions, cte_scope)?;
-                self.walk(input, cte_scope)
-            }
-            N::MapPartitions {
-                input, function, ..
-            } => {
-                self.exprs(&function.arguments, cte_scope)?;
-                self.walk(input, cte_scope)
-            }
-            N::CollectMetrics { input, metrics, .. } => {
-                self.exprs(metrics, cte_scope)?;
-                self.walk(input, cte_scope)
-            }
-            N::FillNa { input, values, .. } => {
-                self.exprs(values, cte_scope)?;
-                self.walk(input, cte_scope)
-            }
-            N::WithParameters {
-                input,
-                positional_arguments,
-                named_arguments,
-            } => {
-                self.exprs(positional_arguments, cte_scope)?;
-                for (_, argument) in named_arguments {
-                    self.expr(argument, cte_scope)?;
-                }
-                self.walk(input, cte_scope)
-            }
-            N::NamedWindows { input, windows } => {
-                for (_, window) in windows {
-                    self.window(window, cte_scope)?;
-                }
-                self.walk(input, cte_scope)
-            }
-            // One optional input with expressions.
-            N::Project { input, expressions } => {
-                self.exprs(expressions, cte_scope)?;
-                match input {
-                    Some(input) => self.walk(input, cte_scope),
-                    None => Ok(()),
-                }
-            }
-            N::LateralView {
-                input,
-                arguments,
-                named_arguments,
-                ..
-            } => {
-                self.exprs(arguments, cte_scope)?;
-                for (_, argument) in named_arguments {
-                    self.expr(argument, cte_scope)?;
-                }
-                match input {
-                    Some(input) => self.walk(input, cte_scope),
-                    None => Ok(()),
-                }
-            }
-            // Nested structs with one input.
-            N::Aggregate(aggregate) => {
-                self.exprs(&aggregate.grouping, cte_scope)?;
-                self.exprs(&aggregate.aggregate, cte_scope)?;
-                if let Some(having) = &aggregate.having {
-                    self.expr(having, cte_scope)?;
-                }
-                self.walk(&aggregate.input, cte_scope)
-            }
-            N::Sample(sample) => self.walk(&sample.input, cte_scope),
-            N::Deduplicate(deduplicate) => self.walk(&deduplicate.input, cte_scope),
-            N::Pivot(pivot) => {
-                if let Some(grouping) = &pivot.grouping {
-                    self.exprs(grouping, cte_scope)?;
-                }
-                self.exprs(&pivot.aggregate, cte_scope)?;
-                self.exprs(&pivot.columns, cte_scope)?;
-                for value in &pivot.values {
-                    self.exprs(&value.values, cte_scope)?;
-                }
-                self.walk(&pivot.input, cte_scope)
-            }
-            N::Unpivot(unpivot) => {
-                if let Some(ids) = &unpivot.ids {
-                    self.exprs(ids, cte_scope)?;
-                }
-                for value in unpivot.values.iter().flatten() {
-                    self.exprs(&value.columns, cte_scope)?;
-                }
-                self.walk(&unpivot.input, cte_scope)
-            }
-            N::Parse(parse) => self.walk(&parse.input, cte_scope),
-            N::WithWatermark(watermark) => self.walk(&watermark.input, cte_scope),
-            N::ApplyInPandasWithState(apply) => {
-                self.exprs(&apply.grouping_expressions, cte_scope)?;
-                self.exprs(&apply.function.arguments, cte_scope)?;
-                self.walk(&apply.input, cte_scope)
-            }
-            N::GroupMap(group) => {
-                self.exprs(&group.grouping_expressions, cte_scope)?;
-                self.exprs(&group.sorting_expressions, cte_scope)?;
-                self.exprs(&group.initial_grouping_expressions, cte_scope)?;
-                self.exprs(&group.function.arguments, cte_scope)?;
-                self.walk(&group.input, cte_scope)?;
-                match &group.initial_input {
-                    Some(initial) => self.walk(initial, cte_scope),
-                    None => Ok(()),
-                }
-            }
-            // Several inputs.
-            N::Join(join) => {
-                if let Some(spec::JoinCriteria::On(condition)) = &join.join_criteria {
-                    self.expr(condition, cte_scope)?;
-                }
-                self.walk(&join.left, cte_scope)?;
-                self.walk(&join.right, cte_scope)
-            }
-            N::LateralJoin {
-                left,
-                right,
-                join_condition,
-                ..
-            } => {
-                if let Some(condition) = join_condition {
-                    self.expr(condition, cte_scope)?;
-                }
-                self.walk(left, cte_scope)?;
-                self.walk(right, cte_scope)
-            }
-            N::SetOperation(set) => {
-                self.walk(&set.left, cte_scope)?;
-                self.walk(&set.right, cte_scope)
-            }
-            N::CoGroupMap(cogroup) => {
-                self.exprs(&cogroup.input_grouping_expressions, cte_scope)?;
-                self.exprs(&cogroup.other_grouping_expressions, cte_scope)?;
-                self.exprs(&cogroup.input_sorting_expressions, cte_scope)?;
-                self.exprs(&cogroup.other_sorting_expressions, cte_scope)?;
-                self.exprs(&cogroup.function.arguments, cte_scope)?;
-                self.walk(&cogroup.input, cte_scope)?;
-                self.walk(&cogroup.other, cte_scope)
-            }
-            N::WithRelations { root, references } => {
-                for reference in references {
-                    self.walk(reference, cte_scope)?;
-                }
-                self.walk(root, cte_scope)
-            }
+            N::StatFreqItems { .. } => return Err(BindingError::StatHelper("frequent items")),
+            N::StatSampleBy { .. } => return Err(BindingError::StatHelper("sample by")),
             N::WithCtes {
                 input,
                 ctes,
@@ -735,9 +485,17 @@ impl Walker<'_> {
                     self.walk(definition, &inner)?;
                     inner.insert(name.as_ref().to_string());
                 }
-                self.walk(input, &inner)
+                return self.walk(input, &inner);
             }
+            _ => {}
         }
+        plan.visit_children(&mut |child| match child {
+            spec::QueryChild::Expression(expr) => self.expr(expr, cte_scope),
+            spec::QueryChild::Window(window) => {
+                window.visit_subqueries(&mut |query| self.walk(query, cte_scope))
+            }
+            spec::QueryChild::Query(query) => self.walk(query, cte_scope),
+        })
     }
 }
 
