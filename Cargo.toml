@@ -2,6 +2,7 @@
 members = [
     "crates/*",
     "vendor/grust-topology",
+    "vendor/grust-columns",
 ]
 exclude = ["vendor/orc-rust"]
 resolver = "2"
