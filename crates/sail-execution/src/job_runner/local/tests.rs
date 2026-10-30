@@ -461,3 +461,6 @@ fn interrupted_completion_is_retained_until_stop_joins_the_resource_scope() -> T
 
 #[path = "preparation_tests.rs"]
 mod preparation;
+
+#[path = "capture_boundary_tests.rs"]
+mod capture_boundary;
