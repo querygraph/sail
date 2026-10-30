@@ -487,7 +487,50 @@ impl Walker<'_> {
                 }
                 return self.walk(input, &inner);
             }
-            _ => {}
+            // Each new query kind requires an explicit admission decision.
+            N::Project { .. }
+            | N::Filter { .. }
+            | N::Join(_)
+            | N::SetOperation(_)
+            | N::Sort { .. }
+            | N::Limit { .. }
+            | N::Aggregate(_)
+            | N::LocalRelation { .. }
+            | N::Sample(_)
+            | N::TableSample { .. }
+            | N::Deduplicate(_)
+            | N::Range(_)
+            | N::SubqueryAlias { .. }
+            | N::Repartition { .. }
+            | N::ToDf { .. }
+            | N::WithColumnsRenamed { .. }
+            | N::Drop { .. }
+            | N::WithColumns { .. }
+            | N::Hint { .. }
+            | N::Pivot(_)
+            | N::Unpivot(_)
+            | N::ToSchema { .. }
+            | N::RepartitionByExpression { .. }
+            | N::MapPartitions { .. }
+            | N::CollectMetrics { .. }
+            | N::Parse(_)
+            | N::GroupMap(_)
+            | N::CoGroupMap(_)
+            | N::WithWatermark(_)
+            | N::ApplyInPandasWithState(_)
+            | N::CachedLocalRelation { .. }
+            | N::CachedRemoteRelation { .. }
+            | N::FillNa { .. }
+            | N::DropNa { .. }
+            | N::Replace { .. }
+            | N::Empty { .. }
+            | N::WithParameters { .. }
+            | N::Values(_)
+            | N::TableAlias { .. }
+            | N::NamedWindows { .. }
+            | N::WithRelations { .. }
+            | N::LateralView { .. }
+            | N::LateralJoin { .. } => {}
         }
         plan.visit_children(&mut |child| match child {
             spec::QueryChild::Expression(expr) => self.expr(expr, cte_scope),
