@@ -27,7 +27,7 @@ where
     Fut: Future<Output = object_store::Result<Box<dyn MultipartUpload>>> + Send + 'static,
 {
     let (supervisor, creation) = owned_multipart::prepare(factory, capacity);
-    resources.spawn(move |canceled| async move {
+    resources.spawn_mutation(move |canceled| async move {
         supervisor.run(canceled).await.map_err(execution_error)
     })?;
     creation.wait().await.map_err(execution_error)

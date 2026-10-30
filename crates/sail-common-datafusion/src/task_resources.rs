@@ -16,6 +16,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 
+use crate::error::CommitStateUnknownError;
 use crate::extension::SessionExtension;
 
 /// Identity within a single scope, not a global task or object identity.
@@ -79,9 +80,16 @@ impl std::error::Error for ResourceError {
 
 type Drain = Shared<BoxFuture<'static, Arc<ResourceDrainReport>>>;
 
+#[derive(Clone, Copy)]
+enum InterruptionPolicy {
+    ResourceError,
+    MutationStateUnknown,
+}
+
 struct Resource {
     id: ResourceId,
     handle: JoinHandle<Result<()>>,
+    interruption: InterruptionPolicy,
 }
 
 enum State {
@@ -132,6 +140,27 @@ impl TaskResourceScope {
         F: FnOnce(watch::Receiver<bool>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
+        self.register(factory, InterruptionPolicy::ResourceError)
+    }
+
+    /// Register a supervisor that may publish mutations. If its task is lost
+    /// or panics before returning confirmed settlement, retain the typed join
+    /// failure alongside nonretryable unknown-commit classification. Normal
+    /// cancellation signaling is not task interruption. Returned factory errors
+    /// are preserved as-is; the factory must classify their commit semantics.
+    pub fn spawn_mutation<F, Fut>(&self, factory: F) -> Result<ResourceId>
+    where
+        F: FnOnce(watch::Receiver<bool>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        self.register(factory, InterruptionPolicy::MutationStateUnknown)
+    }
+
+    fn register<F, Fut>(&self, factory: F, interruption: InterruptionPolicy) -> Result<ResourceId>
+    where
+        F: FnOnce(watch::Receiver<bool>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
         let mut state = self
             .state
             .lock()
@@ -150,7 +179,11 @@ impl TaskResourceScope {
             .map_err(|error| DataFusionError::ResourcesExhausted(error.to_string()))?;
         let canceled = self.cancellation.subscribe();
         let handle = self.runtime.spawn(async move { factory(canceled).await });
-        resources.push(Resource { id, handle });
+        resources.push(Resource {
+            id,
+            handle,
+            interruption,
+        });
         *next_id = following;
         Ok(id)
     }
@@ -169,20 +202,46 @@ impl TaskResourceScope {
         F: FnOnce(watch::Receiver<bool>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
+        self.run_inner(factory, InterruptionPolicy::ResourceError)
+            .await
+    }
+
+    /// Completed-value counterpart to spawn_mutation. Inspect the retained drain
+    /// report before retrying after observer interruption. This does not accept
+    /// raw resource handles needing asynchronous disposal; see run's contract.
+    pub async fn run_mutation<T, F, Fut>(&self, factory: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(watch::Receiver<bool>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
+        self.run_inner(factory, InterruptionPolicy::MutationStateUnknown)
+            .await
+    }
+
+    async fn run_inner<T, F, Fut>(&self, factory: F, interruption: InterruptionPolicy) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(watch::Receiver<bool>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
         let (result, receiver) = oneshot::channel();
-        self.spawn(move |canceled| async move {
-            match factory(canceled).await {
-                Ok(value) => {
-                    let _ = result.send(Ok(value));
-                    Ok(())
+        self.register(
+            move |canceled| async move {
+                match factory(canceled).await {
+                    Ok(value) => {
+                        let _ = result.send(Ok(value));
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let error = Arc::new(error);
+                        let _ = result.send(Err(DataFusionError::Shared(error.clone())));
+                        Err(DataFusionError::Shared(error))
+                    }
                 }
-                Err(error) => {
-                    let error = Arc::new(error);
-                    let _ = result.send(Err(DataFusionError::Shared(error.clone())));
-                    Err(DataFusionError::Shared(error))
-                }
-            }
-        })?;
+            },
+            interruption,
+        )?;
         receiver.await.map_err(|error| {
             DataFusionError::Context(
                 "owned resource result interrupted".into(),
@@ -232,10 +291,23 @@ impl TaskResourceScope {
         let drain = async move {
             let registered = resources.len();
             let results = join_all(resources.into_iter().map(|resource| async move {
-                let result = resource
-                    .handle
-                    .await
-                    .unwrap_or_else(|error| Err(DataFusionError::External(Box::new(error))));
+                let result = resource.handle.await.unwrap_or_else(|error| {
+                    let unknown = matches!(
+                        resource.interruption,
+                        InterruptionPolicy::MutationStateUnknown
+                    )
+                    .then(|| {
+                        DataFusionError::External(Box::new(CommitStateUnknownError(format!(
+                            "mutation resource {} interrupted before confirmed settlement: {error}",
+                            resource.id.0
+                        ))))
+                    });
+                    let error = DataFusionError::External(Box::new(error));
+                    Err(match unknown {
+                        Some(unknown) => DataFusionError::Collection(vec![unknown, error]),
+                        None => error,
+                    })
+                });
                 (resource.id, result)
             }))
             .await;
@@ -269,3 +341,7 @@ mod tests;
 #[path = "task_resources_context.rs"]
 mod context;
 pub use context::ScopedTaskContext;
+
+#[cfg(test)]
+#[path = "task_resources_mutation_tests.rs"]
+mod mutation_tests;

@@ -23,6 +23,7 @@ fn held(fail: bool) -> (Arc<HeldStore>, oneshot::Receiver<()>, oneshot::Sender<(
             inner: Arc::new(InMemory::new()),
             calls: AtomicUsize::new(0),
             fail,
+            after_publish: Mutex::new(None),
             entered: Mutex::new(Some(entered)),
             release: Mutex::new(Some(pending)),
         }),
@@ -159,3 +160,7 @@ async fn an_unpolled_put_admits_no_work() -> TestResult {
     assert_eq!(scope.drain().await?.registered, 0);
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "owned_put_runtime_tests.rs"]
+mod runtime_loss;

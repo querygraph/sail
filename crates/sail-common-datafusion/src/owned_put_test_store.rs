@@ -22,10 +22,17 @@ impl fmt::Display for PutFailure {
 impl std::error::Error for PutFailure {}
 
 #[derive(Debug)]
+pub(super) struct PublishedResponse {
+    pub entered: oneshot::Sender<()>,
+    pub release: oneshot::Receiver<()>,
+}
+
+#[derive(Debug)]
 pub(super) struct HeldStore {
     pub inner: Arc<InMemory>,
     pub calls: AtomicUsize,
     pub fail: bool,
+    pub after_publish: Mutex<Option<PublishedResponse>>,
     pub entered: Mutex<Option<oneshot::Sender<()>>>,
     pub release: Mutex<Option<oneshot::Receiver<()>>>,
 }
@@ -70,7 +77,23 @@ impl ObjectStore for HeldStore {
                 source: Box::new(PutFailure),
             });
         }
-        self.inner.put_opts(path, payload, options).await
+        let result = self.inner.put_opts(path, payload, options).await?;
+        let response = self
+            .after_publish
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(response) = response {
+            let _ = response.entered.send(());
+            response
+                .release
+                .await
+                .map_err(|error| object_store::Error::Generic {
+                    store: "HeldPutStore",
+                    source: Box::new(error),
+                })?;
+        }
+        Ok(result)
     }
     async fn put_multipart_opts(
         &self,

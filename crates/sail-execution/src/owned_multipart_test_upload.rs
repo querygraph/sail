@@ -76,6 +76,7 @@ pub(super) struct Upload {
     inner: Box<dyn MultipartUpload>,
     state: Arc<State>,
     pub complete: Option<Gate>,
+    pub after_publish: Option<Gate>,
     pub abort: Option<Gate>,
     pub lose_complete_response: bool,
 }
@@ -90,6 +91,7 @@ impl Upload {
             inner,
             state,
             complete: None,
+            after_publish: None,
             abort: None,
             lose_complete_response: false,
         })
@@ -113,6 +115,9 @@ impl MultipartUpload for Upload {
             gate.wait().await;
         }
         let result = self.inner.complete().await?;
+        if let Some(gate) = self.after_publish.take() {
+            gate.wait().await;
+        }
         if self.lose_complete_response {
             Err(object_store::Error::Generic {
                 store: "OwnedMultipartFixture",

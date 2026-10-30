@@ -287,3 +287,6 @@ fn provider_and_supervisor_run_on_existing_scope_runtime() -> TestResult {
     assert_ne!(io.handle().id(), caller.handle().id());
     Ok(())
 }
+
+#[path = "owned_multipart_runtime_tests.rs"]
+mod runtime_loss;

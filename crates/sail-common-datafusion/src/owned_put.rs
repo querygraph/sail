@@ -24,7 +24,7 @@ pub async fn put(
     options: PutOptions,
 ) -> Result<PutResult> {
     resources
-        .run(move |_| async move {
+        .run_mutation(move |_| async move {
             store
                 .put_opts(&location, payload, options)
                 .await
