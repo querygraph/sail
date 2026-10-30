@@ -316,3 +316,6 @@ async fn absent_query_session_keeps_legacy_collection_path() -> TestResult {
 
 #[path = "factory_session_tests.rs"]
 mod factories;
+
+#[path = "write_factory_session_tests.rs"]
+mod writers;

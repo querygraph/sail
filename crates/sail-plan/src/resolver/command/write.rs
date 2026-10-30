@@ -567,7 +567,7 @@ impl PlanResolver<'_> {
         let registry = self.ctx.extension::<DataSourceRegistry>()?;
         let plan = registry
             .get_data_source(&write_format)?
-            .create_writer(&self.ctx.state(), sink_info)
+            .create_writer(self.provider_session().as_session(), sink_info)
             .await?;
         Ok(LogicalPlan::Extension(Extension {
             node: Arc::new(BarrierNode::new(preconditions, Arc::new(plan))),
@@ -701,7 +701,7 @@ impl PlanResolver<'_> {
                         .map_err(PlanError::from)?
                     {
                         let metadata = lake_source
-                            .infer_metadata(&self.ctx.state(), info)
+                            .infer_metadata(self.provider_session().as_session(), info)
                             .await
                             .map_err(|e| {
                                 PlanError::invalid(format!(
@@ -736,7 +736,7 @@ impl PlanResolver<'_> {
                         }
                     } else {
                         let schema = data_source
-                            .infer_schema(&self.ctx.state(), info)
+                            .infer_schema(self.provider_session().as_session(), info)
                             .await
                             .map_err(|e| {
                                 PlanError::invalid(format!(
@@ -769,7 +769,10 @@ impl PlanResolver<'_> {
                         }],
                         read_case_sensitive: self.config.case_sensitive,
                     };
-                    match lake_source.infer_metadata(&self.ctx.state(), info).await {
+                    match lake_source
+                        .infer_metadata(self.provider_session().as_session(), info)
+                        .await
+                    {
                         Ok(metadata) => {
                             Self::merge_format_columns(&mut columns, metadata.schema.as_ref());
                             if let Some(fields) = metadata.partition_by {
