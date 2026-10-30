@@ -86,6 +86,42 @@ impl<W: Write> ArrowWriterBuilder<W> {
     /// Construct an [`ArrowWriter`] ready to encode [`RecordBatch`]es into
     /// an ORC file.
     pub fn try_build(mut self) -> Result<ArrowWriter<W>> {
+        ensure!(
+            self.batch_size > 0,
+            UnexpectedSnafu {
+                msg: "writer batch size must be greater than zero"
+            }
+        );
+        for field in self.schema.fields() {
+            let supported = match field.data_type() {
+                ArrowDataType::Float32
+                | ArrowDataType::Float64
+                | ArrowDataType::Int8
+                | ArrowDataType::Int16
+                | ArrowDataType::Int32
+                | ArrowDataType::Int64
+                | ArrowDataType::Date32
+                | ArrowDataType::Utf8
+                | ArrowDataType::LargeUtf8
+                | ArrowDataType::Binary
+                | ArrowDataType::LargeBinary
+                | ArrowDataType::Boolean => true,
+                ArrowDataType::Timestamp(_, timezone) => {
+                    matches!(timezone.as_deref(), None | Some("UTC"))
+                }
+                _ => false,
+            };
+            ensure!(
+                supported,
+                UnexpectedSnafu {
+                    msg: format!(
+                        "unsupported writer type {:?} for field {:?}",
+                        field.data_type(),
+                        field.name()
+                    )
+                }
+            );
+        }
         let timezone = self
             .schema
             .fields()
@@ -1006,3 +1042,7 @@ mod tests {
         assert_eq!(actual, batch);
     }
 }
+
+#[cfg(test)]
+#[path = "writer_admission_tests.rs"]
+mod admission_tests;

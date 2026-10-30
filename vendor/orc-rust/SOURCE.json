@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/datafusion-contrib/orc-rust",
-  "commit": "133c0c5ea13578bd6905070dee11f0e66750cd9a",
+  "commit": "41304b061d13bc5278e2308c35c9574bc9a03b17",
   "source_kind": "Locally patched upstream package; patch revisions have not been published to the upstream repository.",
   "upstream_tag": "v0.9.0",
   "upstream_commit": "d21a6e4d2f8b5f4465fa5c0cad046c7ec2284307",
@@ -72,11 +72,15 @@
     {
       "commit": "133c0c5ea13578bd6905070dee11f0e66750cd9a",
       "subject": "fix: decode ORC delta extremes without arithmetic panics"
+    },
+    {
+      "commit": "41304b061d13bc5278e2308c35c9574bc9a03b17",
+      "subject": "fix: validate ORC writer schemas before emitting bytes"
     }
   ],
   "package": {
     "command": "cargo +1.98.1 package --locked --no-verify",
-    "sha256": "b3d8677ecc760a15e6b443212e530941b169cea8c59af912ed5019951ce1546c",
+    "sha256": "c32b165208a8ca985f2904b0fee5b77769c4ea7ce8ef23e5454c8a79593e2662",
     "excluded_files": [
       "Cargo.lock"
     ],
@@ -86,7 +90,7 @@
     "note": "Cargo-normalized manifest; upstream package omits integration fixtures and benchmarks. Source tests were run in the full detached source checkout."
   },
   "files_sha256": {
-    ".cargo_vcs_info.json": "73a8df77a99adab418812e34422a8eb2d278c60d628c39d27dba9b5c38386c71",
+    ".cargo_vcs_info.json": "b94919ec58d6ae272f88ef9d104f8007de251c8b864ad31e96787beac19e0426",
     "Cargo.toml": "0a69cbe6449e27e1be0f020c1f0e9393a135b99fa00a115e45a0e7e7b8726385",
     "Cargo.toml.orig": "58ccc950aa988bb2c70c7850de74c1ac9ad182773452dc9a08a0b25cceeb7874",
     "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
@@ -104,7 +108,7 @@
     "src/array_decoder/timestamp.rs": "97fa9d02382de00cb16b813fef94e9bc7b0cf92236d5e20ddd90a803be2a5496",
     "src/array_decoder/union.rs": "461b9b9ab606f34b83e877fabe3eaae1c0ab9c1db15a4af8aa80b9724909f953",
     "src/arrow_reader.rs": "b6a7ddbfc1c05dea7fe27af46ed3c6801403b27a7c886fb3129561c2dd09095b",
-    "src/arrow_writer.rs": "319283de0f4e72a879ee54c050206687abb864adbf57b58067deb1cc3441d730",
+    "src/arrow_writer.rs": "2e32866dd5be08007298225da6b45e95aedeb2afbbc6b67fa2ce0ff57fc27ff2",
     "src/async_arrow_reader.rs": "0810dd6d06b07191f5d4535b66a159a2ce2f13311b7138f073b30cdd1d31cf69",
     "src/bin/orc/bloom.rs": "74a3b31909802030a2c1a53a9fc081f39515701236e6222431a86761367529dd",
     "src/bin/orc/common.rs": "02c348b38c209e5cd28916b41976ac19737cd310ca0acef78d5af79575458977",
@@ -160,6 +164,7 @@
     "src/timestamp_timezone_tests.rs": "136a62dde6947cf7d6102243ddf9fac77450840cbe37df65f8ce8f23004eda26",
     "src/writer/column.rs": "6fd1b0903ebff69f9d4debe1b6fb169e9b91050b14585137c1b8dab3a5ccad6e",
     "src/writer/mod.rs": "58f92fcec92c29bd47a9660452542b7dacc2d4bd0eb8ae0246c1d4e1e3019af7",
-    "src/writer/stripe.rs": "6c76d30deb39f9242121aab8084ec7b0458d989a14de34081ca81544c07da924"
+    "src/writer/stripe.rs": "6c76d30deb39f9242121aab8084ec7b0458d989a14de34081ca81544c07da924",
+    "src/writer_admission_tests.rs": "bd2f3044c72c48d973dac145d2d84a5d659a3b5a1966857db628229f15130121"
   }
 }
