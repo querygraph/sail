@@ -189,7 +189,14 @@ pub(crate) fn handle_config_set(
         let key = SparkConfigKey::SPARK_SQL_SESSION_TIME_ZONE.to_string();
         kv.iter().any(|pair| pair.key == key)
     };
-    spark.set_config(kv)?;
+    let sets_orc_merge_schema = kv
+        .iter()
+        .any(|pair| pair.key == SparkConfigKey::SPARK_SQL_ORC_MERGE_SCHEMA);
+    if sets_orc_merge_schema {
+        update_orc_listing_defaults(ctx, &spark, || spark.set_config(kv))?;
+    } else {
+        spark.set_config(kv)?;
+    }
     if sets_session_timezone {
         // Mirror `spark.sql.session.timeZone` onto the DataFusion session configuration. Parquet
         // listing-table schema inference reads `execution.time_zone` to reconcile mixed-timezone
@@ -271,7 +278,14 @@ pub(crate) fn handle_config_unset(
         let key = SparkConfigKey::SPARK_SQL_SESSION_TIME_ZONE.to_string();
         keys.iter().any(|k| k == &key)
     };
-    spark.unset_config(keys)?;
+    let unsets_orc_merge_schema = keys
+        .iter()
+        .any(|key| key == SparkConfigKey::SPARK_SQL_ORC_MERGE_SCHEMA);
+    if unsets_orc_merge_schema {
+        update_orc_listing_defaults(ctx, &spark, || spark.unset_config(keys))?;
+    } else {
+        spark.unset_config(keys)?;
+    }
     if unsets_session_timezone {
         // Unsetting `spark.sql.session.timeZone` reverts it toward the default, so re-sync
         // `execution.time_zone` to the now-effective session zone instead of leaving the last
@@ -290,6 +304,26 @@ pub(crate) fn handle_config_unset(
         pairs: Vec::new(),
         warnings,
     })
+}
+
+fn update_orc_listing_defaults(
+    ctx: &SessionContext,
+    spark: &SparkSession,
+    update: impl FnOnce() -> SparkResult<()>,
+) -> SparkResult<()> {
+    // Serialize the mutation and immutable snapshot replacement. Spark config
+    // methods acquire only their private session mutex, never this state lock.
+    let state_ref = ctx.state_ref();
+    let mut state = state_ref.write();
+    let result = update();
+    let defaults = spark.orc_listing_defaults();
+    if let Ok(defaults) = &defaults {
+        state.config_mut().set_extension(Arc::new(*defaults));
+    }
+    // A multi-key request may have changed ORC before a later entry failed.
+    // Refresh the snapshot in that case and preserve the original error.
+    result?;
+    defaults.map(|_| ())
 }
 
 pub(crate) fn handle_config_is_modifiable(

@@ -7,6 +7,7 @@ use datafusion::execution::SendableRecordBatchStream;
 use datafusion::logical_expr::StringifiedPlan;
 use sail_common::utils::datetime::get_system_timezone;
 use sail_common_datafusion::extension::SessionExtension;
+use sail_data_source::formats::orc::OrcListingSessionDefaults;
 use sail_plan::config::PlanConfig;
 
 use crate::config::{ConfigKeyValue, SparkRuntimeConfig};
@@ -86,6 +87,10 @@ impl SparkSession {
         let mut config = PlanConfig::try_from(&state.config)?;
         config.session_user_id = self.user_id().to_string();
         Ok(Arc::new(config))
+    }
+
+    pub(crate) fn orc_listing_defaults(&self) -> SparkResult<OrcListingSessionDefaults> {
+        self.state.lock()?.config.orc_listing_defaults()
     }
 
     pub(crate) fn plan_config_with_overrides(

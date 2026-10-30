@@ -26,6 +26,23 @@ pub fn parse_bool(key: &str, value: &str) -> DataSourceResult<bool> {
     }
 }
 
+/// Parse Spark's strict boolean data-source option syntax without trimming.
+pub fn parse_spark_bool(key: &str, value: &str) -> DataSourceResult<bool> {
+    if value.eq_ignore_ascii_case("true") {
+        Ok(true)
+    } else if value.eq_ignore_ascii_case("false") || value.eq_ignore_ascii_case("falſe") {
+        // Scala StringOps.toBoolean uses Java equalsIgnoreCase. For these
+        // fixed boolean words, Java also folds the long s (U+017F) to S.
+        Ok(false)
+    } else {
+        Err(DataSourceError::InvalidOption {
+            key: key.to_string(),
+            value: value.to_string(),
+            cause: None,
+        })
+    }
+}
+
 pub fn parse_u16(key: &str, value: &str) -> DataSourceResult<u16> {
     value
         .parse::<u16>()

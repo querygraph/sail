@@ -58,22 +58,7 @@ impl ServerSessionMutator for SparkSessionMutator {
             },
         )
         .map_err(|e| internal_datafusion_err!("{e}"))?;
-        // Seed the DataFusion `execution.time_zone` from the resolved Spark session timezone at
-        // session creation. `SparkSession::try_new` sets `spark.sql.session.timeZone` to the
-        // system timezone, but nothing otherwise copies it into `SessionConfig`; without this
-        // seed a session that never calls `conf.set` leaves `execution.time_zone = None`, so
-        // Parquet schema inference treats a non-UTC server as UTC. `handle_config_set` and
-        // `handle_config_unset` keep the two in sync thereafter.
-        let session_timezone = spark
-            .plan_config()
-            .map_err(|e| internal_datafusion_err!("{e}"))?
-            .session_timezone
-            .to_string();
-        let mut config = config;
-        config.options_mut().execution.time_zone = Some(session_timezone);
-        Ok(config
-            .with_extension(Arc::new(plan_service))
-            .with_extension(Arc::new(spark)))
+        spark_session_config(config.with_extension(Arc::new(plan_service)), spark)
     }
 
     fn mutate_state(
@@ -91,6 +76,25 @@ impl ServerSessionMutator for SparkSessionMutator {
     ) -> Result<RuntimeEnvBuilder> {
         Ok(builder)
     }
+}
+
+fn spark_session_config(mut config: SessionConfig, spark: SparkSession) -> Result<SessionConfig> {
+    // Seed DataFusion from the resolved Spark settings at session creation.
+    // Config set/unset handlers keep these defaults in sync thereafter.
+    // The SQL display timezone is not the numeric ORC reader timezone.
+    config.options_mut().execution.time_zone = Some(
+        spark
+            .plan_config()
+            .map_err(|e| internal_datafusion_err!("{e}"))?
+            .session_timezone
+            .to_string(),
+    );
+    let orc_defaults = spark
+        .orc_listing_defaults()
+        .map_err(|e| internal_datafusion_err!("{e}"))?;
+    Ok(config
+        .with_extension(Arc::new(orc_defaults))
+        .with_extension(Arc::new(spark)))
 }
 
 /// The session factory used by the Spark Connect server by default.
@@ -128,3 +132,7 @@ pub async fn create_spark_session_manager_with_factory(
     )
     .await?)
 }
+
+#[cfg(test)]
+#[path = "session_manager/orc_options_tests.rs"]
+mod orc_options_tests;

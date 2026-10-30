@@ -12,6 +12,8 @@ use crate::spark::config::{
 };
 use crate::spark::connect;
 
+mod orc;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd)]
 pub struct ConfigKeyValue {
     pub key: String,
@@ -147,6 +149,9 @@ impl SparkRuntimeConfig {
         // TODO: Investigate how spark.wap.branch and spark.wap.id should reach
         // Iceberg write planning for validation at the format boundary.
         self.validate_removed_key(key.as_str(), value.as_str())?;
+        if key == SparkConfigKey::SPARK_SQL_ORC_MERGE_SCHEMA {
+            orc::parse_merge_schema(&value)?;
+        }
         // Spark limits this setting to Int32; Sail accepts positive Int64 counts,
         // matching its partitioning hints. Plan conversion checks the usize limit.
         if key == SparkConfigKey::SPARK_SQL_SHUFFLE_PARTITIONS {

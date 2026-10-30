@@ -1,3 +1,4 @@
+mod listing_options;
 mod metadata;
 mod options;
 mod reader;
@@ -6,6 +7,7 @@ mod schema;
 mod source;
 mod timezone;
 
+pub use listing_options::OrcListingSessionDefaults;
 pub use metadata::OrcSchemaBridge;
 pub use options::OrcReadResourceLimits;
 pub use reader::OrcObjectReader;
