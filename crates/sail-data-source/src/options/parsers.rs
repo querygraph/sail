@@ -208,3 +208,8 @@ pub fn parse_optional_u64(key: &str, value: &str) -> DataSourceResult<Option<u64
             cause: None,
         })
 }
+
+/// Preserve an explicitly supplied string, including empty option values.
+pub fn parse_present_string(_key: &str, value: &str) -> DataSourceResult<Option<String>> {
+    Ok(Some(value.to_string()))
+}

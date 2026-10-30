@@ -20,7 +20,7 @@ pub use requested_schema::OrcRequestedSchemaAdapter;
 pub use schema::infer_schema as infer_orc_schema;
 pub use source::OrcSource;
 pub use timezone::OrcJavaTimeZoneConfig;
-pub use write_options::OrcWriteCompression;
+pub use write_options::{OrcWriteCompression, OrcWriteConfig, OrcWriteSessionDefaults};
 
 #[cfg(test)]
 mod fixture_tests;

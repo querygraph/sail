@@ -1,0 +1,32 @@
+# Preserve raw values until codec-key precedence has been applied.
+- key: compression
+  description: Highest-priority ORC block compression option.
+  default:
+    value: ""
+    parser: crate::options::parsers::parse_optional_string
+  supported: true
+  rust_type: "Option<String>"
+  scopes: [write]
+  origins:
+    - type: option
+      keys: [compression]
+      parser: crate::options::parsers::parse_present_string
+    - type: table_property
+      keys: [option.compression]
+      parser: crate::options::parsers::parse_present_string
+
+- key: orc_compress
+  description: ORC compression fallback, below compression but above session defaults.
+  default:
+    value: ""
+    parser: crate::options::parsers::parse_optional_string
+  supported: true
+  rust_type: "Option<String>"
+  scopes: [write]
+  origins:
+    - type: option
+      keys: [orc.compress]
+      parser: crate::options::parsers::parse_present_string
+    - type: table_property
+      keys: [option.orc.compress]
+      parser: crate::options::parsers::parse_present_string

@@ -1,18 +1,23 @@
-use sail_data_source::formats::orc::{OrcListingSessionDefaults, OrcReadSessionModes};
+use sail_data_source::formats::orc::{
+    OrcListingSessionDefaults, OrcReadSessionModes, OrcWriteCompression, OrcWriteSessionDefaults,
+};
 use sail_data_source::options::parsers::parse_spark_bool;
 
 use super::SparkRuntimeConfig;
 use crate::error::{SparkError, SparkResult};
 use crate::spark::config::SparkConfigKey;
 
+pub(crate) const ORC_COMPRESSION: &str = "spark.sql.orc.compression.codec";
+
 const FORCE_POSITIONAL_EVOLUTION: &str = "orc.force.positional.evolution";
 
-pub(crate) fn affects_orc_read_config(key: &str) -> bool {
+pub(crate) fn affects_orc_config(key: &str) -> bool {
     matches!(
         key,
         SparkConfigKey::SPARK_SQL_ORC_MERGE_SCHEMA
             | SparkConfigKey::SPARK_SQL_ORC_IMPL
             | FORCE_POSITIONAL_EVOLUTION
+            | ORC_COMPRESSION
     )
 }
 
@@ -53,5 +58,22 @@ impl SparkRuntimeConfig {
             .transpose()?
             .unwrap_or_default();
         Ok(OrcListingSessionDefaults { merge_schema })
+    }
+}
+
+pub(super) fn parse_write_compression(value: &str) -> SparkResult<OrcWriteCompression> {
+    OrcWriteCompression::resolve(None, None, Some(value))
+        .map_err(|error| SparkError::invalid(error.to_string()))
+}
+
+impl SparkRuntimeConfig {
+    pub(crate) fn orc_write_defaults(&self) -> SparkResult<OrcWriteSessionDefaults> {
+        Ok(OrcWriteSessionDefaults {
+            compression: self
+                .get_option(ORC_COMPRESSION)
+                .map(parse_write_compression)
+                .transpose()?
+                .unwrap_or_default(),
+        })
     }
 }

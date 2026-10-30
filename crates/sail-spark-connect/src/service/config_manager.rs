@@ -11,7 +11,7 @@ use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_plan::resolver::PlanResolver;
 use sail_sql_analyzer::parser::parse_native_config_value;
 
-use crate::config::{ConfigKeyValue, affects_orc_read_config};
+use crate::config::{ConfigKeyValue, affects_orc_config};
 use crate::error::{SparkError, SparkResult};
 use crate::service::time_zone::is_valid_time_zone;
 use crate::session::SparkSession;
@@ -189,9 +189,9 @@ pub(crate) fn handle_config_set(
         let key = SparkConfigKey::SPARK_SQL_SESSION_TIME_ZONE.to_string();
         kv.iter().any(|pair| pair.key == key)
     };
-    let sets_orc_config = kv.iter().any(|pair| affects_orc_read_config(&pair.key));
+    let sets_orc_config = kv.iter().any(|pair| affects_orc_config(&pair.key));
     if sets_orc_config {
-        update_orc_read_config(ctx, &spark, || spark.set_config(kv))?;
+        update_orc_config(ctx, &spark, || spark.set_config(kv))?;
     } else {
         spark.set_config(kv)?;
     }
@@ -276,9 +276,9 @@ pub(crate) fn handle_config_unset(
         let key = SparkConfigKey::SPARK_SQL_SESSION_TIME_ZONE.to_string();
         keys.iter().any(|k| k == &key)
     };
-    let unsets_orc_config = keys.iter().any(|key| affects_orc_read_config(key));
+    let unsets_orc_config = keys.iter().any(|key| affects_orc_config(key));
     if unsets_orc_config {
-        update_orc_read_config(ctx, &spark, || spark.unset_config(keys))?;
+        update_orc_config(ctx, &spark, || spark.unset_config(keys))?;
     } else {
         spark.unset_config(keys)?;
     }
@@ -302,7 +302,7 @@ pub(crate) fn handle_config_unset(
     })
 }
 
-fn update_orc_read_config(
+fn update_orc_config(
     ctx: &SessionContext,
     spark: &SparkSession,
     update: impl FnOnce() -> SparkResult<()>,
@@ -312,10 +312,11 @@ fn update_orc_read_config(
     let state_ref = ctx.state_ref();
     let mut state = state_ref.write();
     let result = update();
-    let config = spark.orc_read_config();
-    if let Ok((defaults, modes)) = &config {
+    let config = spark.orc_config();
+    if let Ok((defaults, modes, write_defaults)) = &config {
         state.config_mut().set_extension(Arc::new(*defaults));
         state.config_mut().set_extension(Arc::new(modes.clone()));
+        state.config_mut().set_extension(Arc::new(*write_defaults));
     }
     // A multi-key request may have changed ORC before a later entry failed.
     // Refresh the snapshot in that case and preserve the original error.

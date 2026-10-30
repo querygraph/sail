@@ -49,7 +49,7 @@ fn resolved(state: &SessionState) -> TestResult<OrcListingReadOptions> {
 fn assert_effective(ctx: &SessionContext, expected: bool) -> TestResult {
     assert_eq!(
         ctx.extension::<SparkSession>()?
-            .orc_read_config()?
+            .orc_config()?
             .0
             .merge_schema,
         expected
@@ -174,5 +174,87 @@ fn later_invalid_merge_value_keeps_the_earlier_partial_update() -> TestResult {
     assert_effective(&ctx, true)?;
     handle_config_unset(&ctx, vec![MERGE.into()])?;
     assert_effective(&ctx, false)?;
+    Ok(())
+}
+
+const COMPRESSION: &str = "spark.sql.orc.compression.codec";
+
+fn write_compression(
+    state: &SessionState,
+) -> TestResult<sail_data_source::formats::orc::OrcWriteCompression> {
+    Ok(sail_data_source::formats::orc::OrcWriteConfig::resolve(state, vec![])?.compression)
+}
+
+#[test]
+fn write_defaults_follow_creation_set_unset_and_preserve_snapshots() -> TestResult {
+    use sail_data_source::formats::orc::OrcWriteCompression as Codec;
+    let spark = spark_session()?;
+    spark.set_config(vec![pair(COMPRESSION, "snappy").into()])?;
+    let ctx = SessionContext::new_with_config(spark_session_config(SessionConfig::new(), spark)?);
+    let old = ctx.state();
+    assert_eq!(write_compression(&old)?, Codec::Snappy);
+    handle_config_set(&ctx, vec![pair(COMPRESSION, "ZlIb")])?;
+    let enabled = ctx.state();
+    assert_eq!(write_compression(&enabled)?, Codec::Zlib);
+    handle_config_unset(&ctx, vec![COMPRESSION.into()])?;
+    assert_eq!(write_compression(&ctx.state())?, Codec::Zstd);
+    assert_eq!(write_compression(&old)?, Codec::Snappy);
+    assert_eq!(write_compression(&enabled)?, Codec::Zlib);
+    Ok(())
+}
+
+#[test]
+fn invalid_write_defaults_do_not_mutate_either_configuration() -> TestResult {
+    use sail_data_source::formats::orc::OrcWriteCompression as Codec;
+    let ctx = context()?;
+    handle_config_set(&ctx, vec![pair(COMPRESSION, "lz4")])?;
+    for value in ["", "gzip", " zstd ", "\0zstd\0", "\u{a0}zstd\u{a0}"] {
+        assert!(handle_config_set(&ctx, vec![pair(COMPRESSION, value)]).is_err());
+        assert_eq!(write_compression(&ctx.state())?, Codec::Lz4);
+        assert_eq!(
+            ctx.extension::<SparkSession>()?
+                .get_config(vec![COMPRESSION.into()])?[0]
+                .value
+                .as_deref(),
+            Some("lz4")
+        );
+    }
+    // Spark recognizes these even though Sail's encoder capability check rejects them.
+    for value in ["lzo", "brotli"] {
+        handle_config_set(&ctx, vec![pair(COMPRESSION, value)])?;
+        assert!(
+            write_compression(&ctx.state())?
+                .native_compression()
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn partial_write_config_updates_refresh_without_replacing_original_error() -> TestResult {
+    use sail_data_source::formats::orc::OrcWriteCompression as Codec;
+    for orc_first in [true, false] {
+        let ctx = context()?;
+        let write = pair(COMPRESSION, "snappy");
+        let invalid = pair(SHUFFLE, "0");
+        let pairs = if orc_first {
+            vec![write, invalid]
+        } else {
+            vec![invalid, write]
+        };
+        let error = handle_config_set(&ctx, pairs)
+            .err()
+            .ok_or("expected configuration failure")?;
+        assert!(error.to_string().contains("positive"));
+        assert_eq!(
+            write_compression(&ctx.state())?,
+            if orc_first {
+                Codec::Snappy
+            } else {
+                Codec::Zstd
+            }
+        );
+    }
     Ok(())
 }

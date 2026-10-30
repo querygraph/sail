@@ -13,7 +13,7 @@ use crate::spark::config::{
 use crate::spark::connect;
 
 mod orc;
-pub(crate) use orc::affects_orc_read_config;
+pub(crate) use orc::affects_orc_config;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd)]
 pub struct ConfigKeyValue {
@@ -152,6 +152,9 @@ impl SparkRuntimeConfig {
         self.validate_removed_key(key.as_str(), value.as_str())?;
         if key == SparkConfigKey::SPARK_SQL_ORC_MERGE_SCHEMA {
             orc::parse_merge_schema(&value)?;
+        }
+        if key == orc::ORC_COMPRESSION {
+            orc::parse_write_compression(&value)?;
         }
         // Spark limits this setting to Int32; Sail accepts positive Int64 counts,
         // matching its partitioning hints. Plan conversion checks the usize limit.

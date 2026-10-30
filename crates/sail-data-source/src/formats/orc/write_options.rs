@@ -190,3 +190,121 @@ mod tests {
         Ok(())
     }
 }
+
+/// Immutable defaults captured with the session state used to plan a write.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct OrcWriteSessionDefaults {
+    pub compression: OrcWriteCompression,
+}
+
+impl sail_common_datafusion::extension::SessionExtension for OrcWriteSessionDefaults {
+    fn name() -> &'static str {
+        "ORC write defaults"
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrcWriteConfig {
+    pub compression: OrcWriteCompression,
+}
+
+impl crate::options::ResolveOptions for OrcWriteConfig {
+    fn resolve(
+        ctx: &dyn datafusion::catalog::Session,
+        layers: Vec<sail_common_datafusion::datasource::OptionLayer>,
+    ) -> DataSourceResult<Self> {
+        use crate::options::{BuildPartialOptions, PartialOptions};
+        let mut partial = crate::options::r#gen::OrcCompressionWritePartialOptions::initialize();
+        for layer in layers {
+            partial.merge(layer.build_partial_options()?);
+        }
+        let raw = partial.finalize()?;
+        let defaults = ctx.config().get_extension::<OrcWriteSessionDefaults>();
+        let fallback = defaults.as_ref().map(|d| d.compression.orc_name());
+        Ok(Self {
+            compression: OrcWriteCompression::resolve(
+                raw.compression.as_deref(),
+                raw.orc_compress.as_deref(),
+                fallback,
+            )?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use std::sync::Arc;
+
+    use datafusion::prelude::{SessionConfig, SessionContext};
+    use sail_common_datafusion::datasource::OptionLayer;
+
+    use super::*;
+    use crate::options::{ResolveOptions, option_list};
+
+    #[test]
+    fn generated_layers_merge_keys_before_selecting_codec() -> DataSourceResult<()> {
+        let ctx = SessionContext::new();
+        let table = OptionLayer::TablePropertyList {
+            items: vec![("OPTION.COMPRESSION".into(), "snappy".into())],
+        };
+        let config = OrcWriteConfig::resolve(
+            &ctx.state(),
+            vec![table.clone(), option_list(&[("ORC.COMPRESS", "invalid")])],
+        )?;
+        assert_eq!(config.compression, OrcWriteCompression::Snappy);
+        let config = OrcWriteConfig::resolve(
+            &ctx.state(),
+            vec![table, option_list(&[("Compression", "zlib")])],
+        )?;
+        assert_eq!(config.compression, OrcWriteCompression::Zlib);
+        let config = OrcWriteConfig::resolve(
+            &ctx.state(),
+            vec![
+                option_list(&[("orc.compress", "zlib")]),
+                option_list(&[("orc.compress", "lz4")]),
+            ],
+        )?;
+        assert_eq!(config.compression, OrcWriteCompression::Lz4);
+        Ok(())
+    }
+
+    #[test]
+    fn generated_layers_keep_explicit_empty_values_invalid() {
+        let ctx = SessionContext::new();
+        for layers in [
+            vec![option_list(&[
+                ("compression", ""),
+                ("orc.compress", "zstd"),
+            ])],
+            vec![OptionLayer::TablePropertyList {
+                items: vec![("option.orc.compress".into(), "".into())],
+            }],
+        ] {
+            assert!(OrcWriteConfig::resolve(&ctx.state(), layers).is_err());
+        }
+    }
+
+    #[test]
+    fn immutable_state_and_resolved_options_retain_session_defaults() -> DataSourceResult<()> {
+        let ctx = SessionContext::new_with_config(SessionConfig::new().with_extension(Arc::new(
+            OrcWriteSessionDefaults {
+                compression: OrcWriteCompression::Snappy,
+            },
+        )));
+        let old = ctx.state();
+        let captured = OrcWriteConfig::resolve(&old, vec![])?;
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .set_extension(Arc::new(OrcWriteSessionDefaults {
+                compression: OrcWriteCompression::Lz4,
+            }));
+        assert_eq!(
+            OrcWriteConfig::resolve(&ctx.state(), vec![])?.compression,
+            OrcWriteCompression::Lz4
+        );
+        assert_eq!(OrcWriteConfig::resolve(&old, vec![])?, captured);
+        assert_eq!(captured.compression, OrcWriteCompression::Snappy);
+        Ok(())
+    }
+}

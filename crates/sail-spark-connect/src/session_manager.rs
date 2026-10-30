@@ -89,12 +89,13 @@ fn spark_session_config(mut config: SessionConfig, spark: SparkSession) -> Resul
             .session_timezone
             .to_string(),
     );
-    let (orc_defaults, orc_modes) = spark
-        .orc_read_config()
+    let (orc_defaults, orc_modes, orc_write_defaults) = spark
+        .orc_config()
         .map_err(|e| internal_datafusion_err!("{e}"))?;
     Ok(config
         .with_extension(Arc::new(orc_defaults))
         .with_extension(Arc::new(orc_modes))
+        .with_extension(Arc::new(orc_write_defaults))
         .with_extension(Arc::new(spark)))
 }
 
