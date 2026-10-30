@@ -179,3 +179,7 @@ impl Drop for TaskResourceScope {
 #[cfg(test)]
 #[path = "task_resources_tests.rs"]
 mod tests;
+
+#[path = "task_resources_context.rs"]
+mod context;
+pub use context::ScopedTaskContext;
