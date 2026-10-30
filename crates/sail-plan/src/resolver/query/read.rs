@@ -250,13 +250,13 @@ impl PlanResolver<'_> {
                 let table_source = match lake_relation {
                     Some((relation_provider, relation)) => {
                         relation_provider
-                            .create_relation(&self.ctx.state(), info, relation)
+                            .create_relation(self.provider_session().as_session(), info, relation)
                             .await?
                     }
                     None => {
                         data_source_registry
                             .get_data_source(&format)?
-                            .create_source(&self.ctx.state(), info)
+                            .create_source(self.provider_session().as_session(), info)
                             .await?
                     }
                 };
@@ -583,9 +583,9 @@ impl PlanResolver<'_> {
                         }
                     },
                 };
-                let session_state = self.ctx.state();
+                let session = self.provider_session();
                 let table_provider = table_function.create_table_provider_with_args(
-                    TableFunctionArgs::new(&arguments, &session_state),
+                    TableFunctionArgs::new(&arguments, session.as_session()),
                 )?;
                 self.resolve_table_provider_with_rename(
                     table_provider,
@@ -636,7 +636,7 @@ impl PlanResolver<'_> {
         let registry = self.ctx.extension::<DataSourceRegistry>()?;
         let table_source = registry
             .get_data_source(&format)?
-            .create_source(&self.ctx.state(), info)
+            .create_source(self.provider_session().as_session(), info)
             .await?;
         self.resolve_table_source_with_rename(
             table_source,

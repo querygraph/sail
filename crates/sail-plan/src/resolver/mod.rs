@@ -47,10 +47,11 @@ impl<'a> PlanResolver<'a> {
         self
     }
 
-    /// Use a caller-captured Session for queries executed during resolution.
+    /// Use a caller-captured Session for read factories and queries executed
+    /// during resolution.
     /// The caller retains admission/cleanup and chooses the capture boundary;
     /// authoritative session commands and catalog name resolution still use ctx.
-    /// Provider factories and final execution require their own propagation.
+    /// Write/procedure factories and final execution require their own propagation.
     pub fn with_query_session(mut self, session: &'a dyn Session) -> Self {
         self.query_session = Some(session);
         self

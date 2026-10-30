@@ -24,6 +24,7 @@ use sail_catalog::provider::CatalogProvider;
 use sail_catalog_memory::MemoryCatalogProvider;
 use sail_common::spec;
 use sail_common_datafusion::catalog::display::DefaultCatalogDisplay;
+use sail_common_datafusion::datasource::DataSourceRegistry;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::session::plan::PlanService;
 use sail_common_datafusion::session::scoped::ScopedSession;
@@ -141,6 +142,7 @@ impl Fixture {
             .with_target_partitions(7)
             .with_create_default_catalog_and_schema(false)
             .with_extension(Arc::new(catalog))
+            .with_extension(Arc::new(DataSourceRegistry::new()))
             .with_extension(Arc::new(PlanService::new(
                 Box::new(DefaultCatalogDisplay::<SparkCatalogObjectDisplay>::default()),
                 Box::new(SparkPlanFormatter),
@@ -311,3 +313,6 @@ async fn absent_query_session_keeps_legacy_collection_path() -> TestResult {
     assert!(ctx.extension::<TaskResourceScope>().is_err());
     Ok(())
 }
+
+#[path = "factory_session_tests.rs"]
+mod factories;
