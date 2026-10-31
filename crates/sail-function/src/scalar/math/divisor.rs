@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use datafusion::arrow::array::{ArrayRef, BooleanArray};
 use datafusion::arrow::compute::kernels::cmp::eq;
 use datafusion::arrow::compute::{nullif, or};
 use datafusion::arrow::datatypes::{DataType, FieldRef};
@@ -86,15 +87,7 @@ impl ScalarUDFImpl for SafeNumericDivisor {
             return Ok(input.clone());
         }
         let array = input.to_array(1)?;
-        let zero = ScalarValue::new_zero(&data_type)?;
-        let mut zeros = eq(&array, &zero.to_scalar()?)?;
-        if data_type.is_floating() {
-            // Arrow total-order equality distinguishes the two signs of zero.
-            zeros = or(
-                &zeros,
-                &eq(&array, &zero.arithmetic_negate()?.to_scalar()?)?,
-            )?;
-        }
+        let zeros = numeric_zero_mask(&array)?;
         if zeros.true_count() == 0 {
             return Ok(input.clone());
         }
@@ -107,5 +100,20 @@ impl ScalarUDFImpl for SafeNumericDivisor {
             )?)),
             ColumnarValue::Array(_) => Ok(ColumnarValue::Array(nullif(array.as_ref(), &zeros)?)),
         }
+    }
+}
+
+/// Numeric value equality with zero, including both floating-point signs.
+pub(crate) fn numeric_zero_mask(array: &ArrayRef) -> Result<BooleanArray> {
+    let zero = ScalarValue::new_zero(array.data_type())?;
+    let zeros = eq(array, &zero.to_scalar()?)?;
+    if array.data_type().is_floating() {
+        // Arrow total-order equality distinguishes the two signs of zero.
+        Ok(or(
+            &zeros,
+            &eq(array, &zero.arithmetic_negate()?.to_scalar()?)?,
+        )?)
+    } else {
+        Ok(zeros)
     }
 }

@@ -1,3 +1,4 @@
+pub mod div_mod_lazy;
 pub mod divisor;
 pub mod java_random;
 pub mod rand_poisson;
@@ -26,3 +27,6 @@ pub mod zero_division;
 
 #[cfg(test)]
 mod divisor_tests;
+
+#[cfg(test)]
+mod div_mod_lazy_tests;
