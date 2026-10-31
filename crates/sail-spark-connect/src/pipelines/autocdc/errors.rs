@@ -293,3 +293,108 @@ pub(super) fn null_key(table_name: &str, batch_id: &str, null_key_counts: &str) 
         &[("nullKeyCounts", null_key_counts)],
     )
 }
+
+/// `AUTOCDC_INVALID_STATE.<sub>`: AnalysisException, SQLSTATE 42000, the
+/// parent template followed by a space and the sub-class template
+/// (`ErrorClassesJsonReader.getMessageTemplate`).
+fn invalid_state(
+    sub_class: &str,
+    flow_name: &str,
+    aux_table_name: &str,
+    sub_message: String,
+    extra: &[(&str, &str)],
+) -> SparkError {
+    let mut parameters = vec![("flowName", flow_name), ("auxTableName", aux_table_name)];
+    parameters.extend_from_slice(extra);
+    analysis(
+        &format!("AUTOCDC_INVALID_STATE.{sub_class}"),
+        "42000",
+        format!("AutoCDC flow {flow_name} detected an invalid state: {sub_message}"),
+        &parameters,
+    )
+}
+
+pub(super) fn auxiliary_table_property_missing(
+    flow_name: &str,
+    aux_table_name: &str,
+    property_name: &str,
+) -> SparkError {
+    invalid_state(
+        "AUXILIARY_TABLE_PROPERTY_MISSING",
+        flow_name,
+        aux_table_name,
+        format!(
+            "The auxiliary table {aux_table_name} is missing the required {property_name} table property; cannot validate AutoCDC key columns. The auxiliary table metadata may be corrupted or have been modified externally. Perform a full refresh of the target table to recreate the auxiliary table."
+        ),
+        &[("propertyName", property_name)],
+    )
+}
+
+pub(super) fn auxiliary_table_property_malformed(
+    flow_name: &str,
+    aux_table_name: &str,
+    property_name: &str,
+    raw_value: &str,
+) -> SparkError {
+    invalid_state(
+        "AUXILIARY_TABLE_PROPERTY_MALFORMED",
+        flow_name,
+        aux_table_name,
+        format!(
+            "The auxiliary table {aux_table_name} has a malformed {property_name} property with raw value '{raw_value}'. The property must be a JSON array of strings (e.g. '[\"id\",\"region\"]'). The auxiliary table metadata may be corrupted or have been modified externally. Perform a full refresh of the target table to recreate the auxiliary table."
+        ),
+        &[("propertyName", property_name), ("rawValue", raw_value)],
+    )
+}
+
+pub(super) fn auxiliary_table_key_column_missing(
+    flow_name: &str,
+    aux_table_name: &str,
+    key_column_name: &str,
+    property_name: &str,
+) -> SparkError {
+    invalid_state(
+        "AUXILIARY_TABLE_KEY_COLUMN_MISSING",
+        flow_name,
+        aux_table_name,
+        format!(
+            "The auxiliary table {aux_table_name} is missing key column {key_column_name} that is recorded in its {property_name} table property. The auxiliary table schema may be corrupted or have been modified externally. Perform a full refresh of the target table to recreate the auxiliary table."
+        ),
+        &[
+            ("keyColumnName", key_column_name),
+            ("propertyName", property_name),
+        ],
+    )
+}
+
+pub(super) fn key_schema_drift(
+    flow_name: &str,
+    aux_table_name: &str,
+    expected_key_schema: &str,
+    recorded_key_schema: &str,
+) -> SparkError {
+    invalid_state(
+        "KEY_SCHEMA_DRIFT",
+        flow_name,
+        aux_table_name,
+        format!(
+            "The AutoCDC flow's current key columns {expected_key_schema} do not match the keys recorded in the auxiliary table {aux_table_name} (recorded keys {recorded_key_schema}). AutoCDC does not support changing key columns or their types across incremental pipeline runs. To change keys, perform a full refresh of the target table."
+        ),
+        &[
+            ("expectedKeySchema", expected_key_schema),
+            ("recordedKeySchema", recorded_key_schema),
+        ],
+    )
+}
+
+/// `AUTOCDC_TARGET_DOES_NOT_SUPPORT_MERGE` (0A000).
+pub(super) fn target_does_not_support_merge(table_name: &str, format: &str) -> SparkError {
+    analysis(
+        "AUTOCDC_TARGET_DOES_NOT_SUPPORT_MERGE",
+        "0A000",
+        format!(
+            "Cannot start AutoCDC flow: the target table {table_name} (format: {format}) does not support row-level operations. AutoCDC requires a target backed by a connector that supports MERGE."
+        ),
+        &[("tableName", table_name), ("format", format)],
+    )
+}

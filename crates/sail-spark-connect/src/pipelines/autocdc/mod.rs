@@ -15,6 +15,7 @@
 
 mod attribute;
 pub(super) mod auxiliary;
+mod ddl;
 mod dedup;
 mod errors;
 mod lookup;

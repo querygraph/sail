@@ -102,6 +102,7 @@ fn names(values: &[&str]) -> Vec<String> {
 }
 
 mod attribute;
+mod auxiliary;
 mod change_args;
 mod dedup;
 mod definition;
