@@ -296,6 +296,7 @@ message ExtendedScalarUdf {
     SparkToStringUdf spark_to_string = 40;
     SparkAnsiStringCastUdf spark_ansi_string_cast = 41;
     SparkTimePrecisionCastUdf spark_time_precision_cast = 42;
+    SparkStringToDecimalUdf spark_string_to_decimal = 43;
   }
 }
 
@@ -1369,4 +1370,11 @@ message DeltaOptimizeGroupAssignment {
 message SparkAnsiStringCastUdf {
   bytes target_type = 1;
   string sql_target = 2;
+}
+
+message SparkStringToDecimalUdf {
+  uint32 precision = 1;
+  int32 scale = 2;
+  bool fail_on_error = 3;
+  bool allow_negative_scale = 4;
 }

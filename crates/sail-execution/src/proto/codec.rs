@@ -242,6 +242,7 @@ use sail_function::scalar::normalize_float_keys::NormalizeFloatKeys;
 use sail_function::scalar::predicate::rewrite_like_pattern::RewriteLikePatternFunc;
 use sail_function::scalar::spark_ansi_string_cast::SparkAnsiStringCast;
 use sail_function::scalar::spark_cast_string_to_int32::SparkCastStringToInt32;
+use sail_function::scalar::spark_string_to_decimal::SparkStringToDecimal;
 use sail_function::scalar::spark_struct_rename::SparkStructRename;
 use sail_function::scalar::spark_time_precision_cast::SparkTimePrecisionCast;
 use sail_function::scalar::spark_to_string::{SparkToLargeUtf8, SparkToUtf8, SparkToUtf8View};
@@ -3880,6 +3881,29 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                     sql_target,
                 )?)));
             }
+            UdfKind::SparkStringToDecimal(r#gen::SparkStringToDecimalUdf {
+                precision,
+                scale,
+                fail_on_error,
+                allow_negative_scale,
+            }) => {
+                if name != "spark_string_to_decimal" {
+                    return plan_err!(
+                        "decimal string cast payload has mismatched function name: {name}"
+                    );
+                }
+                let precision = u8::try_from(precision).map_err(|_| {
+                    plan_datafusion_err!("decimal precision out of range: {precision}")
+                })?;
+                let scale = i8::try_from(scale)
+                    .map_err(|_| plan_datafusion_err!("decimal scale out of range: {scale}"))?;
+                return Ok(Arc::new(ScalarUDF::from(SparkStringToDecimal::try_new(
+                    precision,
+                    scale,
+                    fail_on_error,
+                    allow_negative_scale,
+                )?)));
+            }
             UdfKind::SparkStructRename(r#gen::SparkStructRenameUdf { target_type }) => {
                 let target_type = self.try_decode_data_type(&target_type)?;
                 return Ok(Arc::new(ScalarUDF::from(SparkStructRename::new(
@@ -4492,6 +4516,13 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             UdfKind::SparkAnsiStringCast(r#gen::SparkAnsiStringCastUdf {
                 target_type: self.try_encode_data_type(func.target_type())?,
                 sql_target: func.sql_target().into(),
+            })
+        } else if let Some(func) = node.inner().downcast_ref::<SparkStringToDecimal>() {
+            UdfKind::SparkStringToDecimal(r#gen::SparkStringToDecimalUdf {
+                precision: u32::from(func.precision()),
+                scale: i32::from(func.scale()),
+                fail_on_error: func.fail_on_error(),
+                allow_negative_scale: func.allow_negative_scale(),
             })
         } else if let Some(func) = node.inner().downcast_ref::<SparkStructRename>() {
             let target_type = self.try_encode_data_type(func.target_type())?;
@@ -9343,6 +9374,9 @@ mod tests {
 
 #[cfg(test)]
 mod ansi_string_cast_tests;
+
+#[cfg(test)]
+mod decimal_string_cast_tests;
 
 #[cfg(test)]
 mod time_precision_cast_tests;
