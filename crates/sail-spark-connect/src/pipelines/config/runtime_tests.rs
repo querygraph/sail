@@ -13,7 +13,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 const CASE: &str = "spark.sql.caseSensitive";
 
 #[tokio::test]
-async fn unconfigured_views_preserve_native_dynamic_identifier_resolution() -> TestResult {
+async fn literal_identifier_without_inherited_view_settings_resolves() -> TestResult {
     let ctx = catalog_preparation_tests::context()?;
     let mut graph = definition("CREATE TEMPORARY VIEW a AS SELECT 1 AS foo; CREATE MATERIALIZED VIEW target AS SELECT foo FROM IDENTIFIER('a')").await?;
     // A table's own settings are not inherited by its consumers.

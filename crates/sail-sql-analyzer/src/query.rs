@@ -600,16 +600,31 @@ fn from_ast_table_factor(table: TableFactor) -> SqlResult<spec::QueryPlan> {
             left: _,
             expr,
             right: _,
+            sample,
             modifiers,
             alias,
         } => {
-            let plan = spec::QueryPlan::new(spec::QueryNode::Read {
-                is_streaming: false,
-                read_type: spec::ReadType::DynamicTable(Box::new(spec::ReadDynamicTable {
-                    name: from_ast_expression(expr)?,
-                    sample: None,
+            let sample = sample.map(|s| from_ast_table_sample(*s)).transpose()?;
+            // Spark's AstBuilder materializes non-null string literals here;
+            // foldable expressions such as CONCAT remain late-bound identifiers.
+            let read_type = match from_ast_expression(expr)? {
+                spec::Expr::Literal(spec::Literal::Utf8 { value: Some(name) }) => {
+                    spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
+                        name: from_ast_object_name(crate::parser::parse_object_name(&name)?)?,
+                        temporal: None,
+                        sample,
+                        options: Default::default(),
+                    }))
+                }
+                name => spec::ReadType::DynamicTable(Box::new(spec::ReadDynamicTable {
+                    name,
+                    sample,
                     options: Default::default(),
                 })),
+            };
+            let plan = spec::QueryPlan::new(spec::QueryNode::Read {
+                is_streaming: false,
+                read_type,
             });
             let plan = query_plan_with_table_modifiers(plan, modifiers)?;
             query_plan_with_table_alias(plan, alias)
@@ -1157,3 +1172,7 @@ fn query_plan_with_lateral_subquery(
         join_type,
     }))
 }
+
+#[cfg(test)]
+#[path = "query_identifier_tests.rs"]
+mod identifier_tests;

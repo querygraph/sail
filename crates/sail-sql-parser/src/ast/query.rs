@@ -327,6 +327,8 @@ pub enum TableFactor {
         #[parser(function = |(_, e, _), _| e)]
         expr: Expr,
         right: RightParenthesis,
+        #[parser(function = |(_, e, _), o| boxed(compose(e, o)).or_not())]
+        sample: Option<Box<TableSampleClause>>,
         #[parser(function = |(_, e, _), o| compose(e, o))]
         modifiers: Vec<TableModifier>,
         alias: Option<AliasClause>,
