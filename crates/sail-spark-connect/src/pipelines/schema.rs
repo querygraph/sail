@@ -97,30 +97,28 @@ impl VirtualTableSchema {
         Ok(declared)
     }
 
-    /// Force unread incoming schemas only after graph validation. A declaration
-    /// supplies the exported table schema, but cannot suppress a failed merge.
+    /// Final graph forcing merges incoming schemas directly, unlike the
+    /// acquisition helper which wraps failures with the table identifier.
     pub fn final_schema(&self, ctx: &SessionContext) -> SparkResult<Schema> {
-        let inferred = self.inferred_fields()?;
-        if self.declared.is_some() {
-            self.load(ctx)
-        } else {
-            let resolver = PlanResolver::new(ctx, ctx.extension::<SparkSession>()?.plan_config()?);
-            arrow_schema(&resolver, inferred)
-        }
+        let fields = self.merged_fields()?;
+        let resolver = PlanResolver::new(ctx, ctx.extension::<SparkSession>()?.plan_config()?);
+        arrow_schema(&resolver, fields)
     }
 
     fn inferred_fields(&self) -> SparkResult<spec::Fields> {
+        self.merged_fields().map_err(|error| {
+            analysis(
+                "UNABLE_TO_INFER_PIPELINE_TABLE_SCHEMA",
+                format!("{}: {error}", quoted(&self.name)),
+            )
+        })
+    }
+
+    fn merged_fields(&self) -> SparkResult<spec::Fields> {
         self.incoming
             .iter()
             .try_fold(spec::Fields::empty(), |fields, schema| {
-                spark_fields(schema)
-                    .and_then(|next| merge_fields(&fields, &next))
-                    .map_err(|error| {
-                        analysis(
-                            "UNABLE_TO_INFER_PIPELINE_TABLE_SCHEMA",
-                            format!("{}: {error}", quoted(&self.name)),
-                        )
-                    })
+                spark_fields(schema).and_then(|next| merge_fields(&fields, &next))
             })
     }
 }

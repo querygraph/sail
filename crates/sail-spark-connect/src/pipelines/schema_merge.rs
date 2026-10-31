@@ -3,7 +3,10 @@ use std::sync::Arc;
 
 use sail_common::spec;
 
-use crate::error::{SparkError, SparkResult};
+use crate::error::{SparkResult, StructuredSparkError};
+
+#[path = "schema_merge_sql.rs"]
+mod sql;
 
 /// Spark 4.2.1's SchemaMergingUtils delegates to StructType.merge. Field order
 /// and metadata come from the left schema; matching fields merge their types
@@ -16,7 +19,10 @@ pub(super) fn merge_fields(left: &spec::Fields, right: &spec::Fields) -> SparkRe
     for field in left {
         let merged = match right_by_name.get(&field.name) {
             Some(other) => Arc::new(spec::Field {
-                data_type: merge_type(&field.data_type, &other.data_type)?,
+                // StructType.merge reports the enclosing field types when a
+                // recursive merge fails, rather than its innermost leaf.
+                data_type: merge_type(&field.data_type, &other.data_type)
+                    .or_else(|_| incompatible(&field.data_type, &other.data_type))?,
                 nullable: field.nullable || other.nullable,
                 ..field.as_ref().clone()
             }),
@@ -140,9 +146,15 @@ fn merge_type(left: &spec::DataType, right: &spec::DataType) -> SparkResult<spec
 }
 
 fn incompatible(left: &spec::DataType, right: &spec::DataType) -> SparkResult<spec::DataType> {
-    Err(SparkError::invalid(format!(
-        "cannot merge incompatible pipeline types {left:?} and {right:?}"
-    )))
+    let left = sql::quoted_type(left)?;
+    let right = sql::quoted_type(right)?;
+    Err(Box::new(StructuredSparkError {
+        class: "org.apache.spark.SparkException".into(),
+        condition: "CANNOT_MERGE_INCOMPATIBLE_DATA_TYPE".into(),
+        sql_state: "42825".into(),
+        message: format!("Failed to merge incompatible data types {left} and {right}. Please check the data types of the columns being merged and ensure that they are compatible. If necessary, consider casting the columns to compatible data types before attempting the merge. SQLSTATE: 42825"),
+        parameters: HashMap::from([("left".into(), left), ("right".into(), right)]),
+    }).into())
 }
 
 #[cfg(test)]

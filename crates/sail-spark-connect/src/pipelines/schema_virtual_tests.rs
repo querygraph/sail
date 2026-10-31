@@ -115,3 +115,58 @@ async fn declaration_load_and_final_nullability_validation_are_distinct() -> Tes
     assert!(!undeclared.load(&ctx)?.field(0).is_nullable());
     Ok(())
 }
+
+#[tokio::test]
+async fn final_forcing_exposes_merge_error_while_load_keeps_table_context() -> TestResult {
+    let ctx = sql::tests::resolution_context()?;
+    for declared in ["", "(id INT)"] {
+        let descriptor = VirtualTableSchema::new(
+            &output(declared).await?,
+            vec![
+                incoming(DataType::Int32, false),
+                incoming(DataType::Utf8, false),
+            ],
+        );
+        let SparkError::Structured(error) = descriptor
+            .final_schema(&ctx)
+            .err()
+            .ok_or("final merge succeeded")?
+        else {
+            return Err("final forcing did not preserve structured merge error".into());
+        };
+        assert_eq!(error.condition, "CANNOT_MERGE_INCOMPATIBLE_DATA_TYPE");
+        assert_eq!(error.sql_state, "42825");
+        assert_eq!(error.class, "org.apache.spark.SparkException");
+        assert!(error.to_string().ends_with("SQLSTATE: 42825"));
+        assert_eq!(error.parameters["left"], "\"INT\"");
+        assert_eq!(error.parameters["right"], "\"STRING\"");
+        if declared.is_empty() {
+            assert!(
+                descriptor
+                    .load(&ctx)
+                    .err()
+                    .ok_or("incompatible read succeeded")?
+                    .to_string()
+                    .contains("UNABLE_TO_INFER_PIPELINE_TABLE_SCHEMA")
+            );
+        } else {
+            assert_eq!(
+                descriptor.load(&ctx)?.field(0).data_type(),
+                &DataType::Int32
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn final_schema_is_inferred_while_publication_keeps_declared_nullability() -> TestResult {
+    let ctx = sql::tests::resolution_context()?;
+    let output = output("(id INT)").await?;
+    let descriptor = VirtualTableSchema::new(&output, vec![incoming(DataType::Int32, false)]);
+    assert!(descriptor.load(&ctx)?.field(0).is_nullable());
+    let inferred = descriptor.final_schema(&ctx)?;
+    assert!(!inferred.field(0).is_nullable());
+    assert!(table_columns(&output, &inferred)?[0].nullable);
+    Ok(())
+}
