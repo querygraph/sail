@@ -7845,6 +7845,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sail-sdp-control"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "sail-session"
 version = "0.7.2"
 dependencies = [

@@ -1,0 +1,14 @@
+[package]
+name = "sail-sdp-control"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Pure control model for durable declarative-pipeline runs: identities, fence tokens, guarded transitions and receipts (CDC-CONTROL-STORE-DESIGN.md)"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.11.0"
