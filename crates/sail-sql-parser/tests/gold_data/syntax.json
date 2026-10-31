@@ -11034,6 +11034,40 @@
                         "nonTerminal": "Keyword(Insert)"
                       },
                       {
+                        "nonTerminal": "Keyword(Into)"
+                      },
+                      {
+                        "nonTerminal": "Option(Keyword(Table))"
+                      },
+                      {
+                        "nonTerminal": "ObjectName"
+                      },
+                      {
+                        "nonTerminal": "Option(Tuple(Keyword(By), Keyword(Name)))"
+                      },
+                      {
+                        "nonTerminal": "Keyword(Replace)"
+                      },
+                      {
+                        "nonTerminal": "Keyword(Using)"
+                      },
+                      {
+                        "nonTerminal": "IdentList"
+                      },
+                      {
+                        "nonTerminal": "Query"
+                      }
+                    ]
+                  },
+                  {
+                    "sequence": [
+                      {
+                        "nonTerminal": "Option(WithClause)"
+                      },
+                      {
+                        "nonTerminal": "Keyword(Insert)"
+                      },
+                      {
                         "nonTerminal": "Either(Keyword(Into), Keyword(Overwrite))"
                       },
                       {

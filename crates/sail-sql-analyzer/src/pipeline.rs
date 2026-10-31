@@ -51,8 +51,10 @@ fn from_ast_pipeline_statement_impl(
     let unsupported = match &statement {
         Statement::InsertInto { with: Some(_), .. }
         | Statement::InsertIntoAndReplace { with: Some(_), .. }
+        | Statement::InsertIntoReplaceUsing { with: Some(_), .. }
         | Statement::InsertOverwriteDirectory { with: Some(_), .. } => Some("UnresolvedWith"),
         Statement::InsertInto { .. } => Some("InsertIntoStatement"),
+        Statement::InsertIntoReplaceUsing { .. } => Some("InsertIntoStatement"),
         Statement::InsertIntoAndReplace { .. } => Some("OverwriteByExpression"),
         Statement::InsertOverwriteDirectory { .. } => Some("InsertIntoDir"),
         _ => None,
@@ -121,6 +123,9 @@ fn from_ast_pipeline_statement_impl(
             }
             if parts.len() != 1 {
                 return Err(sail_common::error::multipart_flow_name_error(&parts.join(".")).into());
+            }
+            if matches!(statement.as_ref(), Statement::InsertIntoReplaceUsing { .. }) {
+                return Err(SqlError::analysis("INSERT OVERWRITE flows not supported."));
             }
             let Statement::InsertInto {
                 with: None,

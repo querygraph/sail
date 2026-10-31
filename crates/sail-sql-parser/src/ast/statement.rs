@@ -302,6 +302,20 @@ pub enum Statement {
         #[parser(function = |(_, q, _, _), _| q)]
         query: Query,
     },
+    InsertIntoReplaceUsing {
+        #[parser(function = |(_, q, _, _), o| compose(q, o))]
+        with: Option<WithClause>,
+        insert: Insert,
+        into: Into,
+        table: Option<Table>,
+        name: ObjectName,
+        by_name: Option<(By, Name)>,
+        replace: Replace,
+        using: Using,
+        keys: IdentList,
+        #[parser(function = |(_, q, _, _), _| q)]
+        query: Query,
+    },
     #[parser(function = |(_, q, e, _), o| insert::statement((q, e), o))]
     InsertInto {
         with: Option<WithClause>,

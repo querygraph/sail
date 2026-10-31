@@ -823,6 +823,9 @@ fn from_ast_statement_impl(
             };
             Ok(spec::Plan::Command(spec::CommandPlan::new(node)))
         }
+        Statement::InsertIntoReplaceUsing { .. } => Err(SqlError::unsupported(
+            "ordinary INSERT INTO ... REPLACE USING execution is not supported",
+        )),
         Statement::InsertIntoAndReplace {
             with,
             insert: _,
