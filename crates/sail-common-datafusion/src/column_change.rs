@@ -57,31 +57,7 @@ pub fn replacement_schema(columns: &[ColumnChange<DataType>]) -> Result<Schema> 
     Ok(Schema::new(fields))
 }
 
-pub fn validate_field_names(fields: &[FieldRef], case_sensitive: bool) -> Result<()> {
-    let mut names = std::collections::HashSet::new();
-    for field in fields {
-        let name = if case_sensitive {
-            field.name().clone()
-        } else {
-            field.name().to_lowercase()
-        };
-        if !names.insert(name) {
-            return plan_err!("Column '{}' already exists", field.name());
-        }
-        validate_type(field.data_type(), case_sensitive)?;
-    }
-    Ok(())
-}
-
-fn validate_type(ty: &DataType, case_sensitive: bool) -> Result<()> {
-    match ty {
-        DataType::Struct(fields) => validate_field_names(fields, case_sensitive),
-        DataType::List(field) | DataType::LargeList(field) | DataType::Map(field, _) => {
-            validate_type(field.data_type(), case_sensitive)
-        }
-        _ => Ok(()),
-    }
-}
+pub use crate::schema_validation::validate_field_names;
 
 fn names_match(left: &str, right: &str, case_sensitive: bool) -> bool {
     left == right || (!case_sensitive && left.eq_ignore_ascii_case(right))
