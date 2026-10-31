@@ -26,6 +26,7 @@ mod reconcile;
 mod schema;
 #[cfg(test)]
 mod tests;
+mod write;
 
 use sail_common::spec;
 use sail_sql_analyzer::expression::from_ast_object_name;

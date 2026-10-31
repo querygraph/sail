@@ -49,6 +49,8 @@ fastrace = { workspace = true }
 pyo3 = { workspace = true }
 
 [dev-dependencies]
+sail-physical-optimizer = { path = "../sail-physical-optimizer" }
+sail-delta-lake = { path = "../sail-delta-lake" }
 sail-catalog-memory = { path = "../sail-catalog-memory" }
 sail-telemetry = { path = "../sail-telemetry" }
 
