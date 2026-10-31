@@ -114,7 +114,7 @@ impl ScalarUDFImpl for SparkAnsiStringCast {
                 args.arg_fields.len(),
             ));
         };
-        // Match type-only Cast's source nullability and non-extension metadata.
+        // Spark Cast.forceNullable is true for string-to-primitive casts, even in ANSI mode.
         let mut metadata = input.metadata().clone();
         metadata.remove(EXTENSION_TYPE_NAME_KEY);
         metadata.remove(EXTENSION_TYPE_METADATA_KEY);
@@ -124,6 +124,7 @@ impl ScalarUDFImpl for SparkAnsiStringCast {
                 .clone()
                 .with_name(self.name())
                 .with_data_type(self.target_type.clone())
+                .with_nullable(true)
                 .with_metadata(metadata),
         ))
     }

@@ -54,6 +54,13 @@ fn decoded_ansi_cast_executes_scalar_and_array_successes_and_native_failures() -
             .ok_or_else(|| plan_datafusion_err!("decoded wrong ANSI function"))?;
         assert_eq!(implementation.target_type(), &target);
         assert_eq!(implementation.sql_target(), name);
+        let field = decoded.return_field_from_args(datafusion::logical_expr::ReturnFieldArgs {
+            arg_fields: &[Arc::new(Field::new("value", DataType::Utf8, false))],
+            scalar_arguments: &[None],
+        })?;
+        assert_eq!(field.data_type(), &target);
+        assert!(field.is_nullable());
+
         let valid = if target == DataType::Boolean {
             "true"
         } else {

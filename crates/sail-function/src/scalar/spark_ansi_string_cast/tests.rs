@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
 use arrow::array::{ArrayRef, StringArray};
-use arrow::datatypes::{Field, Schema};
+use arrow::datatypes::Field;
 use datafusion_common::config::ConfigOptions;
-use datafusion_common::{DFSchema, exec_err};
-use datafusion_expr::{ExprSchemable, cast, col};
+use datafusion_common::exec_err;
 use sail_common_datafusion::error::{
     CommonErrorCause, PythonErrorCause, PythonErrorCauseExtractor,
 };
@@ -194,24 +193,46 @@ fn target_constructor_rejects_unsupported_or_mislabeled_types() {
 }
 
 #[test]
-fn return_field_matches_type_only_cast_nullability_and_metadata() -> Result<()> {
-    for nullable in [true, false] {
-        let input = Arc::new(Field::new("value", DataType::Utf8, nullable).with_metadata(
-            HashMap::from([
-                ("comment".into(), "source comment".into()),
-                (EXTENSION_TYPE_NAME_KEY.into(), "arrow.json".into()),
-                (EXTENSION_TYPE_METADATA_KEY.into(), "{}".into()),
-            ]),
-        ));
-        let schema = DFSchema::try_from(Schema::new(vec![input.as_ref().clone()]))?;
-        let expected = cast(col("value"), DataType::Int32).to_field(&schema)?.1;
-        let actual = function(DataType::Int32)?.return_field_from_args(ReturnFieldArgs {
-            arg_fields: &[input],
-            scalar_arguments: &[None],
-        })?;
-        assert_eq!(actual.data_type(), expected.data_type());
-        assert_eq!(actual.is_nullable(), expected.is_nullable());
-        assert_eq!(actual.metadata(), expected.metadata());
+fn return_field_preserves_metadata_and_spark_string_cast_nullability() -> Result<()> {
+    for source in [DataType::Utf8, DataType::LargeUtf8, DataType::Utf8View] {
+        let bad = match source {
+            DataType::Utf8 => ScalarValue::Utf8(Some("bad".into())),
+            DataType::LargeUtf8 => ScalarValue::LargeUtf8(Some("bad".into())),
+            _ => ScalarValue::Utf8View(Some("bad".into())),
+        };
+        for nullable in [false, true] {
+            let input = Arc::new(Field::new("value", source.clone(), nullable).with_metadata(
+                HashMap::from([
+                    ("comment".into(), "source comment".into()),
+                    (EXTENSION_TYPE_NAME_KEY.into(), "arrow.json".into()),
+                    (EXTENSION_TYPE_METADATA_KEY.into(), "{}".into()),
+                ]),
+            ));
+            for target in [
+                DataType::Int8,
+                DataType::Int16,
+                DataType::Int32,
+                DataType::Int64,
+                DataType::Float32,
+                DataType::Float64,
+                DataType::Boolean,
+            ] {
+                // Field inference is type-only, even for a known malformed literal.
+                for value in [None, Some(&bad)] {
+                    let actual =
+                        function(target.clone())?.return_field_from_args(ReturnFieldArgs {
+                            arg_fields: std::slice::from_ref(&input),
+                            scalar_arguments: &[value],
+                        })?;
+                    assert_eq!(actual.data_type(), &target);
+                    assert!(actual.is_nullable());
+                    assert_eq!(
+                        actual.metadata(),
+                        &HashMap::from([("comment".into(), "source comment".into()),])
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }
