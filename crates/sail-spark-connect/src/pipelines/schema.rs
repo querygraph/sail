@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::{DataType, Schema};
+use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use sail_common::spec;
@@ -8,7 +8,7 @@ use sail_common_datafusion::catalog::TableColumnStatus;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_plan::resolver::PlanResolver;
 
-use super::graph::{Output, analysis, quoted};
+use super::graph::{Name, Output, analysis, quoted};
 use super::schema_merge::merge_fields;
 use crate::error::{SparkError, SparkResult};
 use crate::proto::data_type::parse_spark_data_type;
@@ -35,51 +35,96 @@ pub(super) fn declared_schema(output: &DefineOutput) -> SparkResult<Option<spec:
     Ok(Some(spec::Schema { fields }))
 }
 
+/// Provider-free schemas of a virtual table's resolved producers. Acquisition
+/// during a read is distinct from the graph's later declaration validation.
+pub(super) struct VirtualTableSchema {
+    name: Name,
+    declared: Option<spec::Schema>,
+    incoming: Vec<SchemaRef>,
+}
+
+impl VirtualTableSchema {
+    pub fn new(output: &Output, incoming: Vec<SchemaRef>) -> Self {
+        Self {
+            name: output.name.clone(),
+            declared: output.schema.clone(),
+            incoming,
+        }
+    }
+
+    /// Spark's VirtualTableInput.load uses a declaration directly, without
+    /// merging incoming schemas. No error is suppressed or replaced by a schema.
+    pub fn load(&self, ctx: &SessionContext) -> SparkResult<Schema> {
+        let fields = match &self.declared {
+            Some(schema) => schema.fields.clone(),
+            None => self.inferred_fields()?,
+        };
+        let resolver = PlanResolver::new(ctx, ctx.extension::<SparkSession>()?.plan_config()?);
+        arrow_schema(&resolver, fields)
+    }
+
+    /// Existing eager validation entry point. The lazy scope integration will
+    /// call load during reads and defer this compatibility check until later.
+    pub fn validate(&self, ctx: &SessionContext) -> SparkResult<Schema> {
+        let inferred = self.inferred_fields()?;
+        if self.declared.is_none() {
+            let resolver = PlanResolver::new(ctx, ctx.extension::<SparkSession>()?.plan_config()?);
+            return arrow_schema(&resolver, inferred);
+        }
+        let declared = self.load(ctx)?;
+        let declared_fields = spark_fields(&declared)?;
+        let merged = merge_fields(&declared_fields, &inferred).map_err(|error| {
+            analysis(
+                "USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE",
+                format!(
+                    "'{}' has a user-specified schema that is incompatible: specified {declared:?}, inferred {inferred:?}: {error}",
+                    self.name.join(".")
+                ),
+            )
+        })?;
+        // A successful merge can still add undeclared columns or weaken
+        // nullability, which the declaration compatibility check must reject.
+        if merged != declared_fields {
+            return Err(analysis(
+                "USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE",
+                format!(
+                    "'{}' has a user-specified schema that is incompatible: specified {declared:?}, inferred {inferred:?}",
+                    self.name.join(".")
+                ),
+            ));
+        }
+        Ok(declared)
+    }
+
+    fn inferred_fields(&self) -> SparkResult<spec::Fields> {
+        self.incoming
+            .iter()
+            .try_fold(spec::Fields::empty(), |fields, schema| {
+                spark_fields(schema)
+                    .and_then(|next| merge_fields(&fields, &next))
+                    .map_err(|error| {
+                        analysis(
+                            "UNABLE_TO_INFER_PIPELINE_TABLE_SCHEMA",
+                            format!("{}: {error}", quoted(&self.name)),
+                        )
+                    })
+            })
+    }
+}
+
 pub(super) fn infer(
     ctx: &SessionContext,
     output: &Output,
     plans: &[LogicalPlan],
 ) -> SparkResult<Schema> {
-    let inferred = plans
-        .iter()
-        .try_fold(spec::Fields::empty(), |fields, plan| {
-            let result = spark_fields(plan.schema().as_arrow())
-                .and_then(|next| merge_fields(&fields, &next));
-            result.map_err(|error| {
-                analysis(
-                    "UNABLE_TO_INFER_PIPELINE_TABLE_SCHEMA",
-                    format!("{}: {error}", quoted(&output.name)),
-                )
-            })
-        })?;
-    let resolver = PlanResolver::new(ctx, ctx.extension::<SparkSession>()?.plan_config()?);
-    let Some(schema) = &output.schema else {
-        return arrow_schema(&resolver, inferred);
-    };
-    let declared = arrow_schema(&resolver, schema.fields.clone())?;
-    let declared_fields = spark_fields(&declared)?;
-    let merged = merge_fields(&declared_fields, &inferred).map_err(|error| {
-        analysis(
-            "USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE",
-            format!(
-                "'{}' has a user-specified schema that is incompatible: specified {declared:?}, inferred {inferred:?}: {error}",
-                output.name.join(".")
-            ),
-        )
-    })?;
-    // Spark validates the merged schema against the declaration after schema
-    // inference. A successful merge alone still admits undeclared columns or
-    // weaker nullability constraints.
-    if merged != declared_fields {
-        return Err(analysis(
-            "USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE",
-            format!(
-                "'{}' has a user-specified schema that is incompatible: specified {declared:?}, inferred {inferred:?}",
-                output.name.join(".")
-            ),
-        ));
-    }
-    Ok(declared)
+    VirtualTableSchema::new(
+        output,
+        plans
+            .iter()
+            .map(|plan| Arc::new(plan.schema().as_arrow().clone()))
+            .collect(),
+    )
+    .validate(ctx)
 }
 
 fn spark_fields(schema: &Schema) -> SparkResult<spec::Fields> {
@@ -204,3 +249,7 @@ fn arrow_schema(resolver: &PlanResolver<'_>, fields: spec::Fields) -> SparkResul
     };
     Ok(Schema::new(fields))
 }
+
+#[cfg(test)]
+#[path = "schema_virtual_tests.rs"]
+mod virtual_tests;
