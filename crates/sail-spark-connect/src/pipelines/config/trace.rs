@@ -101,11 +101,9 @@ impl<F: Fn(&str) -> bool> Trace<'_, F> {
                         }
                     }
                 }
-                spec::ReadType::DynamicTable(_) => {
-                    return Err(PlanError::unsupported(
-                        "configuration trace of dynamic table identifiers",
-                    ));
-                }
+                // The computed target is materialized after graph substitution.
+                // Its expression/sample subqueries are visited below as usual.
+                spec::ReadType::DynamicTable(_) => {}
                 spec::ReadType::DataSource(_) | spec::ReadType::Udtf(_) => {}
             },
             N::Project { .. }

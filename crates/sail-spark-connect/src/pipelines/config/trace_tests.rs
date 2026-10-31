@@ -149,7 +149,7 @@ fn qualification_keeps_canonical_identity_and_registered_format_paths_are_extern
 }
 
 #[test]
-fn deferred_binding_forms_are_explicit_errors_instead_of_silently_missing_reads() -> TestResult {
+fn late_targets_do_not_bind_graph_names_and_reference_forms_remain_explicit() -> TestResult {
     let graph = graph();
     let query = spec::QueryPlan::new(spec::QueryNode::Read {
         read_type: spec::ReadType::DynamicTable(Box::new(spec::ReadDynamicTable {
@@ -169,7 +169,14 @@ fn deferred_binding_forms_are_explicit_errors_instead_of_silently_missing_reads(
         catalog: "c".into(),
         database: "d".into(),
     };
-    assert!(ordered_inputs(&graph, &flow, &query, false, |_| false).is_err());
+    assert!(ordered_inputs(&graph, &flow, &query, false, |_| false)?.is_empty());
+    assert_eq!(
+        trace(
+            "SELECT * FROM IDENTIFIER((SELECT foo FROM z_sensitive))",
+            false
+        )?,
+        expected(&[&["z_sensitive"]])
+    );
     let references = spec::QueryPlan::new(spec::QueryNode::WithRelations {
         root: Box::new(query),
         references: vec![],

@@ -271,3 +271,30 @@ async fn changed_union_repeats_native_analysis_but_an_unchanged_union_does_not()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn computed_target_does_not_bind_or_inherit_the_graph_view() -> TestResult {
+    let ctx = catalog_preparation_tests::context()?;
+    ctx.state_ref()
+        .write()
+        .config_mut()
+        .set_extension(std::sync::Arc::new(
+            sail_common_datafusion::datasource::DataSourceRegistry::new(),
+        ));
+    let mut graph = definition("CREATE TEMPORARY VIEW z_sensitive AS SELECT 1 AS foo; CREATE MATERIALIZED VIEW target AS SELECT Foo FROM IDENTIFIER(concat('z_', 'sensitive'))").await?;
+    set(&mut graph, "z_sensitive", CASE, "true")?;
+    let error = analysis::analyze(&ctx, &graph)
+        .await
+        .err()
+        .ok_or("computed name incorrectly bound graph view")?;
+    assert!(
+        error.to_string().contains("TABLE_OR_VIEW_NOT_FOUND"),
+        "{error}"
+    );
+    assert!(
+        !ctx.extension::<SparkSession>()?
+            .plan_config()?
+            .case_sensitive
+    );
+    Ok(())
+}

@@ -68,6 +68,18 @@ impl RelationScope for GraphScope<'_> {
         }
     }
 
+    // Computed IDENTIFIER targets materialize after Spark's graph substitution.
+    // Their expression subqueries still use this scope; the eventual target does not.
+    fn resolve_late_bound(&self, _: &[String]) -> PlanResult<Option<LogicalPlan>> {
+        Ok(None)
+    }
+
+    fn qualify_late_bound(&self, name: &[String]) -> PlanResult<Name> {
+        // Late analysis uses the ordinary session catalog namespace, which may
+        // differ from the graph's captured namespace. Do not mutate either one.
+        Ok(name.to_vec())
+    }
+
     fn qualify(&self, name: &[String]) -> PlanResult<Name> {
         match name {
             [table] if !self.flow.database.is_empty() => Ok(vec![
