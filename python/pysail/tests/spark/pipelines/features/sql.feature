@@ -341,7 +341,7 @@ Feature: Declarative pipeline SQL
       | a.b.c |
 
   Scenario Outline: Standalone flows require INSERT INTO BY NAME
-    Given pipeline SQL file flow.sql fails with Only INSERT INTO by name flows supported
+    Given pipeline SQL file flow.sql fails with <error>
       """
       CREATE STREAMING TABLE output;
       CREATE FLOW f AS <query>;
@@ -349,10 +349,10 @@ Feature: Declarative pipeline SQL
     Then pipeline dataset output is not published
 
     Examples:
-      | query                                                       |
-      | INSERT INTO output SELECT * FROM STREAM(source)              |
-      | INSERT OVERWRITE output BY NAME SELECT * FROM STREAM(source) |
-      | INSERT INTO output(id) SELECT * FROM STREAM(source)          |
+      | query                                                       | error                                                 |
+      | INSERT INTO output SELECT * FROM STREAM(source)              | Only INSERT INTO by name flows supported.             |
+      | INSERT OVERWRITE output BY NAME SELECT * FROM STREAM(source) | INSERT OVERWRITE flows not supported.                 |
+      | INSERT INTO output(id) SELECT * FROM STREAM(source)          | Column schema may not be specified for flow target.   |
 
   Scenario: Multiple files cannot register the same output
     Given pipeline SQL file first.sql

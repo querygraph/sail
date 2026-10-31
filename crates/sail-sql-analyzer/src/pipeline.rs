@@ -108,11 +108,10 @@ fn from_ast_pipeline_statement_impl(
             }
             let Statement::InsertInto {
                 with: None,
-                into_or_overwrite: Either::Left(_),
+                into_or_overwrite,
                 name: target,
-                partition: None,
-                if_not_exists: None,
-                columns: Some(Either::Left(_)),
+                partition,
+                columns,
                 query,
                 ..
             } = *statement
@@ -121,6 +120,23 @@ fn from_ast_pipeline_statement_impl(
                     "[PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR] Only INSERT INTO by name flows supported; partition specifications and target column lists are not allowed.",
                 ));
             };
+            // Spark validates the INSERT policy before resolving the target name.
+            // INTO IF NOT EXISTS is rejected by shared parse validation above;
+            // overwrite forms reach the partition or overwrite guard first.
+            let message = if partition.is_some() {
+                Some("Partition spec may not be specified for flow target.")
+            } else if matches!(columns, Some(Either::Right(_))) {
+                Some("Column schema may not be specified for flow target.")
+            } else if matches!(into_or_overwrite, Either::Right(_)) {
+                Some("INSERT OVERWRITE flows not supported.")
+            } else if !matches!(columns, Some(Either::Left(_))) {
+                Some("Only INSERT INTO by name flows supported.")
+            } else {
+                None
+            };
+            if let Some(message) = message {
+                return Err(SqlError::analysis(message));
+            }
             let target = from_ast_object_name(target)?;
             if let Some(error) = sail_common::error::pipeline_identifier_arity_error(
                 &Vec::<String>::from(target.clone()),
