@@ -1,8 +1,10 @@
 """SQL file-local catalog and namespace scope in batch pipelines."""
 
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from pyspark.sql.connect import proto as pb
 
 pytest.importorskip("pyspark.pipelines")
 
@@ -52,3 +54,36 @@ def test_catalog_scope_is_local_to_sql_file(pipeline_spark, pipeline, tmp_path, 
         for name in expected:
             pipeline_spark.sql(f"DROP TABLE IF EXISTS {name}")
         pipeline_spark.sql(f"DROP DATABASE {other}")
+
+
+def test_multipart_outputs_across_two_namespaces(pipeline_spark, pipeline):
+    """SqlPipelineSuite:562: both qualified outputs return Row(1)."""
+    graph_id, registry, run = pipeline
+    suffix = uuid4().hex
+    first = "multipart_first_" + suffix
+    second = "multipart_second_" + suffix
+    outputs = [f"{first}.mv1", f"{second}.mv2"]
+    created = []
+    try:
+        for database in [first, second]:
+            assert not pipeline_spark.catalog.databaseExists(database)
+            pipeline_spark.sql(f"CREATE DATABASE {database}").collect()
+            created.append(database)
+        registry.register_sql(
+            f"CREATE MATERIALIZED VIEW {first}.mv1 AS SELECT 1; "
+            f"CREATE MATERIALIZED VIEW {second}.mv2 AS SELECT * FROM {first}.mv1;",
+            Path("multipart.sql"),
+        )
+        run()
+        for output in outputs:
+            assert [tuple(row) for row in pipeline_spark.sql(f"SELECT * FROM {output}").collect()] == [(1,)]
+    finally:
+        command = pb.Command()
+        command.pipeline_command.drop_dataflow_graph.dataflow_graph_id = graph_id
+        pipeline_spark.client.execute_command(command)
+        for output in reversed(outputs):
+            pipeline_spark.sql(f"DROP TABLE IF EXISTS {output}").collect()
+            assert not pipeline_spark.catalog.tableExists(output)
+        for database in reversed(created):
+            pipeline_spark.sql(f"DROP DATABASE {database}").collect()
+            assert not pipeline_spark.catalog.databaseExists(database)

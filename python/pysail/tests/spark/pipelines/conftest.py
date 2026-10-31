@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from pysail.testing.spark.session import spark_session_factory
+from pyspark.errors import AnalysisException
 
 
 def pytest_configure(config):
@@ -14,7 +15,12 @@ def pipeline_spark(remote, tmp_path):
     # isolated between scenarios without changing the shared Spark test fixture.
     with spark_session_factory(remote) as sessions:
         session = sessions.create()
-        session.conf.set("spark.sql.warehouse.dir", (tmp_path / "warehouse").as_uri())
+        try:
+            session.conf.set("spark.sql.warehouse.dir", (tmp_path / "warehouse").as_uri())
+        except AnalysisException as error:
+            # Spark uses its startup warehouse; Sail permits a session override.
+            if error.getCondition() != "CANNOT_MODIFY_STATIC_CONFIG":
+                raise
         yield session
 
 
