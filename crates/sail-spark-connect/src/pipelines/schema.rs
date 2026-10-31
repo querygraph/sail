@@ -4,6 +4,7 @@ use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use sail_common::spec;
+use sail_common_datafusion::catalog::TableColumnStatus;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_plan::resolver::PlanResolver;
 
@@ -95,10 +96,31 @@ pub(super) fn table_columns(
     output: &Output,
     inferred: &Schema,
 ) -> SparkResult<Vec<spec::TableColumnDefinition>> {
-    let fields = match &output.schema {
-        Some(schema) => schema.fields.clone(),
-        None => nullable_fields(&spark_fields(inferred)?),
-    };
+    columns_from_fields(&output_fields(output, inferred)?)
+}
+
+/// Ordinary streaming refresh retains existing fields and their metadata, then
+/// appends newly inferred fields using Spark's StructType.merge contract.
+pub(super) fn streaming_columns(
+    output: &Output,
+    inferred: &Schema,
+    existing: &[TableColumnStatus],
+) -> SparkResult<Vec<spec::TableColumnDefinition>> {
+    let existing = existing
+        .iter()
+        .map(|column| spec::FieldRef::try_from(StructField::try_from(column.field())?))
+        .collect::<SparkResult<spec::Fields>>()?;
+    columns_from_fields(&merge_fields(&existing, &output_fields(output, inferred)?)?)
+}
+
+fn output_fields(output: &Output, inferred: &Schema) -> SparkResult<spec::Fields> {
+    match &output.schema {
+        Some(schema) => Ok(schema.fields.clone()),
+        None => Ok(nullable_fields(&spark_fields(inferred)?)),
+    }
+}
+
+fn columns_from_fields(fields: &spec::Fields) -> SparkResult<Vec<spec::TableColumnDefinition>> {
     fields
         .iter()
         .map(|field| {

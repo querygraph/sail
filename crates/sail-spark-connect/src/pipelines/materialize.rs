@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::prelude::SessionContext;
 use sail_catalog::command::CatalogCommand;
 use sail_catalog::error::{CatalogError, CatalogObject};
@@ -10,7 +13,7 @@ use sail_plan::error::PlanError;
 
 use super::analysis::AnalyzedGraph;
 use super::execution::{run_catalog_command, run_command};
-use super::graph::{GraphDefinition, analysis, quoted};
+use super::graph::{GraphDefinition, Name, analysis, quoted};
 use super::selection::Selection;
 use crate::error::{SparkError, SparkResult};
 use crate::session::SparkSession;
@@ -21,16 +24,41 @@ use crate::spark::connect::{OutputType, pipeline_command as pc};
 pub(super) async fn tables(
     ctx: &SessionContext,
     graph: &GraphDefinition,
-    analyzed: &AnalyzedGraph,
+    schemas: &BTreeMap<Name, SchemaRef>,
     selection: &Selection,
 ) -> SparkResult<()> {
+    // Metadata-only callers may materialize streaming targets, but full reset
+    // also deletes AutoCDC state in Spark. Keep that effect unavailable until
+    // its ownership path is qualified, including when the target is absent.
+    for output in &graph.outputs {
+        if output.kind == OutputType::Table && selection.reset.contains(&output.name) {
+            let properties = match &output.definition.details {
+                Some(pc::define_output::Details::TableDetails(details)) => {
+                    super::properties::canonicalize(
+                        details.table_properties.clone().into_iter().collect(),
+                    )?
+                }
+                _ => Default::default(),
+            };
+            if !properties
+                .get("pipelines.reset.allowed")
+                .is_some_and(|value| value.eq_ignore_ascii_case("false"))
+            {
+                return Err(SparkError::unsupported(
+                    "streaming table metadata full refresh",
+                ));
+            }
+        }
+    }
     let manager = ctx.extension::<CatalogManager>()?;
     let config = ctx
         .extension::<SparkSession>()?
         .plan_config_with_overrides(graph.sql_conf.clone())?;
     for output in &graph.outputs {
-        if output.kind != OutputType::MaterializedView
-            || output.view.is_some()
+        if !matches!(
+            output.kind,
+            OutputType::MaterializedView | OutputType::Table
+        ) || output.view.is_some()
             || !selection.runs(&output.name)
         {
             continue;
@@ -67,12 +95,11 @@ pub(super) async fn tables(
             }
             return Err(SparkError::unsupported("pipeline table clustering"));
         }
-        let schema = analyzed
-            .schemas
+        let schema = schemas
             .get(&output.name)
             .ok_or_else(|| SparkError::internal("analyzed output missing"))?
             .as_ref();
-        let columns = super::schema::table_columns(output, schema)?;
+        let mut columns = super::schema::table_columns(output, schema)?;
         let table: spec::ObjectName = output.name.clone().into();
         let existing = match manager.get_table_or_view(&output.name).await {
             Ok(status) => Some(status),
@@ -105,15 +132,19 @@ pub(super) async fn tables(
                     quoted(&output.name),
                 ));
             }
-            run_command(
-                ctx,
-                config.clone(),
-                spec::CommandNode::TruncateTable {
-                    table: table.clone(),
-                },
-                None,
-            )
-            .await?;
+            if output.kind == OutputType::Table {
+                columns = super::schema::streaming_columns(output, schema, &old_columns)?;
+            } else {
+                run_command(
+                    ctx,
+                    config.clone(),
+                    spec::CommandNode::TruncateTable {
+                        table: table.clone(),
+                    },
+                    None,
+                )
+                .await?;
+            }
             let mut changes = vec![];
             for column in &columns {
                 if let Some(old) = old_columns.iter().find(|old| old.name == column.name) {
@@ -274,3 +305,6 @@ pub(super) async fn views(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

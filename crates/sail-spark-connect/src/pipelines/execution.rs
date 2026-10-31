@@ -34,7 +34,7 @@ pub(super) async fn execute(
         return Err(SparkError::unsupported("incremental pipeline execution"));
     }
     let spark = ctx.extension::<SparkSession>()?;
-    super::materialize::tables(ctx, graph, &analyzed, &selection).await?;
+    super::materialize::tables(ctx, graph, &analyzed.schemas, &selection).await?;
     super::materialize::views(ctx, graph, &analyzed).await?;
     for name in &analyzed.order {
         let output = graph
