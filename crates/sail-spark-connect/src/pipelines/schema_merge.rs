@@ -7,6 +7,7 @@ use crate::error::{SparkResult, StructuredSparkError};
 
 #[path = "schema_merge_sql.rs"]
 mod sql;
+pub(super) use sql::quoted_type;
 
 /// Spark 4.2.1's SchemaMergingUtils delegates to StructType.merge. Field order
 /// and metadata come from the left schema; matching fields merge their types

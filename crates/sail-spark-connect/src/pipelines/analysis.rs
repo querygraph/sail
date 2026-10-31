@@ -13,6 +13,7 @@ use sail_plan::resolver::scope::RelationScope;
 
 use super::graph::{Flow, GraphDefinition, Name, analysis, quoted};
 use super::schema::VirtualTableSchema;
+use crate::config::EncoderSchemaSettings;
 use crate::error::{SparkError, SparkResult, StructuredSparkError};
 use crate::session::SparkSession;
 use crate::spark::connect::OutputType;
@@ -25,7 +26,15 @@ pub(super) struct GraphScope<'a> {
     pub resolved: &'a BTreeMap<Name, LogicalPlan>,
     pub reads: Mutex<BTreeSet<Name>>,
     pub flow: &'a Flow,
-    virtual_tables: Option<(&'a SessionContext, &'a BTreeMap<Name, VirtualTableSchema>)>,
+    virtual_tables: Option<VirtualInputs<'a>>,
+}
+
+/// Provider-free materialized inputs of one flow call. `settings` is that call's
+/// effective configuration snapshot; the shared session is never mutated for it.
+struct VirtualInputs<'a> {
+    ctx: &'a SessionContext,
+    tables: &'a BTreeMap<Name, VirtualTableSchema>,
+    settings: EncoderSchemaSettings,
 }
 
 impl<'a> GraphScope<'a> {
@@ -47,8 +56,13 @@ impl<'a> GraphScope<'a> {
         mut self,
         ctx: &'a SessionContext,
         tables: &'a BTreeMap<Name, VirtualTableSchema>,
+        settings: EncoderSchemaSettings,
     ) -> Self {
-        self.virtual_tables = Some((ctx, tables));
+        self.virtual_tables = Some(VirtualInputs {
+            ctx,
+            tables,
+            settings,
+        });
         self
     }
     pub fn input_name(&self, name: &[String]) -> PlanResult<Name> {
@@ -59,20 +73,23 @@ impl<'a> GraphScope<'a> {
             self.qualify(&raw)
         }
     }
-}
 
-impl RelationScope for GraphScope<'_> {
-    fn resolve(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>> {
+    fn read(&self, name: &[String], is_streaming: bool) -> PlanResult<Option<LogicalPlan>> {
         let name = self.input_name(name)?;
         if self.graph.outputs.iter().any(|x| x.name == name) {
             self.reads
                 .lock()
                 .map_err(|e| PlanError::internal(e.to_string()))?
                 .insert(name.clone());
-            if let Some((ctx, tables)) = self.virtual_tables
-                && let Some(table) = tables.get(&name)
+            if let Some(inputs) = &self.virtual_tables
+                && let Some(table) = inputs.tables.get(&name)
             {
-                let schema = table.load(ctx).map_err(schema_plan_error)?;
+                let schema = if is_streaming {
+                    table.load_streaming(inputs.ctx, inputs.settings)
+                } else {
+                    table.load(inputs.ctx)
+                };
+                let schema = schema.map_err(schema_plan_error)?;
                 return Ok(Some(LogicalPlan::EmptyRelation(EmptyRelation {
                     produce_one_row: false,
                     schema: Arc::new(DFSchema::try_from(schema)?),
@@ -86,6 +103,16 @@ impl RelationScope for GraphScope<'_> {
         } else {
             Ok(None)
         }
+    }
+}
+
+impl RelationScope for GraphScope<'_> {
+    fn resolve(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>> {
+        self.read(name, false)
+    }
+
+    fn resolve_read(&self, name: &[String], is_streaming: bool) -> PlanResult<Option<LogicalPlan>> {
+        self.read(name, is_streaming)
     }
 
     // Computed IDENTIFIER targets materialize after Spark's graph substitution.

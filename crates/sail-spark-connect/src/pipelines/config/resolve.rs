@@ -182,10 +182,12 @@ impl FlowContext<'_> {
                 accepted: conf,
             }),
         );
-        let config = spark.plan_config_with_overrides(overlay(self.base, &semantic))?;
+        // Both come from one snapshot of this call's effective settings, so a
+        // second call under the merged map sees the view contributions as well.
+        let (config, settings) = spark.flow_call_config(overlay(self.base, &semantic))?;
         let scope = GraphScope::new(self.graph, self.resolved, flow);
         let scope = match self.virtual_tables {
-            Some(tables) => scope.with_virtual_tables(self.ctx, tables),
+            Some(tables) => scope.with_virtual_tables(self.ctx, tables, settings),
             None => scope,
         };
         let resolver = PlanResolver::new(self.ctx, config)

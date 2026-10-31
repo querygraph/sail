@@ -8,6 +8,7 @@ mod properties;
 mod reanalysis;
 mod schema;
 mod schema_merge;
+mod schema_stream;
 mod selection;
 mod sql;
 mod streaming;

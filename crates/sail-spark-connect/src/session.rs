@@ -12,7 +12,7 @@ use sail_data_source::formats::orc::{
 };
 use sail_plan::config::PlanConfig;
 
-use crate::config::{ConfigKeyValue, SparkRuntimeConfig};
+use crate::config::{ConfigKeyValue, EncoderSchemaSettings, SparkRuntimeConfig};
 use crate::error::{SparkError, SparkResult, SparkThrowable, StructuredSparkError};
 use crate::executor::Executor;
 use crate::pipelines::PipelineGraph;
@@ -117,6 +117,22 @@ impl SparkSession {
         let mut config = PlanConfig::try_from(&runtime)?;
         config.session_user_id = self.user_id().to_string();
         Ok(Arc::new(config))
+    }
+
+    /// One snapshot of a pipeline flow call's effective settings. The shared
+    /// session configuration is not mutated.
+    pub(crate) fn flow_call_config(
+        &self,
+        overrides: impl IntoIterator<Item = (String, String)>,
+    ) -> SparkResult<(Arc<PlanConfig>, EncoderSchemaSettings)> {
+        let mut runtime = self.state.lock()?.config.clone();
+        for (key, value) in overrides {
+            runtime.set(key, value)?;
+        }
+        let settings = runtime.encoder_schema_settings()?;
+        let mut config = PlanConfig::try_from(&runtime)?;
+        config.session_user_id = self.user_id().to_string();
+        Ok((Arc::new(config), settings))
     }
 
     pub(crate) fn add_pipeline(&self, graph: PipelineGraph) -> SparkResult<String> {

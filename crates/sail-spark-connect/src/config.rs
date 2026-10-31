@@ -15,6 +15,17 @@ use crate::spark::connect;
 mod boolean;
 mod orc;
 
+const TYPES_FRAMEWORK_ENABLED: &str = "spark.sql.types.framework.enabled";
+const PRESERVE_CHAR_VARCHAR_TYPE_INFO: &str = "spark.sql.preserveCharVarcharTypeInfo";
+
+/// Settings that decide the schema a Spark row encoder derives. Spark defaults the
+/// framework key to `Utils.isTesting`, which is false outside Spark's own suites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EncoderSchemaSettings {
+    pub types_framework_enabled: bool,
+    pub preserve_char_varchar_type_info: bool,
+}
+
 #[cfg(test)]
 mod decimal_tests;
 pub(crate) use orc::affects_orc_config;
@@ -148,6 +159,19 @@ impl SparkRuntimeConfig {
             return self.get_with_default(fallback, default);
         }
         default
+    }
+
+    pub(crate) fn encoder_schema_settings(&self) -> SparkResult<EncoderSchemaSettings> {
+        let enabled = |key| {
+            self.get_option(key)
+                .map(|value| boolean::parse_config_bool(key, value))
+                .transpose()
+                .map(|value| value.unwrap_or(false))
+        };
+        Ok(EncoderSchemaSettings {
+            types_framework_enabled: enabled(TYPES_FRAMEWORK_ENABLED)?,
+            preserve_char_varchar_type_info: enabled(PRESERVE_CHAR_VARCHAR_TYPE_INFO)?,
+        })
     }
 
     pub(crate) fn set(&mut self, key: String, value: String) -> SparkResult<()> {

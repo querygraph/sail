@@ -11,6 +11,8 @@ use sail_plan::resolver::PlanResolver;
 
 use super::graph::{Name, Output, analysis, quoted};
 use super::schema_merge::merge_fields;
+use super::schema_stream::streaming_read_fields;
+use crate::config::EncoderSchemaSettings;
 use crate::error::{SparkError, SparkResult};
 use crate::proto::data_type::parse_spark_data_type;
 use crate::session::SparkSession;
@@ -56,12 +58,27 @@ impl VirtualTableSchema {
     /// Spark's VirtualTableInput.load uses a declaration directly, without
     /// merging incoming schemas. No error is suppressed or replaced by a schema.
     pub fn load(&self, ctx: &SessionContext) -> SparkResult<Schema> {
-        let fields = match &self.declared {
-            Some(schema) => schema.fields.clone(),
-            None => self.inferred_fields()?,
-        };
+        let resolver = PlanResolver::new(ctx, ctx.extension::<SparkSession>()?.plan_config()?);
+        arrow_schema(&resolver, self.read_fields()?)
+    }
+
+    /// The same deduced schema as a streaming read exposes it, under the consuming
+    /// flow's settings. See `schema_stream` for how that differs from a batch read.
+    pub fn load_streaming(
+        &self,
+        ctx: &SessionContext,
+        settings: EncoderSchemaSettings,
+    ) -> SparkResult<Schema> {
+        let fields = streaming_read_fields(&self.read_fields()?, settings)?;
         let resolver = PlanResolver::new(ctx, ctx.extension::<SparkSession>()?.plan_config()?);
         arrow_schema(&resolver, fields)
+    }
+
+    fn read_fields(&self) -> SparkResult<spec::Fields> {
+        match &self.declared {
+            Some(schema) => Ok(schema.fields.clone()),
+            None => self.inferred_fields(),
+        }
     }
 
     /// Validate declaration compatibility after successful query resolution.

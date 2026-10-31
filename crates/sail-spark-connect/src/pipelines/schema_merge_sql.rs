@@ -5,7 +5,7 @@ use sail_common::spec;
 
 use crate::error::{SparkError, SparkResult};
 
-pub(super) fn quoted_type(data_type: &spec::DataType) -> SparkResult<String> {
+pub(in crate::pipelines) fn quoted_type(data_type: &spec::DataType) -> SparkResult<String> {
     if let spec::DataType::UserDefined { sql_type, .. } = data_type {
         return Ok(format!("UDT({})", quoted_type(sql_type)?));
     }
