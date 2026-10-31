@@ -113,14 +113,30 @@ pub(super) struct AnalyzedGraph {
     pub accepted_confs: BTreeMap<Name, HashMap<String, String>>,
 }
 
+mod failure;
+pub(super) use failure::{AnalysisError, ResolutionFailures};
+
 pub(super) async fn analyze(
     ctx: &SessionContext,
     graph: &GraphDefinition,
-) -> SparkResult<AnalyzedGraph> {
+) -> Result<AnalyzedGraph, AnalysisError> {
+    analyze_queries(ctx, graph)
+        .await?
+        .map_err(AnalysisError::from)
+}
+
+async fn analyze_queries(
+    ctx: &SessionContext,
+    graph: &GraphDefinition,
+) -> SparkResult<Result<AnalyzedGraph, ResolutionFailures>> {
     graph.validate_bindings()?;
     let spark = ctx.extension::<SparkSession>()?;
     let mut resolved = BTreeMap::new();
     let mut order = vec![];
+    let mut flow_plans: BTreeMap<Name, LogicalPlan> = BTreeMap::new();
+    let mut flow_reads: BTreeMap<Name, BTreeSet<Name>> = BTreeMap::new();
+    let mut failures: BTreeMap<Name, super::config::resolve::FailedFlow> = BTreeMap::new();
+    let mut pending_flows = BTreeMap::new();
     let mut dependencies = BTreeMap::new();
     let mut publications = BTreeMap::new();
     let mut accepted_confs = BTreeMap::new();
@@ -136,6 +152,16 @@ pub(super) async fn analyze(
             let mut plans = vec![];
             let mut pending = false;
             for flow in graph.flows.iter().filter(|x| x.target == output.name) {
+                if let Some(plan) = flow_plans.get(&flow.name) {
+                    inputs.extend(flow_reads[&flow.name].iter().cloned());
+                    plans.push(plan.clone());
+                    continue;
+                }
+                if let Some(failure) = failures.get(&flow.name) {
+                    inputs.extend(failure.reads.iter().cloned());
+                    pending = true;
+                    continue;
+                }
                 let context = super::config::resolve::FlowContext {
                     ctx,
                     graph,
@@ -146,7 +172,9 @@ pub(super) async fn analyze(
                 };
                 match context.resolve(flow, output.view.as_ref()).await? {
                     super::config::resolve::FlowResolution::Resolved(result) => {
-                        inputs.extend(result.reads);
+                        inputs.extend(result.reads.iter().cloned());
+                        flow_reads.insert(flow.name.clone(), result.reads);
+                        pending_flows.remove(&flow.name);
                         accepted_confs.insert(flow.name.clone(), result.accepted);
                         if let Some(options) = result.publication {
                             publications.insert(output.name.clone(), options);
@@ -157,12 +185,19 @@ pub(super) async fn analyze(
                         } else {
                             plan.plan
                         };
+                        flow_plans.insert(flow.name.clone(), plan.clone());
                         plans.push(plan);
                     }
-                    super::config::resolve::FlowResolution::Pending(reads) => {
-                        inputs.extend(reads);
+                    super::config::resolve::FlowResolution::Pending(waiting) => {
+                        inputs.extend(waiting.reads.iter().cloned());
+                        pending_flows.insert(flow.name.clone(), waiting);
                         pending = true;
-                        break;
+                    }
+                    super::config::resolve::FlowResolution::Failed(failure) => {
+                        inputs.extend(failure.reads.iter().cloned());
+                        pending_flows.remove(&flow.name);
+                        failures.insert(flow.name.clone(), failure);
+                        pending = true;
                     }
                 }
             }
@@ -211,20 +246,24 @@ pub(super) async fn analyze(
             };
             resolved.insert(output.name.clone(), plan);
             order.push(output.name.clone());
+            // Only unfinished multi-flow outputs need cached working plans.
+            // Materialized inputs keep schemas rather than source providers.
+            for flow in graph.flows.iter().filter(|flow| flow.target == output.name) {
+                flow_plans.remove(&flow.name);
+                flow_reads.remove(&flow.name);
+            }
         }
         if before == order.len() {
-            // Even partial resolution records the blocked dependency for every
-            // pending output. Grust returns the closed cycle, without naming
-            // unrelated consumers as members of it.
-            super::topology::order(&dependencies)?;
-            let pending = graph
-                .outputs
-                .iter()
-                .filter(|x| !resolved.contains_key(&x.name))
-                .map(|x| quoted(&x.name))
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(analysis("PIPELINE_CIRCULAR_DEPENDENCY", pending));
+            for (name, waiting) in pending_flows {
+                failures.insert(name, super::config::resolve::FailedFlow {
+                    error: crate::error::SparkError::AnalysisError(format!(
+                        "Failed to read dataset '{}'. Dataset is defined in the pipeline but could not be resolved.",
+                        waiting.input.join(".")
+                    )),
+                    reads: waiting.reads,
+                });
+            }
+            return Ok(Err(ResolutionFailures::new(graph, failures)?));
         }
     }
     // Spark resolves the graph before validating its semantics. In particular,
@@ -237,7 +276,7 @@ pub(super) async fn analyze(
             )?;
         }
     }
-    Ok(AnalyzedGraph {
+    Ok(Ok(AnalyzedGraph {
         order: super::topology::order(&dependencies)?,
         dependencies,
         schemas: resolved
@@ -246,7 +285,7 @@ pub(super) async fn analyze(
             .collect(),
         publications,
         accepted_confs,
-    })
+    }))
 }
 
 #[cfg(test)]

@@ -12,7 +12,7 @@ use sail_plan::resolver::PlanResolver;
 use sail_plan::resolver::plan::NamedPlan;
 
 use super::merge::{ConfMap, ViewContribution, first_pass_map, merge};
-use crate::error::{SparkResult, StructuredSparkError};
+use crate::error::{SparkError, SparkResult, StructuredSparkError};
 use crate::pipelines::analysis::GraphScope;
 use crate::pipelines::graph::{Flow, GraphDefinition, Name};
 use crate::session::SparkSession;
@@ -24,13 +24,54 @@ pub(in crate::pipelines) struct ResolvedFlow {
     pub accepted: ConfMap,
     pub reads: BTreeSet<Name>,
 }
+pub(in crate::pipelines) struct PendingFlow {
+    pub input: Name,
+    pub reads: BTreeSet<Name>,
+}
+pub(in crate::pipelines) struct FailedFlow {
+    pub error: SparkError,
+    pub reads: BTreeSet<Name>,
+}
 pub(in crate::pipelines) enum FlowResolution {
     Resolved(Box<ResolvedFlow>),
-    Pending(BTreeSet<Name>),
+    Pending(PendingFlow),
+    Failed(FailedFlow),
+}
+enum CallResult {
+    Resolved(Box<(NamedPlan, Option<CreateViewOptions>)>),
+    Pending(Name),
+    Failed(SparkError),
 }
 struct Call {
-    result: Option<(NamedPlan, Option<CreateViewOptions>)>,
+    result: CallResult,
     reads: BTreeSet<Name>,
+}
+struct ResolvedCall {
+    plan: NamedPlan,
+    publication: Option<CreateViewOptions>,
+    reads: BTreeSet<Name>,
+}
+impl Call {
+    fn into_plan(self) -> Result<ResolvedCall, FlowResolution> {
+        match self.result {
+            CallResult::Resolved(plan) => {
+                let (plan, publication) = *plan;
+                Ok(ResolvedCall {
+                    plan,
+                    publication,
+                    reads: self.reads,
+                })
+            }
+            CallResult::Pending(input) => Err(FlowResolution::Pending(PendingFlow {
+                input,
+                reads: self.reads,
+            })),
+            CallResult::Failed(error) => Err(FlowResolution::Failed(FailedFlow {
+                error,
+                reads: self.reads,
+            })),
+        }
+    }
 }
 
 fn contributions<'a>(
@@ -75,6 +116,16 @@ pub(in crate::pipelines) struct FlowContext<'a> {
     pub source_case_sensitive: bool,
 }
 impl FlowContext<'_> {
+    fn unavailable_input<'a>(
+        &self,
+        reads: impl IntoIterator<Item = &'a Name>,
+    ) -> SparkResult<Name> {
+        reads
+            .into_iter()
+            .find(|name| !self.resolved.contains_key(*name))
+            .cloned()
+            .ok_or_else(|| SparkError::internal("pending flow has no unavailable input"))
+    }
     async fn call(
         &self,
         flow: &Flow,
@@ -114,7 +165,7 @@ impl FlowContext<'_> {
         let mut reads = ordered.iter().cloned().collect::<BTreeSet<_>>();
         let Some(views) = contributions(self.graph, self.accepted, ordered.iter())? else {
             return Ok(Call {
-                result: None,
+                result: CallResult::Pending(self.unavailable_input(ordered.iter())?),
                 reads,
             });
         };
@@ -143,17 +194,23 @@ impl FlowContext<'_> {
         let actual = scope.reads.into_inner()?;
         match result {
             Ok(plan) => Ok(Call {
-                result: Some(plan),
+                result: CallResult::Resolved(Box::new(plan)),
                 reads: actual,
             }),
-            Err(PlanError::UnresolvedRelation(_)) => {
+            Err(PlanError::UnresolvedRelation(input)) => {
                 reads.extend(actual);
                 Ok(Call {
-                    result: None,
+                    result: CallResult::Pending(input),
                     reads,
                 })
             }
-            Err(error) => Err(error.into()),
+            Err(error) => {
+                reads.extend(actual);
+                Ok(Call {
+                    result: CallResult::Failed(error.into()),
+                    reads,
+                })
+            }
         }
     }
 
@@ -165,12 +222,15 @@ impl FlowContext<'_> {
         flow: &Flow,
         view: Option<&spec::ViewDefinition>,
     ) -> SparkResult<FlowResolution> {
-        let first = self.call(flow, view, &flow.sql_conf).await?;
-        let Some((plan, publication)) = first.result else {
-            return Ok(FlowResolution::Pending(first.reads));
+        let first = match self.call(flow, view, &flow.sql_conf).await?.into_plan() {
+            Ok(plan) => plan,
+            Err(status) => return Ok(status),
         };
         let Some(views) = contributions(self.graph, self.accepted, first.reads.iter())? else {
-            return Ok(FlowResolution::Pending(first.reads));
+            return Ok(FlowResolution::Pending(PendingFlow {
+                input: self.unavailable_input(&first.reads)?,
+                reads: first.reads,
+            }));
         };
         let display = flow.name.join(".");
         let merged = merge(
@@ -199,13 +259,13 @@ impl FlowContext<'_> {
         let (plan, publication, reads) = if merged.changed {
             // The second call's raw configuration is the accepted union. Spark does
             // not run the merge a third time if that call binds a different input.
-            let second = self.call(flow, view, &merged.map).await?;
-            let Some((plan, publication)) = second.result else {
-                return Ok(FlowResolution::Pending(second.reads));
+            let second = match self.call(flow, view, &merged.map).await?.into_plan() {
+                Ok(plan) => plan,
+                Err(status) => return Ok(status),
             };
-            (plan, publication, second.reads)
+            (second.plan, second.publication, second.reads)
         } else {
-            (plan, publication, first.reads)
+            (first.plan, first.publication, first.reads)
         };
         Ok(FlowResolution::Resolved(Box::new(ResolvedFlow {
             plan,

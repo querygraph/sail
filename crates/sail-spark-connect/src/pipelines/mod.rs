@@ -166,13 +166,22 @@ pub(crate) async fn handle_command(
                     if !command.dry.unwrap_or(false) {
                         execution::execute(&ctx, &definition, analyzed, selection).await?;
                     }
-                    Ok::<_, SparkError>(())
+                    Ok::<_, analysis::AnalysisError>(())
                 };
                 let outcome = tokio::select! {
                     value = run => value,
-                    _ = cancelled.changed() => Err(SparkError::invalid("pipeline run cancelled")),
+                    _ = cancelled.changed() => Err(analysis::AnalysisError::from(SparkError::invalid("pipeline run cancelled"))),
                 };
-                outcome?;
+                match outcome {
+                    Ok(()) => {}
+                    Err(analysis::AnalysisError::Unresolved(failures)) => {
+                        for message in failures.events() {
+                            yield event(&message);
+                        }
+                        Err(failures.into_error())?;
+                    }
+                    Err(analysis::AnalysisError::Other(error)) => Err(error)?,
+                }
                 yield event("Pipeline run completed");
                 yield result(sc::PipelineCommandResult::default());
             };

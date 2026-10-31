@@ -96,6 +96,9 @@ pub(super) async fn resolve_inputs(
                     accepted.insert(flow.name.clone(), result.accepted);
                     result.plan
                 }
+                super::config::resolve::FlowResolution::Failed(failure) => {
+                    return Err(failure.error);
+                }
                 super::config::resolve::FlowResolution::Pending(_) => {
                     return Err(SparkError::internal("command view inputs did not resolve"));
                 }

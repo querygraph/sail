@@ -321,8 +321,20 @@ async fn resolution_errors_precede_flow_type_and_multi_query_validation() -> Tes
         "SELECT missing_column FROM range(1)",
     ] {
         let mut graph = definition(&format!("CREATE MATERIALIZED VIEW target AS {query}")).await?;
+        let query_errors =
+            |error: AnalysisError| -> Result<Vec<String>, Box<dyn std::error::Error>> {
+                let AnalysisError::Unresolved(failures) = error else {
+                    return Err(format!("query failure was not aggregated: {error}").into());
+                };
+                assert!(failures.downstream.is_empty());
+                Ok(failures
+                    .direct
+                    .into_values()
+                    .map(|error| error.to_string())
+                    .collect())
+            };
         let expected = match analyze(&ctx, &graph).await {
-            Err(error) => error.to_string(),
+            Err(error) => query_errors(error)?.remove(0),
             Ok(_) => return Err("invalid source unexpectedly resolved".into()),
         };
         assert!(
@@ -335,23 +347,144 @@ async fn resolution_errors_precede_flow_type_and_multi_query_validation() -> Tes
         );
         graph.outputs[0].kind = OutputType::Table;
         let actual = match analyze(&ctx, &graph).await {
-            Err(error) => error.to_string(),
+            Err(error) => query_errors(error)?,
             Ok(_) => return Err("invalid streaming-table source unexpectedly resolved".into()),
         };
-        assert_eq!(actual, expected, "flow type masked query analysis: {query}");
+        assert_eq!(
+            actual.as_slice(),
+            std::slice::from_ref(&expected),
+            "flow type masked query analysis: {query}"
+        );
 
         graph.outputs[0].kind = OutputType::MaterializedView;
         let mut extra = graph.flows[0].clone();
         extra.name = vec!["extra".into()];
         graph.flows.push(extra);
         let actual = match analyze(&ctx, &graph).await {
-            Err(error) => error.to_string(),
+            Err(error) => query_errors(error)?,
             Ok(_) => return Err("invalid multi-query source unexpectedly resolved".into()),
         };
         assert_eq!(
-            actual, expected,
+            actual,
+            [expected.clone(), expected],
             "flow count masked query analysis: {query}"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unresolved_flows_collect_independent_and_transitive_failures() -> TestResult {
+    let ctx = sql::tests::resolution_context()?;
+    ctx.state_ref()
+        .write()
+        .config_mut()
+        .set_extension(Arc::new(DataSourceRegistry::new()));
+    let graph = definition("CREATE MATERIALIZED VIEW leaf AS SELECT * FROM middle; CREATE MATERIALIZED VIEW bad AS SELECT * FROM missing_source; CREATE MATERIALIZED VIEW middle AS SELECT * FROM bad; CREATE MATERIALIZED VIEW other_bad AS SELECT missing_column FROM range(1); CREATE MATERIALIZED VIEW healthy AS SELECT 1 AS id").await?;
+    let Some(AnalysisError::Unresolved(failures)) = analyze(&ctx, &graph).await.err() else {
+        return Err("expected unresolved-flow report".into());
+    };
+    assert_eq!(
+        failures
+            .direct
+            .keys()
+            .map(|name| name.last().map(String::as_str))
+            .collect::<Vec<_>>(),
+        [Some("bad"), Some("other_bad")]
+    );
+    assert_eq!(
+        failures
+            .downstream
+            .keys()
+            .map(|name| name.last().map(String::as_str))
+            .collect::<Vec<_>>(),
+        [Some("leaf"), Some("middle")]
+    );
+    let events: Vec<_> = failures.events().collect();
+    assert_eq!(events.len(), 4);
+    assert!(
+        events[..2]
+            .iter()
+            .all(|event| event.starts_with("Failed to resolve flow due to upstream failure:"))
+    );
+    assert!(events[2].contains("missing_source"));
+    assert!(events[3].contains("missing_column"));
+    use tonic_types::StatusExt;
+    let status: tonic::Status = failures.into_error().into();
+    let details = status.get_error_details();
+    let info = details
+        .error_info()
+        .ok_or("missing unresolved-pipeline ErrorInfo")?;
+    assert_eq!(
+        info.reason,
+        "org.apache.spark.sql.pipelines.graph.UnresolvedPipelineException"
+    );
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(&info.metadata["classes"])?,
+        [
+            "org.apache.spark.sql.pipelines.graph.UnresolvedPipelineException",
+            "org.apache.spark.sql.AnalysisException",
+            "java.lang.Exception",
+            "java.lang.Throwable",
+            "java.lang.Object"
+        ]
+    );
+    for absent in ["errorClass", "sqlState", "messageParameters"] {
+        assert!(!info.metadata.contains_key(absent));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn successful_producer_of_failed_output_is_not_a_failed_flow() -> TestResult {
+    let ctx = sql::tests::resolution_context()?;
+    ctx.state_ref()
+        .write()
+        .config_mut()
+        .set_extension(Arc::new(DataSourceRegistry::new()));
+    let mut graph = definition("CREATE MATERIALIZED VIEW bad AS SELECT * FROM missing_source; CREATE MATERIALIZED VIEW consumer AS SELECT * FROM bad; CREATE MATERIALIZED VIEW healthy AS SELECT 1 AS id").await?;
+    let mut good = graph.flows[2].clone();
+    good.name = vec!["successful_producer".into()];
+    good.target = graph.outputs[0].name.clone();
+    graph.flows.push(good);
+    let Some(AnalysisError::Unresolved(failures)) = analyze(&ctx, &graph).await.err() else {
+        return Err("expected unresolved-flow report".into());
+    };
+    assert_eq!(failures.direct.len(), 1);
+    assert!(failures.direct.contains_key(&graph.flows[0].name));
+    assert_eq!(failures.downstream.len(), 1);
+    assert!(failures.downstream.contains_key(&graph.flows[1].name));
+    assert!(!failures.to_string().contains("successful_producer"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn unresolved_report_releases_working_providers_without_scanning() -> TestResult {
+    let ctx = sql::tests::resolution_context()?;
+    let leases = Arc::new(Mutex::new(vec![]));
+    let scans = Arc::new(AtomicUsize::new(0));
+    let registry = DataSourceRegistry::new();
+    registry.register_data_source(Arc::new(ProbeSource {
+        leases: leases.clone(),
+        scans: scans.clone(),
+        reject: false,
+    }))?;
+    ctx.state_ref()
+        .write()
+        .config_mut()
+        .set_extension(Arc::new(registry));
+    let graph = definition("CREATE MATERIALIZED VIEW source AS SELECT * FROM artifact_probe.`input`; CREATE MATERIALIZED VIEW invalid AS SELECT missing_column FROM source").await?;
+    let Some(AnalysisError::Unresolved(failures)) = analyze(&ctx, &graph).await.err() else {
+        return Err("expected unresolved-flow report".into());
+    };
+    assert_eq!(failures.direct.len(), 1);
+    assert!(failures.downstream.is_empty());
+    let leases = leases.lock().map_err(|_| "probe leases poisoned")?;
+    assert_eq!(leases.len(), 1);
+    assert!(
+        leases[0].upgrade().is_none(),
+        "failure report retained working provider"
+    );
+    assert_eq!(scans.load(Ordering::SeqCst), 0);
     Ok(())
 }

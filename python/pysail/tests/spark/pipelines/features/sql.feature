@@ -103,7 +103,7 @@ Feature: Declarative pipeline SQL
       CREATE MATERIALIZED VIEW valid AS SELECT * FROM range(2);
       CREATE MATERIALIZED VIEW invalid AS SELECT missing FROM range(2);
       """
-    When the pipeline fails with missing
+    When the pipeline fails to resolve with flow error missing
     Then pipeline dataset valid is not published
 
   Scenario: A failed SQL file registers no partial definitions

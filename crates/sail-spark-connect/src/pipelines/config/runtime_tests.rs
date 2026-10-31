@@ -130,7 +130,7 @@ async fn first_semantic_failure_precedes_conflict_and_reversed_reads_change_the_
             .err()
             .ok_or("invalid graph accepted")?;
         if conflict {
-            let SparkError::Structured(error) = error else {
+            let analysis::AnalysisError::Other(SparkError::Structured(error)) = error else {
                 return Err(format!("wrong conflict error: {error}").into());
             };
             assert_eq!(error.condition, "DUPLICATE_FLOW_SQL_CONF");
@@ -139,8 +139,11 @@ async fn first_semantic_failure_precedes_conflict_and_reversed_reads_change_the_
             assert_eq!(error.parameters["flowName1"], "a_insensitive");
             assert_eq!(error.parameters["flowName2"], "z_sensitive");
         } else {
-            let SparkError::Structured(error) = error else {
-                return Err(format!("wrong unresolved-column error: {error}").into());
+            let analysis::AnalysisError::Unresolved(failures) = error else {
+                return Err(format!("wrong unresolved-column phase: {error}").into());
+            };
+            let Some(SparkError::Structured(error)) = failures.direct.values().next() else {
+                return Err("missing structured unresolved-column cause".into());
             };
             assert_eq!(error.condition, "UNRESOLVED_COLUMN.WITH_SUGGESTION");
             assert_eq!(error.sql_state, "42703");
@@ -287,9 +290,14 @@ async fn computed_target_does_not_bind_or_inherit_the_graph_view() -> TestResult
         .await
         .err()
         .ok_or("computed name incorrectly bound graph view")?;
+    let analysis::AnalysisError::Unresolved(failures) = error else {
+        return Err(format!("wrong computed-target failure phase: {error}").into());
+    };
     assert!(
-        error.to_string().contains("TABLE_OR_VIEW_NOT_FOUND"),
-        "{error}"
+        failures
+            .direct
+            .values()
+            .any(|error| error.to_string().contains("TABLE_OR_VIEW_NOT_FOUND"))
     );
     assert!(
         !ctx.extension::<SparkSession>()?

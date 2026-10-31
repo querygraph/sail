@@ -80,3 +80,14 @@ def dataset_not_published(name, pipeline_spark):
 @then(parsers.parse("pipeline dataset {name} is published"))
 def dataset_published(name, pipeline_spark):
     assert pipeline_spark.catalog.tableExists(name)
+
+
+@when(parsers.parse("the pipeline fails to resolve with flow error {diagnostic}"))
+def unresolved_pipeline_with_flow_error(diagnostic, pipeline, capsys):
+    _, _, run = pipeline
+    with pytest.raises(AnalysisException, match="Failed to resolve flows in the pipeline"):
+        run()
+    output = capsys.readouterr().out
+    assert "Failed to resolve flow:" in output
+    assert "Error:" in output
+    assert diagnostic in output

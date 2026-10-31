@@ -359,6 +359,9 @@ impl From<SparkThrowable> for Status {
 fn spark_status(class: &str, message: &str, mut metadata: HashMap<String, String>) -> Status {
     // We do not add the "stackTrace" field since the Java stack trace is not available.
     let classes = match class {
+        "org.apache.spark.sql.pipelines.graph.UnresolvedPipelineException" => format!(
+            "[\"{class}\",\"org.apache.spark.sql.AnalysisException\",\"java.lang.Exception\",\"java.lang.Throwable\",\"java.lang.Object\"]"
+        ),
         "org.apache.spark.sql.connector.catalog.CatalogNotFoundException" => format!(
             "[\"{class}\",\"org.apache.spark.SparkException\",\"java.lang.Exception\",\"java.lang.Throwable\",\"java.lang.Object\"]"
         ),
