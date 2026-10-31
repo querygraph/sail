@@ -31,22 +31,30 @@ impl IntentId {
     pub fn new(target: &TargetKey, generation: u64, flow: &FlowKey, batch_sequence: u64) -> Self {
         Self(format!(
             "{}/{generation}/{}/{batch_sequence}",
-            target.0, flow.0
+            escape(&target.0),
+            escape(&flow.0)
         ))
     }
 
     /// A reset's identity; one reset per generation.
     pub fn reset(target: &TargetKey, generation: u64) -> Self {
-        Self(format!("{}/{generation}/reset", target.0))
+        Self(format!("{}/{generation}/reset", escape(&target.0)))
     }
+}
+
+/// Escape a name for a composite key, so that names containing separators
+/// cannot alias.
+pub fn escape(name: &str) -> String {
+    name.replace('%', "%25").replace('/', "%2F")
 }
 
 /// Which of the batch's effects a preparation or receipt belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum EffectStep {
-    /// An enrollment, materialization or auxiliary creation effect under an
-    /// Initialization intent.
-    Initialization,
+    /// Materializing the target under an Initialization intent.
+    InitializeTarget,
+    /// Creating the auxiliary table under an Initialization intent.
+    InitializeAuxiliary,
     Auxiliary,
     Target,
     /// A reset's target truncate/replacement.

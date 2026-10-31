@@ -8,7 +8,17 @@ description = "Pure control model for durable declarative-pipeline runs: identit
 [lints]
 workspace = true
 
+[features]
+# The Turso authority adapter (see src/turso_store.rs for its qualification).
+turso = ["dep:turso"]
+
 [dependencies]
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.11.0"
+tokio = { workspace = true }
+turso = { version = "0.7.2", default-features = false, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

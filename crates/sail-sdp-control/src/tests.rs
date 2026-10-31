@@ -1,39 +1,217 @@
-//! Model tests: the fault matrix's interleavings and the worked recovery
-//! trace of `CDC-CONTROL-STORE-DESIGN.md`, executed against the in-process
-//! store. The same trace against a real authority is the adapter unit's
-//! target and is ignored here by design.
+//! The fault matrix's interleavings and the worked recovery trace of
+//! `CDC-CONTROL-STORE-DESIGN.md`. Every scenario runs against each backend
+//! through one driver, so the in-process store and the authority adapter are
+//! held to the same behaviour.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use serde_json::json;
 
+use crate::control::{Control, Effect, RequestId};
 use crate::digest::{canonical, digest};
 use crate::identity::{
     AuthorityIncarnation, EffectStep, FenceToken, FlowKey, IntentId, SinkIdentity, TargetKey,
 };
-use crate::memory::{AUTHORITY_STATEMENT, Effect, RequestId, UnfencedMemoryStore};
+use crate::memory::{AUTHORITY_STATEMENT, UnfencedMemoryStore};
 use crate::records::{
-    AckState, Completion, EffectPrepare, EffectReceipt, FlowCheckpoint, Intent, IntentKind,
-    ReceiptKind, TargetGuard, TargetState,
+    Ack, AckState, Completion, EffectPrepare, EffectReceipt, FlowCheckpoint, Intent, IntentKind,
+    ReceiptKind, SinkHead, TargetGuard, TargetState,
 };
+use crate::store::{Clock, Store};
 use crate::transitions::{
-    self, Attestation, Lookup, Outcome, ResetIdentities, Sealed, check_fence,
+    self, Acquired, Attestation, Lookup, Outcome, ResetIdentities, Sealed, check_fence,
 };
 
 type Result<T = ()> = std::result::Result<T, Outcome>;
 
 const LEASE: i64 = 10_000;
 const PREPARED: &str = "prepared";
+const PHYSICAL: &str = "s3://bucket/target";
 
-struct Fixture {
-    store: UnfencedMemoryStore,
+#[derive(Default)]
+struct ManualClock(AtomicI64);
+
+impl Clock for ManualClock {
+    fn now(&self) -> i64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// Drives the async operations with a chosen authority time.
+struct Driver<S> {
+    control: Control<S>,
+    clock: Arc<ManualClock>,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl<S: Store> Driver<S> {
+    fn new(store: S) -> Self {
+        let clock = Arc::new(ManualClock::default());
+        Self {
+            control: Control::new(store, clock.clone()),
+            clock,
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap_or_else(|e| unreachable!("{e}")),
+        }
+    }
+
+    fn at(&self, now: i64) -> &Control<S> {
+        self.clock.0.store(now, Ordering::SeqCst);
+        &self.control
+    }
+
+    fn run<T>(&self, future: impl Future<Output = T>) -> T {
+        self.runtime.block_on(future)
+    }
+
+    fn enroll(
+        &self,
+        target: TargetKey,
+        physical: &str,
+        sink: SinkIdentity,
+        auxiliary: SinkIdentity,
+    ) -> Result<TargetGuard> {
+        self.run(self.control.enroll(&target, physical, &sink, &auxiliary))
+    }
+
+    fn put_checkpoint(&self, checkpoint: FlowCheckpoint) -> Result {
+        self.run(self.control.put_checkpoint(&checkpoint))
+    }
+
+    fn guard(&self, target: &TargetKey) -> Option<TargetGuard> {
+        self.run(self.control.guard(target)).ok().flatten()
+    }
+
+    fn head(&self, sink: &SinkIdentity) -> Option<SinkHead> {
+        self.run(self.control.head(sink)).ok().flatten()
+    }
+
+    fn receipt(&self, intent: &IntentId, step: EffectStep) -> Option<EffectReceipt> {
+        self.run(self.control.receipt(intent, step)).ok().flatten()
+    }
+
+    fn intent(&self, id: &IntentId) -> Option<Intent> {
+        self.run(self.control.intent(id)).ok().flatten()
+    }
+
+    fn ack(&self, id: &str) -> Option<Ack> {
+        self.run(self.control.ack(id)).ok().flatten()
+    }
+
+    fn checkpoint(
+        &self,
+        target: &TargetKey,
+        generation: u64,
+        flow: &str,
+    ) -> Option<FlowCheckpoint> {
+        let flow = FlowKey(flow.to_string());
+        self.run(self.control.checkpoint(target, generation, &flow))
+            .ok()
+            .flatten()
+    }
+
+    fn acquire(&self, target: &TargetKey, owner: &str, now: i64, lease: i64) -> Result<Acquired> {
+        self.run(self.at(now).acquire(target, owner, lease))
+    }
+
+    fn seal_intent(&self, token: &FenceToken, now: i64, intent: Intent) -> Result<Intent> {
+        self.run(self.at(now).seal_intent(token, &intent))
+    }
+
+    fn record_prepared(
+        &self,
+        token: &FenceToken,
+        now: i64,
+        intent: &IntentId,
+        digest: &str,
+    ) -> Result<Intent> {
+        self.run(self.at(now).record_prepared(token, intent, digest))
+    }
+
+    fn prepare_effect(
+        &self,
+        token: &FenceToken,
+        now: i64,
+        prepare: EffectPrepare,
+    ) -> Result<EffectPrepare> {
+        self.run(self.at(now).prepare_effect(token, &prepare))
+    }
+
+    fn ratify(
+        &self,
+        request: &RequestId,
+        token: &FenceToken,
+        now: i64,
+        (intent, step): (&IntentId, EffectStep),
+        attestation: Attestation<'_>,
+        effect: Effect,
+    ) -> Result<EffectReceipt> {
+        self.run(
+            self.at(now)
+                .ratify(request, token, intent, step, attestation, effect),
+        )
+    }
+
+    fn complete_batch(
+        &self,
+        request: &RequestId,
+        token: &FenceToken,
+        now: i64,
+        intent: &IntentId,
+    ) -> Result<Completion> {
+        self.run(self.at(now).complete_batch(request, token, intent))
+    }
+
+    fn complete_initialization(
+        &self,
+        token: &FenceToken,
+        now: i64,
+        intent: &IntentId,
+    ) -> Result<TargetGuard> {
+        self.run(self.at(now).complete_initialization(token, intent))
+    }
+
+    fn begin_reset(&self, token: &FenceToken, now: i64, reset: Intent) -> Result<FenceToken> {
+        self.run(self.at(now).begin_reset(token, &reset))
+    }
+
+    fn finalize_reset(
+        &self,
+        token: &FenceToken,
+        now: i64,
+        identities: ResetIdentities,
+    ) -> Result<TargetGuard> {
+        self.run(self.at(now).finalize_reset(token, &identities))
+    }
+
+    fn record_ack(&self, token: &FenceToken, now: i64, id: &str) -> Result<Ack> {
+        self.run(self.at(now).record_ack(token, id))
+    }
+
+    fn resolve_ack(&self, token: &FenceToken, now: i64, id: &str, confirmed: bool) -> Result<Ack> {
+        self.run(self.at(now).resolve_ack(token, id, confirmed))
+    }
+
+    fn lookup(&self, request: &RequestId) -> Lookup {
+        self.run(self.control.lookup(request))
+            .unwrap_or(Lookup::Unknown)
+    }
+}
+
+struct Fixture<S> {
+    store: Driver<S>,
     target: TargetKey,
     flow: FlowKey,
     sink: SinkIdentity,
     auxiliary: SinkIdentity,
 }
 
-fn fixture() -> Result<Fixture> {
+fn fixture<S: Store>(store: S) -> Result<Fixture<S>> {
     let f = Fixture {
-        store: UnfencedMemoryStore::new(),
+        store: Driver::new(store),
         target: TargetKey("t-1".into()),
         flow: FlowKey("pipe.flow".into()),
         sink: SinkIdentity("delta:aaaa".into()),
@@ -41,11 +219,11 @@ fn fixture() -> Result<Fixture> {
     };
     f.store.enroll(
         f.target.clone(),
-        AuthorityIncarnation("auth-1".into()),
+        PHYSICAL,
         f.sink.clone(),
         f.auxiliary.clone(),
     )?;
-    f.checkpoint(0);
+    f.checkpoint(0)?;
     Ok(f)
 }
 
@@ -60,8 +238,8 @@ fn attest(step: EffectStep) -> (String, String) {
     (format!("action:{step:?}"), PREPARED.to_string())
 }
 
-impl Fixture {
-    fn checkpoint(&self, generation: u64) {
+impl<S: Store> Fixture<S> {
+    fn checkpoint(&self, generation: u64) -> Result {
         self.store.put_checkpoint(FlowCheckpoint {
             target: self.target.clone(),
             generation,
@@ -70,7 +248,7 @@ impl Fixture {
             next_batch_sequence: 0,
             progress: json!({"offset": 0}),
             progress_digest: "p0".into(),
-        });
+        })
     }
 
     fn intent(&self, generation: u64, sequence: u64) -> Intent {
@@ -104,7 +282,9 @@ impl Fixture {
 
     fn prepare(&self, intent: &IntentId, step: EffectStep, expected_head: u64) -> EffectPrepare {
         let sink = match step {
-            EffectStep::Auxiliary | EffectStep::ResetAuxiliary => self.auxiliary.clone(),
+            EffectStep::Auxiliary
+            | EffectStep::ResetAuxiliary
+            | EffectStep::InitializeAuxiliary => self.auxiliary.clone(),
             _ => self.sink.clone(),
         };
         EffectPrepare {
@@ -207,6 +387,18 @@ fn memory_store_states_its_boundary() {
     assert!(AUTHORITY_STATEMENT.contains("not an authority"));
 }
 
+/// Names containing the separator cannot alias another identity.
+#[test]
+fn names_with_separators_do_not_alias() {
+    let one = IntentId::new(&TargetKey("a/0/b".into()), 0, &FlowKey("c".into()), 1);
+    let two = IntentId::new(&TargetKey("a".into()), 0, &FlowKey("b/0/c".into()), 1);
+    assert_ne!(one, two);
+    let flow = FlowKey("c/1".into());
+    let three = IntentId::new(&TargetKey("a".into()), 0, &flow, 2);
+    let four = IntentId::new(&TargetKey("a".into()), 0, &FlowKey("c".into()), 2);
+    assert_ne!(three, four);
+}
+
 #[test]
 fn canonical_encoding_sorts_keys_and_refuses_floats() {
     let a = json!({"b": 1, "a": [1, 2]});
@@ -220,9 +412,7 @@ fn canonical_encoding_sorts_keys_and_refuses_floats() {
     );
 }
 
-#[test]
-fn batches_run_to_completion_and_take_the_sealed_end() -> Result {
-    let f = fixture()?;
+fn batches_run_to_completion_and_take_the_sealed_end<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     assert_eq!(w1.recovery_only, None);
     let done = f.run_batch(&w1.token, 1, 0)?;
@@ -239,31 +429,34 @@ fn batches_run_to_completion_and_take_the_sealed_end() -> Result {
     Ok(())
 }
 
-#[test]
-fn enrollment_binds_identities_once() -> Result {
-    let f = fixture()?;
+fn enrollment_binds_identities_once<S: Store>(f: Fixture<S>) -> Result {
     let again = f.store.enroll(
         f.target.clone(),
-        AuthorityIncarnation("auth-1".into()),
+        PHYSICAL,
         f.sink.clone(),
         f.auxiliary.clone(),
     )?;
     assert_eq!(again.revision, 1);
     let recreated = f.store.enroll(
         f.target.clone(),
-        AuthorityIncarnation("auth-1".into()),
+        PHYSICAL,
         SinkIdentity("delta:cccc".into()),
         f.auxiliary.clone(),
     );
     assert!(matches!(recreated, Err(Outcome::IdentityMismatch { .. })));
+    let alias = f.store.enroll(
+        TargetKey("alias-of-t-1".into()),
+        PHYSICAL,
+        f.sink.clone(),
+        f.auxiliary.clone(),
+    );
+    assert!(matches!(alias, Err(Outcome::IdentityMismatch { .. })));
     Ok(())
 }
 
 /// Fault matrix: takeover after the auxiliary effect, and a stale commit
 /// racing the takeover.
-#[test]
-fn expired_owner_is_fenced_and_takeover_preserves_the_intent() -> Result {
-    let f = fixture()?;
+fn expired_owner_is_fenced_and_takeover_preserves_the_intent<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     let id = f.seal(&w1.token, 1, 0)?;
     f.effect("aux-0", &w1.token, 2, &id, EffectStep::Auxiliary)?;
@@ -308,9 +501,7 @@ fn expired_owner_is_fenced_and_takeover_preserves_the_intent() -> Result {
 
 /// Fault matrix: a lost response and a duplicate request with a changed
 /// digest.
-#[test]
-fn ratification_retry_replays_the_receipt() -> Result {
-    let f = fixture()?;
+fn ratification_retry_replays_the_receipt<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     let id = f.seal(&w1.token, 1, 0)?;
     let first = f.effect("aux-0", &w1.token, 2, &id, EffectStep::Auxiliary)?;
@@ -356,9 +547,7 @@ fn ratification_retry_replays_the_receipt() -> Result {
 
 /// An effect's identity survives a new request id: a successor retrying
 /// under its own request gets the original receipt, not a second effect.
-#[test]
-fn a_new_request_id_cannot_repeat_an_effect() -> Result {
-    let f = fixture()?;
+fn a_new_request_id_cannot_repeat_an_effect<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     let id = f.seal(&w1.token, 1, 0)?;
     let first = f.effect("aux-w1", &w1.token, 2, &id, EffectStep::Auxiliary)?;
@@ -376,9 +565,7 @@ fn a_new_request_id_cannot_repeat_an_effect() -> Result {
     Ok(())
 }
 
-#[test]
-fn moved_head_is_a_conflict() -> Result {
-    let f = fixture()?;
+fn moved_head_is_a_conflict<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     let id = f.seal(&w1.token, 1, 0)?;
     f.effect("aux-0", &w1.token, 2, &id, EffectStep::Auxiliary)?;
@@ -399,9 +586,7 @@ fn moved_head_is_a_conflict() -> Result {
     Ok(())
 }
 
-#[test]
-fn ordering_is_enforced_by_evidence() -> Result {
-    let f = fixture()?;
+fn ordering_is_enforced_by_evidence<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     let id = f.seal(&w1.token, 1, 0)?;
     assert!(matches!(
@@ -420,9 +605,7 @@ fn ordering_is_enforced_by_evidence() -> Result {
     Ok(())
 }
 
-#[test]
-fn a_sealed_intent_is_immutable_exclusive_and_finishes_once() -> Result {
-    let f = fixture()?;
+fn a_sealed_intent_is_immutable_exclusive_and_finishes_once<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     let id = f.seal(&w1.token, 1, 0)?;
     let mut altered = f.intent(0, 0);
@@ -451,9 +634,7 @@ fn a_sealed_intent_is_immutable_exclusive_and_finishes_once() -> Result {
     Ok(())
 }
 
-#[test]
-fn prepared_input_mismatch_is_refused() -> Result {
-    let f = fixture()?;
+fn prepared_input_mismatch_is_refused<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     let id = f.seal(&w1.token, 1, 0)?;
     f.store
@@ -482,9 +663,7 @@ fn prepared_input_mismatch_is_refused() -> Result {
 /// Fault matrix: no-op followed by later writes. Zero rows is not a receipt:
 /// an empty effect records an explicit one, and the next batch's effects
 /// still prepare against the unchanged head.
-#[test]
-fn an_empty_effect_records_a_noop_receipt() -> Result {
-    let f = fixture()?;
+fn an_empty_effect_records_a_noop_receipt<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     let id = f.seal(&w1.token, 1, 0)?;
     f.store
@@ -522,9 +701,7 @@ fn an_empty_effect_records_a_noop_receipt() -> Result {
 /// recreation, failure between reset effects. The crash resumes the reset
 /// and admits nothing else; the old intent stays sealed and is never
 /// advanced or acknowledged.
-#[test]
-fn reset_fences_the_old_generation_and_resumes_after_a_crash() -> Result {
-    let f = fixture()?;
+fn reset_fences_the_old_generation_and_resumes_after_a_crash<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     let old = f.seal(&w1.token, 1, 0)?;
     f.effect("aux-0", &w1.token, 2, &old, EffectStep::Auxiliary)?;
@@ -595,7 +772,7 @@ fn reset_fences_the_old_generation_and_resumes_after_a_crash() -> Result {
     assert_eq!(guard.active_intent, None);
 
     // The new generation writes the recreated auxiliary from its own head.
-    f.checkpoint(1);
+    f.checkpoint(1)?;
     let f2 = Fixture {
         auxiliary: guard.auxiliary.clone(),
         ..f
@@ -611,9 +788,7 @@ fn reset_fences_the_old_generation_and_resumes_after_a_crash() -> Result {
 
 /// Fault matrix: a lost ack response and a delayed old-generation ack. Ack
 /// uncertainty never touches committed progress.
-#[test]
-fn acks_are_generation_scoped_and_cannot_undo_data() -> Result {
-    let f = fixture()?;
+fn acks_are_generation_scoped_and_cannot_undo_data<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     let done = f.run_batch(&w1.token, 1, 0)?;
     let ack = done.ack.id;
@@ -636,9 +811,7 @@ fn acks_are_generation_scoped_and_cannot_undo_data() -> Result {
     Ok(())
 }
 
-#[test]
-fn a_confirmed_ack_is_terminal() -> Result {
-    let f = fixture()?;
+fn a_confirmed_ack_is_terminal<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     let ack = f.run_batch(&w1.token, 1, 0)?.ack.id;
     f.store.resolve_ack(&w1.token, 2, &ack, true)?;
@@ -650,9 +823,7 @@ fn a_confirmed_ack_is_terminal() -> Result {
 
 /// Each field of the token is checked on its own: a forged or stale token
 /// that differs in one field never passes on the strength of the others.
-#[test]
-fn every_token_field_is_fenced_independently() -> Result {
-    let f = fixture()?;
+fn every_token_field_is_fenced_independently<S: Store>(f: Fixture<S>) -> Result {
     let token = f.store.acquire(&f.target, "w1", 0, LEASE)?.token;
     let guard = f.guard()?;
     check_fence(&guard, &token, 1)?;
@@ -693,9 +864,7 @@ fn every_token_field_is_fenced_independently() -> Result {
 
 /// A process restarting under the same owner name takes a new epoch, so its
 /// predecessor's in-flight request is still fenced.
-#[test]
-fn a_restarted_owner_fences_its_own_previous_incarnation() -> Result {
-    let f = fixture()?;
+fn a_restarted_owner_fences_its_own_previous_incarnation<S: Store>(f: Fixture<S>) -> Result {
     let old = f.store.acquire(&f.target, "w1", 0, LEASE)?.token;
     let id = f.seal(&old, 1, 0)?;
     f.store
@@ -713,9 +882,7 @@ fn a_restarted_owner_fences_its_own_previous_incarnation() -> Result {
 
 /// Expiry alone stops an owner, with no takeover having happened: only the
 /// authority's clock decides. Renewal under a live lease keeps the epoch.
-#[test]
-fn an_expired_lease_fences_without_a_takeover() -> Result {
-    let f = fixture()?;
+fn an_expired_lease_fences_without_a_takeover<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?.token;
     let renewed = f.store.acquire(&f.target, "w1", LEASE - 1, LEASE)?;
     assert_eq!(renewed.token, w1);
@@ -728,9 +895,7 @@ fn an_expired_lease_fences_without_a_takeover() -> Result {
 
 /// A current token cannot ratify an intent that is not in the slot, even
 /// where every other record lines up.
-#[test]
-fn ratification_needs_the_active_intent() -> Result {
-    let f = fixture()?;
+fn ratification_needs_the_active_intent<S: Store>(f: Fixture<S>) -> Result {
     let token = f.store.acquire(&f.target, "w1", 0, LEASE)?.token;
     let guard = f.guard()?;
     let mut intent = f.intent(0, 0);
@@ -751,6 +916,7 @@ fn ratification_needs_the_active_intent() -> Result {
                 intent: &intent,
                 prepare: &prepare,
                 head: &head,
+                auxiliary_receipt: None,
             },
             Attestation {
                 action_digest: &prepare.action_digest,
@@ -764,9 +930,7 @@ fn ratification_needs_the_active_intent() -> Result {
 
 /// A batch step cannot be ratified under a reset, even when it was prepared
 /// against the reset's own intent.
-#[test]
-fn a_reset_ratifies_only_reset_steps() -> Result {
-    let f = fixture()?;
+fn a_reset_ratifies_only_reset_steps<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     let reset = f.reset(1);
     let token = f.store.begin_reset(&w1.token, 1, reset.clone())?;
@@ -789,9 +953,7 @@ fn a_reset_ratifies_only_reset_steps() -> Result {
 
 /// Completion rechecks where the flow stands against the sealed intent:
 /// progress and sequence both, each on its own.
-#[test]
-fn completion_refuses_moved_progress_or_sequence() -> Result {
-    let f = fixture()?;
+fn completion_refuses_moved_progress_or_sequence<S: Store>(f: Fixture<S>) -> Result {
     let token = f.store.acquire(&f.target, "w1", 0, LEASE)?.token;
     let id = f.seal(&token, 1, 0)?;
     f.effect("aux-0", &token, 2, &id, EffectStep::Auxiliary)?;
@@ -812,7 +974,7 @@ fn completion_refuses_moved_progress_or_sequence() -> Result {
         },
     ];
     for (i, checkpoint) in moved.into_iter().enumerate() {
-        f.store.put_checkpoint(checkpoint.clone());
+        f.store.put_checkpoint(checkpoint.clone())?;
         let name = format!("complete-{i}");
         assert!(matches!(
             f.store.complete_batch(&request(&name), &token, 3, &id),
@@ -829,9 +991,7 @@ fn completion_refuses_moved_progress_or_sequence() -> Result {
 /// The worked recovery trace (design, "Recovery after a crash between
 /// ratifications"): auxiliary ratified, its response lost, crash before the
 /// target effect; a new process recovers and completes.
-#[test]
-fn recovery_trace_against_the_memory_store() -> Result {
-    let f = fixture()?;
+fn recovery_trace<S: Store>(f: Fixture<S>) -> Result {
     let a = f.store.acquire(&f.target, "proc-a", 0, LEASE)?;
     let id = f.seal(&a.token, 1, 0)?;
     let aux = f.effect("aux-0", &a.token, 2, &id, EffectStep::Auxiliary)?;
@@ -891,8 +1051,141 @@ fn recovery_trace_against_the_memory_store() -> Result {
     Ok(())
 }
 
-/// The same trace against a real authority is the SQL adapter unit's target
-/// (CONTROL-STORE-REVIEW.md, build plan B2); it is not runnable here.
-#[test]
-#[ignore = "requires the transactional authority adapter (build unit B2)"]
-fn recovery_trace_against_a_real_authority() {}
+/// A target step is refused at ratification without the auxiliary receipt,
+/// even with a preparation in hand.
+fn ratification_rechecks_the_auxiliary_receipt<S: Store>(f: Fixture<S>) -> Result {
+    let token = f.store.acquire(&f.target, "w1", 0, LEASE)?.token;
+    let id = f.seal(&token, 1, 0)?;
+    let intent = f
+        .store
+        .intent(&id)
+        .ok_or_else(|| Outcome::EvidenceUnavailable {
+            reason: "intent".into(),
+        })?;
+    let prepare = f.prepare(&id, EffectStep::Target, 0);
+    let head = SinkHead {
+        sink: f.sink.clone(),
+        version: 0,
+    };
+    let refused = transitions::ratify_data(
+        &f.guard()?,
+        &token,
+        1,
+        Sealed {
+            intent: &intent,
+            prepare: &prepare,
+            head: &head,
+            auxiliary_receipt: None,
+        },
+        Attestation {
+            action_digest: &prepare.action_digest,
+            prepared_digest: PREPARED,
+        },
+    );
+    assert!(matches!(refused, Err(Outcome::EvidenceUnavailable { .. })));
+    Ok(())
+}
+
+/// A short Initialization intent occupies the same slot, needs both effects
+/// (a no-op counts, explicitly), and advances neither progress nor sequence.
+fn initialization_holds_the_slot_and_advances_nothing<S: Store>(f: Fixture<S>) -> Result {
+    let token = f.store.acquire(&f.target, "w1", 0, LEASE)?.token;
+    let init = Intent {
+        id: IntentId(format!("{}/init", f.target.0)),
+        kind: IntentKind::Initialization,
+        ..f.intent(0, 0)
+    };
+    f.store.seal_intent(&token, 1, init.clone())?;
+    assert!(matches!(
+        f.store.seal_intent(&token, 1, f.intent(0, 0)),
+        Err(Outcome::Conflict { .. })
+    ));
+    f.effect(
+        "init-target",
+        &token,
+        2,
+        &init.id,
+        EffectStep::InitializeTarget,
+    )?;
+    assert!(matches!(
+        f.store.complete_initialization(&token, 3, &init.id),
+        Err(Outcome::EvidenceUnavailable { .. })
+    ));
+    f.store.prepare_effect(
+        &token,
+        3,
+        f.prepare(&init.id, EffectStep::InitializeAuxiliary, 0),
+    )?;
+    f.step(
+        "init-aux",
+        &token,
+        3,
+        &init.id,
+        EffectStep::InitializeAuxiliary,
+        Effect::Noop,
+    )?;
+    assert!(matches!(
+        f.store
+            .complete_batch(&request("not-a-batch"), &token, 4, &init.id),
+        Err(Outcome::UnsupportedCapability { .. })
+    ));
+    f.store.complete_initialization(&token, 4, &init.id)?;
+    assert_eq!(f.guard()?.active_intent, None);
+    let checkpoint = f.store.checkpoint(&f.target, 0, &f.flow.0);
+    assert_eq!(checkpoint.map(|c| c.next_batch_sequence), Some(0));
+    f.run_batch(&token, 5, 0)?;
+    Ok(())
+}
+
+macro_rules! scenarios {
+    ($($name:ident),* $(,)?) => {
+        mod in_memory {
+            use super::*;
+            $(#[test]
+            fn $name() -> Result {
+                super::$name(fixture(UnfencedMemoryStore::new())?)
+            })*
+        }
+
+        #[cfg(feature = "turso")]
+        mod on_turso {
+            use super::*;
+            use super::authority::open;
+            $(#[test]
+            fn $name() -> Result {
+                let (dir, store) = open()?;
+                let result = super::$name(fixture(store)?);
+                drop(dir);
+                result
+            })*
+        }
+    };
+}
+
+#[cfg(feature = "turso")]
+mod authority;
+
+scenarios!(
+    batches_run_to_completion_and_take_the_sealed_end,
+    enrollment_binds_identities_once,
+    expired_owner_is_fenced_and_takeover_preserves_the_intent,
+    ratification_retry_replays_the_receipt,
+    a_new_request_id_cannot_repeat_an_effect,
+    moved_head_is_a_conflict,
+    ordering_is_enforced_by_evidence,
+    a_sealed_intent_is_immutable_exclusive_and_finishes_once,
+    prepared_input_mismatch_is_refused,
+    an_empty_effect_records_a_noop_receipt,
+    reset_fences_the_old_generation_and_resumes_after_a_crash,
+    acks_are_generation_scoped_and_cannot_undo_data,
+    a_confirmed_ack_is_terminal,
+    every_token_field_is_fenced_independently,
+    a_restarted_owner_fences_its_own_previous_incarnation,
+    an_expired_lease_fences_without_a_takeover,
+    ratification_needs_the_active_intent,
+    a_reset_ratifies_only_reset_steps,
+    completion_refuses_moved_progress_or_sequence,
+    recovery_trace,
+    initialization_holds_the_slot_and_advances_nothing,
+    ratification_rechecks_the_auxiliary_receipt,
+);

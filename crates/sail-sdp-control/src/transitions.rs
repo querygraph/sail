@@ -89,12 +89,14 @@ pub fn check_fence(
 pub fn enroll(
     existing: Option<&TargetGuard>,
     target: TargetKey,
+    physical_key: &str,
     authority: AuthorityIncarnation,
     sink: SinkIdentity,
     auxiliary: SinkIdentity,
 ) -> Result<TargetGuard, Outcome> {
     if let Some(guard) = existing {
-        if guard.sink != sink || guard.auxiliary != auxiliary {
+        if guard.physical_key != physical_key || guard.sink != sink || guard.auxiliary != auxiliary
+        {
             return Err(Outcome::IdentityMismatch {
                 reason: "target is enrolled with other sink identities".into(),
             });
@@ -103,6 +105,7 @@ pub fn enroll(
     }
     Ok(TargetGuard {
         target,
+        physical_key: physical_key.to_string(),
         authority,
         sink,
         auxiliary,
@@ -279,7 +282,7 @@ pub fn prepare_effect(
                 });
             }
         }
-        EffectStep::Auxiliary | EffectStep::Initialization => {}
+        EffectStep::Auxiliary | EffectStep::InitializeTarget | EffectStep::InitializeAuxiliary => {}
     }
     Ok(prepare)
 }
@@ -297,6 +300,8 @@ pub struct Sealed<'a> {
     pub intent: &'a Intent,
     pub prepare: &'a EffectPrepare,
     pub head: &'a SinkHead,
+    /// The auxiliary receipt of the same intent, which a target step needs.
+    pub auxiliary_receipt: Option<&'a EffectReceipt>,
 }
 
 /// `Ratify data`: the critical transition. Checks the fence, the active
@@ -363,6 +368,7 @@ fn ratify_checks(
         intent,
         prepare,
         head,
+        auxiliary_receipt,
     }: Sealed<'_>,
     attestation: Attestation<'_>,
 ) -> Result<TargetGuard, Outcome> {
@@ -376,6 +382,11 @@ fn ratify_checks(
     }
     if guard.active_intent.as_ref() != Some(&intent.id) || prepare.intent != intent.id {
         return Err(conflict("intent is not the target's active intent"));
+    }
+    if prepare.step == EffectStep::Target && auxiliary_receipt.is_none() {
+        return Err(Outcome::EvidenceUnavailable {
+            reason: "target step needs the auxiliary receipt of the same intent".into(),
+        });
     }
     if prepare.action_digest != attestation.action_digest {
         return Err(Outcome::PreparedMismatch {
@@ -395,8 +406,10 @@ fn ratify_checks(
         });
     }
     let enrolled = match prepare.step {
-        EffectStep::Auxiliary | EffectStep::ResetAuxiliary => &guard.auxiliary,
-        _ => &guard.sink,
+        EffectStep::Auxiliary | EffectStep::ResetAuxiliary | EffectStep::InitializeAuxiliary => {
+            &guard.auxiliary
+        }
+        EffectStep::Target | EffectStep::ResetTarget | EffectStep::InitializeTarget => &guard.sink,
     };
     if head.sink != *enrolled {
         return Err(Outcome::IdentityMismatch {
@@ -426,6 +439,11 @@ pub fn complete_batch(
     checkpoint: &FlowCheckpoint,
 ) -> Result<(TargetGuard, Completion), Outcome> {
     check_fence(guard, token, now)?;
+    if intent.kind != IntentKind::Batch {
+        return Err(Outcome::UnsupportedCapability {
+            reason: "not a batch intent".into(),
+        });
+    }
     if guard.active_intent.as_ref() != Some(&intent.id) {
         return Err(conflict("intent is not the target's active intent"));
     }
@@ -467,6 +485,43 @@ pub fn complete_batch(
             ack,
         },
     ))
+}
+
+/// Finish an Initialization intent: both effects have receipts, data or
+/// no-op. It advances no source progress and no batch sequence.
+pub fn complete_initialization(
+    guard: &TargetGuard,
+    token: &FenceToken,
+    now: AuthorityMillis,
+    intent: &Intent,
+    receipts: &[EffectReceipt],
+) -> Result<TargetGuard, Outcome> {
+    check_fence(guard, token, now)?;
+    if intent.kind != IntentKind::Initialization {
+        return Err(Outcome::UnsupportedCapability {
+            reason: "not an initialization intent".into(),
+        });
+    }
+    if guard.active_intent.as_ref() != Some(&intent.id) {
+        return Err(conflict("intent is not the target's active intent"));
+    }
+    for step in [
+        EffectStep::InitializeTarget,
+        EffectStep::InitializeAuxiliary,
+    ] {
+        if !receipts
+            .iter()
+            .any(|receipt| receipt.intent == intent.id && receipt.step == step)
+        {
+            return Err(Outcome::EvidenceUnavailable {
+                reason: format!("no {step:?} receipt for intent {}", intent.id.0),
+            });
+        }
+    }
+    let mut next = guard.clone();
+    next.active_intent = None;
+    next.revision += 1;
+    Ok(next)
 }
 
 /// `BeginReset`: bumps generation and epoch so old owners lose ratification

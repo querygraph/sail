@@ -22,6 +22,8 @@ pub enum TargetState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TargetGuard {
     pub target: TargetKey,
+    /// Unique across targets, so catalog aliases cannot enrol one table twice.
+    pub physical_key: String,
     pub authority: AuthorityIncarnation,
     pub sink: SinkIdentity,
     pub auxiliary: SinkIdentity,
