@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use datafusion::datasource::{MemTable, provider_as_source};
 use datafusion::logical_expr::{Expr, LogicalPlan, LogicalPlanBuilder};
 use datafusion::prelude::{SessionContext, col};
 use sail_catalog::error::{CatalogError, CatalogObject};
@@ -275,6 +276,20 @@ async fn read_table(
     })
 }
 
+/// Execute `plan` once and return a scan over the collected rows, so every
+/// later reader sees exactly these rows. The sealed batches are the
+/// prepared artifact the control-store design binds receipts to; archiving
+/// them durably is the sealed-input unit.
+async fn seal(ctx: &SessionContext, plan: LogicalPlan) -> SparkResult<LogicalPlan> {
+    let schema = Arc::new(plan.schema().as_arrow().clone());
+    let batches = ctx.execute_logical_plan(plan).await?.collect().await?;
+    let table = MemTable::try_new(schema, vec![batches])?;
+    Ok(
+        LogicalPlanBuilder::scan(RECONCILED_VIEW, provider_as_source(Arc::new(table)), None)?
+            .build()?,
+    )
+}
+
 /// `Scd1ForeachBatchHandler.execute`: validate the original rows, reconcile
 /// against the auxiliary table, publish the reconciled rows as a temporary
 /// view, merge onto the auxiliary table, then merge onto the destination.
@@ -375,11 +390,15 @@ pub(super) async fn handle_microbatch(
         .iter()
         .map(|field| field.name().clone())
         .collect();
+    // Seal the reconciled rows once: both merges and every retry consume the
+    // same winners (CDC-CONTROL-STORE-DESIGN.md, two-table protocol). A lazy
+    // plan re-executed per merge could keep a different tied `max_by` row.
+    let sealed = seal(ctx, reconciled).await?;
     ctx.extension::<CatalogManager>()?
         .create_temporary_view(
             RECONCILED_VIEW,
             CreateTemporaryViewOptions {
-                input: Arc::new(reconciled),
+                input: Arc::new(sealed),
                 columns: vec![],
                 if_not_exists: false,
                 replace: true,

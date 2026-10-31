@@ -728,3 +728,53 @@ pub(super) async fn a_parquet_destination_is_rejected_before_auxiliary_creation(
     finish(&ctx).await?;
     Ok(())
 }
+
+// CDC-CONTROL-STORE-DESIGN.md, two-table protocol: the reconciled rows are
+// sealed once; the published view is a scan over materialized rows, not a
+// plan the two merges would re-execute.
+#[tokio::test]
+async fn the_reconciled_view_is_a_sealed_scan_not_a_lazy_plan() -> TestResult {
+    let (ctx, config) = context()?;
+    let target = target();
+    create_target(&ctx, config.clone(), &target, "delta", target_columns()).await?;
+    let args = ChangeArgs::new(
+        vec![key("id")?],
+        attribute("version"),
+        ScdType::Type1,
+        None,
+        None,
+    )?;
+    let write = Scd1Write {
+        flow_name: "test_catalog.test_db.auto_cdc_flow",
+        destination: &target,
+        destination_format: Some("delta"),
+        args: &args,
+        sequencing_type: &spec::DataType::Int64,
+        case: Case::Insensitive,
+    };
+    // Two tied events for one key: the sealed view holds exactly one winner.
+    let batch = batch(&[(1, "first-tied", 7), (1, "second-tied", 7)])?;
+    let aux = ensure_auxiliary_table(&ctx, config.clone(), &write, &flow_schema(&batch)?).await?;
+    handle_microbatch(&ctx, config.clone(), &write, &aux, batch, 0).await?;
+    let view = ctx
+        .extension::<CatalogManager>()?
+        .get_temporary_view("__spark_autocdc_reconciled")
+        .await?;
+    let sail_common_datafusion::catalog::TableKind::TemporaryView { plan, .. } = view.kind else {
+        return Err("expected the reconciled temporary view".into());
+    };
+    assert!(
+        matches!(
+            plan.as_ref(),
+            datafusion::logical_expr::LogicalPlan::TableScan(_)
+        ),
+        "reconciled view must be a scan over sealed rows, got {}",
+        plan.display()
+    );
+    let winners = rows(&ctx, config.clone(), &target).await?;
+    assert_eq!(winners.len(), 1);
+    assert_eq!(winners[0][0], "1");
+    assert_eq!(winners[0][2], "7");
+    finish(&ctx).await?;
+    Ok(())
+}
