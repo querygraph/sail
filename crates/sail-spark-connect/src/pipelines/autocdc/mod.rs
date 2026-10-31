@@ -14,6 +14,11 @@
 //! conditions in [`errors`].
 
 mod attribute;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "connected by the orchestration unit")
+)]
+mod authority;
 pub(super) mod auxiliary;
 mod ddl;
 mod dedup;

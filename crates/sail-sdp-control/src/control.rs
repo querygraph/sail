@@ -11,8 +11,8 @@ use serde::de::DeserializeOwned;
 
 use crate::identity::{EffectStep, FenceToken, FlowKey, IntentId, SinkIdentity, TargetKey, escape};
 use crate::records::{
-    Ack, Completion, EffectPrepare, EffectReceipt, FlowCheckpoint, Intent, Operation, SinkHead,
-    TargetGuard,
+    Ack, AuthorityMillis, Completion, EffectPrepare, EffectReceipt, FlowCheckpoint, Intent,
+    Operation, RatifiedCommit, SinkHead, TargetGuard,
 };
 use crate::store::{Clock, Fail, Store, Table, Tx};
 use crate::transitions::{self, Acquired, Attestation, Lookup, Outcome, ResetIdentities, Sealed};
@@ -31,6 +31,23 @@ pub struct RequestId {
 pub enum Effect {
     Data,
     Noop,
+}
+
+/// What a commit staged: the head it was built on and, for data, its entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedEffect {
+    pub expected_head: u64,
+    pub staged_path: Option<String>,
+}
+
+impl StagedEffect {
+    fn effect(&self) -> Effect {
+        if self.staged_path.is_some() {
+            Effect::Data
+        } else {
+            Effect::Noop
+        }
+    }
 }
 
 fn unknown(reason: impl ToString) -> Fail {
@@ -57,6 +74,10 @@ async fn get<T: DeserializeOwned, X: Tx>(
 
 fn flow_key(target: &TargetKey, generation: u64, flow: &FlowKey) -> String {
     format!("{}/{generation}/{}", escape(&target.0), escape(&flow.0))
+}
+
+fn ratified_key(sink: &SinkIdentity, version: u64) -> String {
+    format!("{}/{version}", escape(&sink.0))
 }
 
 fn step_key(intent: &IntentId, step: EffectStep) -> String {
@@ -143,15 +164,78 @@ async fn record<T: Serialize, X: Tx>(
         .await
 }
 
-async fn ensure_head<X: Tx>(tx: &X, sink: &SinkIdentity) -> Result<(), Fail> {
+async fn ensure_head<X: Tx>(tx: &X, sink: &SinkIdentity, version: u64) -> Result<(), Fail> {
     if tx.get(Table::Head, &sink.0).await?.is_none() {
         let head = SinkHead {
             sink: sink.clone(),
-            version: 0,
+            version,
         };
         tx.put(Table::Head, &sink.0, None, &encode(&head)?).await?;
     }
     Ok(())
+}
+
+async fn ratify_in<X: Tx>(
+    tx: &X,
+    now: AuthorityMillis,
+    request: &RequestId,
+    token: &FenceToken,
+    (intent, step): (&IntentId, EffectStep),
+    attestation: Attestation<'_>,
+    effect: Effect,
+) -> Result<EffectReceipt, Fail> {
+    if let Some(receipt) = replay(tx, request).await? {
+        return Ok(receipt);
+    }
+    let key = step_key(intent, step);
+    let existing: Option<EffectReceipt> = get(tx, Table::Receipt, &key).await?;
+    if let Some(receipt) = existing {
+        if receipt.action_digest != attestation.action_digest
+            || receipt.prepared_digest != attestation.prepared_digest
+        {
+            return Err(Fail::Final(Outcome::PreparedMismatch {
+                reason: "the effect was ratified with other digests".into(),
+            }));
+        }
+        return Ok(receipt);
+    }
+    let guard = guard_of(tx, &token.target).await?;
+    let prepare: EffectPrepare = get(tx, Table::Prepare, &key).await?.ok_or_else(|| {
+        Fail::Final(Outcome::EvidenceUnavailable {
+            reason: "effect was not prepared".into(),
+        })
+    })?;
+    let head: SinkHead = get(tx, Table::Head, &prepare.sink.0)
+        .await?
+        .ok_or_else(|| {
+            Fail::Final(Outcome::IdentityMismatch {
+                reason: "sink has no head".into(),
+            })
+        })?;
+    let sealed_intent = intent_of(tx, intent).await?;
+    let auxiliary: Option<EffectReceipt> =
+        get(tx, Table::Receipt, &step_key(intent, EffectStep::Auxiliary)).await?;
+    let sealed = Sealed {
+        intent: &sealed_intent,
+        prepare: &prepare,
+        head: &head,
+        auxiliary_receipt: auxiliary.as_ref(),
+    };
+    let (next, receipt) = match effect {
+        Effect::Data => {
+            let (next, new_head, receipt) =
+                transitions::ratify_data(&guard, token, now, sealed, attestation)?;
+            tx.put(Table::Head, &new_head.sink.0, None, &encode(&new_head)?)
+                .await?;
+            (next, receipt)
+        }
+        Effect::Noop => transitions::ratify_noop(&guard, token, now, sealed, attestation)?,
+    };
+    record(tx, request, &receipt).await?;
+    put_guard(tx, &next).await?;
+    tx.put(Table::Receipt, &key, Some(&intent.0), &encode(&receipt)?)
+        .await?;
+    Ok(receipt)
 }
 
 /// Run `$body` in a transaction, rerunning it on a lost write race. A failed
@@ -215,6 +299,7 @@ impl<S: Store> Control<S> {
         physical_key: &str,
         sink: &SinkIdentity,
         auxiliary: &SinkIdentity,
+        (sink_head, auxiliary_head): (u64, u64),
     ) -> Result<TargetGuard, Outcome> {
         transact!(self, |tx| {
             let bound: Option<TargetKey> = get(&tx, Table::Physical, physical_key).await?;
@@ -234,10 +319,32 @@ impl<S: Store> Control<S> {
             )?;
             tx.put(Table::Physical, physical_key, None, &encode(target)?)
                 .await?;
-            ensure_head(&tx, sink).await?;
-            ensure_head(&tx, auxiliary).await?;
+            ensure_head(&tx, sink, sink_head).await?;
+            ensure_head(&tx, auxiliary, auxiliary_head).await?;
             put_guard(&tx, &guard).await?;
             Ok::<_, Fail>(guard)
+        })
+    }
+
+    /// Bind another physical table to an enrolled target, as the auxiliary
+    /// table of the group is.
+    pub async fn bind_physical(
+        &self,
+        target: &TargetKey,
+        physical_key: &str,
+    ) -> Result<(), Outcome> {
+        transact!(self, |tx| {
+            let bound: Option<TargetKey> = get(&tx, Table::Physical, physical_key).await?;
+            if bound.as_ref().is_some_and(|bound| bound != target) {
+                return Err(Fail::Final(Outcome::IdentityMismatch {
+                    reason: "another target enrolled this physical table".into(),
+                }));
+            }
+            let guard = guard_of(&tx, target).await?;
+            tx.put(Table::Physical, physical_key, None, &encode(target)?)
+                .await?;
+            put_guard(&tx, &guard).await?;
+            Ok::<_, Fail>(())
         })
     }
 
@@ -405,66 +512,105 @@ impl<S: Store> Control<S> {
         effect: Effect,
     ) -> Result<EffectReceipt, Outcome> {
         transact!(self, |tx| {
-            if let Some(receipt) = replay(&tx, request).await? {
-                return Ok(receipt);
-            }
-            let key = step_key(intent, step);
-            let existing: Option<EffectReceipt> = get(&tx, Table::Receipt, &key).await?;
-            if let Some(receipt) = existing {
-                if receipt.action_digest != attestation.action_digest
-                    || receipt.prepared_digest != attestation.prepared_digest
-                {
-                    return Err(Fail::Final(Outcome::PreparedMismatch {
-                        reason: "the effect was ratified with other digests".into(),
-                    }));
-                }
-                return Ok(receipt);
-            }
-            let guard = guard_of(&tx, &token.target).await?;
-            let prepare: EffectPrepare =
-                get(&tx, Table::Prepare, &key).await?.ok_or_else(|| {
-                    Fail::Final(Outcome::EvidenceUnavailable {
-                        reason: "effect was not prepared".into(),
-                    })
-                })?;
-            let head: SinkHead =
-                get(&tx, Table::Head, &prepare.sink.0)
-                    .await?
-                    .ok_or_else(|| {
-                        Fail::Final(Outcome::IdentityMismatch {
-                            reason: "sink has no head".into(),
-                        })
-                    })?;
-            let sealed_intent = intent_of(&tx, intent).await?;
-            let auxiliary: Option<EffectReceipt> = get(
+            ratify_in(
                 &tx,
-                Table::Receipt,
-                &step_key(intent, EffectStep::Auxiliary),
+                self.clock.now(),
+                request,
+                token,
+                (intent, step),
+                attestation,
+                effect,
+            )
+            .await
+        })
+    }
+
+    /// Ratify a staged effect at commit time, in one transaction with its
+    /// preparation. An unratified preparation has no effect, so a new attempt
+    /// under the same effect identity replaces it; a ratified one is
+    /// answered from its receipt.
+    pub async fn ratify_staged(
+        &self,
+        request: &RequestId,
+        token: &FenceToken,
+        (intent, step): (&IntentId, EffectStep),
+        staged: &StagedEffect,
+        attestation: Attestation<'_>,
+    ) -> Result<EffectReceipt, Outcome> {
+        transact!(self, |tx| {
+            let key = step_key(intent, step);
+            let done = tx.get(Table::Operation, &request.id).await?.is_some()
+                || tx.get(Table::Receipt, &key).await?.is_some();
+            let guard = guard_of(&tx, &token.target).await?;
+            let sink = transitions::enrolled_sink(&guard, step).clone();
+            if !done {
+                let auxiliary: Option<EffectReceipt> = get(
+                    &tx,
+                    Table::Receipt,
+                    &step_key(intent, EffectStep::Auxiliary),
+                )
+                .await?;
+                let prepare = transitions::prepare_effect(
+                    &guard,
+                    token,
+                    self.clock.now(),
+                    EffectPrepare {
+                        intent: intent.clone(),
+                        step,
+                        sink: sink.clone(),
+                        expected_head: staged.expected_head,
+                        action_digest: attestation.action_digest.to_string(),
+                        request_digest: request.digest.clone(),
+                    },
+                    auxiliary.as_ref(),
+                )?;
+                tx.put(Table::Prepare, &key, Some(&intent.0), &encode(&prepare)?)
+                    .await?;
+            }
+            let receipt = ratify_in(
+                &tx,
+                self.clock.now(),
+                request,
+                token,
+                (intent, step),
+                attestation,
+                staged.effect(),
             )
             .await?;
-            let sealed = Sealed {
-                intent: &sealed_intent,
-                prepare: &prepare,
-                head: &head,
-                auxiliary_receipt: auxiliary.as_ref(),
-            };
-            let now = self.clock.now();
-            let (next, receipt) = match effect {
-                Effect::Data => {
-                    let (next, new_head, receipt) =
-                        transitions::ratify_data(&guard, token, now, sealed, attestation)?;
-                    tx.put(Table::Head, &new_head.sink.0, None, &encode(&new_head)?)
-                        .await?;
-                    (next, receipt)
-                }
-                Effect::Noop => transitions::ratify_noop(&guard, token, now, sealed, attestation)?,
-            };
-            record(&tx, request, &receipt).await?;
-            put_guard(&tx, &next).await?;
-            tx.put(Table::Receipt, &key, Some(&intent.0), &encode(&receipt)?)
+            if let (false, Some(staged_path)) = (done, &staged.staged_path) {
+                let commit = RatifiedCommit {
+                    sink: sink.clone(),
+                    version: staged.expected_head + 1,
+                    staged_path: staged_path.clone(),
+                    action_digest: attestation.action_digest.to_string(),
+                    intent: intent.clone(),
+                    step,
+                };
+                tx.put(
+                    Table::RatifiedCommit,
+                    &ratified_key(&sink, commit.version),
+                    Some(&intent.0),
+                    &encode(&commit)?,
+                )
                 .await?;
+            }
             Ok::<_, Fail>(receipt)
         })
+    }
+
+    pub async fn ratified_commit(
+        &self,
+        sink: &SinkIdentity,
+        version: u64,
+    ) -> Result<Option<RatifiedCommit>, Outcome> {
+        transact!(self, |tx| {
+            get(&tx, Table::RatifiedCommit, &ratified_key(sink, version)).await
+        })
+    }
+
+    /// The target this physical table is enrolled under.
+    pub async fn enrolled_target(&self, physical_key: &str) -> Result<Option<TargetKey>, Outcome> {
+        transact!(self, |tx| { get(&tx, Table::Physical, physical_key).await })
     }
 
     pub async fn complete_batch(
@@ -556,8 +702,8 @@ impl<S: Store> Control<S> {
                 &receipts,
                 identities.clone(),
             )?;
-            ensure_head(&tx, &next.sink).await?;
-            ensure_head(&tx, &next.auxiliary).await?;
+            ensure_head(&tx, &next.sink, 0).await?;
+            ensure_head(&tx, &next.auxiliary, 0).await?;
             put_guard(&tx, &next).await?;
             Ok::<_, Fail>(next)
         })

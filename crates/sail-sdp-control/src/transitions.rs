@@ -35,6 +35,14 @@ pub enum Outcome {
     UnsupportedCapability { reason: String },
 }
 
+impl std::fmt::Display for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl std::error::Error for Outcome {}
+
 fn fenced(reason: impl Into<String>) -> Outcome {
     Outcome::Fenced {
         reason: reason.into(),
@@ -287,6 +295,16 @@ pub fn prepare_effect(
     Ok(prepare)
 }
 
+/// The enrolled table a step writes.
+pub fn enrolled_sink(guard: &TargetGuard, step: EffectStep) -> &SinkIdentity {
+    match step {
+        EffectStep::Auxiliary | EffectStep::ResetAuxiliary | EffectStep::InitializeAuxiliary => {
+            &guard.auxiliary
+        }
+        EffectStep::Target | EffectStep::ResetTarget | EffectStep::InitializeTarget => &guard.sink,
+    }
+}
+
 /// What the committing side attests about the staged effect.
 #[derive(Clone, Copy, Debug)]
 pub struct Attestation<'a> {
@@ -405,13 +423,7 @@ fn ratify_checks(
             reason: "sink identity differs from the preparation".into(),
         });
     }
-    let enrolled = match prepare.step {
-        EffectStep::Auxiliary | EffectStep::ResetAuxiliary | EffectStep::InitializeAuxiliary => {
-            &guard.auxiliary
-        }
-        EffectStep::Target | EffectStep::ResetTarget | EffectStep::InitializeTarget => &guard.sink,
-    };
-    if head.sink != *enrolled {
+    if head.sink != *enrolled_sink(guard, prepare.step) {
         return Err(Outcome::IdentityMismatch {
             reason: "sink is not the enrolled incarnation for this step".into(),
         });

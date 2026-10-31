@@ -21,16 +21,18 @@ use sail_plan::config::PlanConfig;
 use super::super::merge::{auxiliary_merge, target_merge};
 use super::super::schema::{Case, METADATA_COLUMN};
 use super::super::{SparkResult, UnqualifiedColumnName};
-use super::write::{column, context, create_target, finish, key, meta, metadata_column, row, rows};
+use super::write::{
+    column, context, create_target_with, finish, key, meta, metadata_column, row, rows,
+};
 use crate::pipelines::execution::run_command;
 use crate::pipelines::graph::Name;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 type Meta = (Option<i64>, Option<i64>);
 
-const VIEW: &str = "__spark_autocdc_reconciled_test";
+pub(super) const VIEW: &str = "__spark_autocdc_reconciled_test";
 
-fn aux_name() -> Name {
+pub(super) fn aux_name() -> Name {
     vec![
         "test_catalog".into(),
         "test_db".into(),
@@ -38,7 +40,7 @@ fn aux_name() -> Name {
     ]
 }
 
-fn target_name() -> Name {
+pub(super) fn target_name() -> Name {
     vec!["test_catalog".into(), "test_db".into(), "target".into()]
 }
 
@@ -74,7 +76,7 @@ fn scan(columns: Vec<(&str, ArrayRef)>) -> SparkResult<LogicalPlan> {
 }
 
 /// `minimalSchema` rows: `(id, metadata)`.
-fn minimal(rows: &[(i32, Meta)]) -> SparkResult<LogicalPlan> {
+pub(super) fn minimal(rows: &[(i32, Meta)]) -> SparkResult<LogicalPlan> {
     scan(vec![
         (
             "id",
@@ -90,7 +92,7 @@ fn minimal(rows: &[(i32, Meta)]) -> SparkResult<LogicalPlan> {
 }
 
 /// `targetSchema` rows: `(id, value, metadata)`.
-fn valued(rows: &[(i32, &str, Meta)]) -> SparkResult<LogicalPlan> {
+pub(super) fn valued(rows: &[(i32, &str, Meta)]) -> SparkResult<LogicalPlan> {
     scan(vec![
         (
             "id",
@@ -111,7 +113,7 @@ fn valued(rows: &[(i32, &str, Meta)]) -> SparkResult<LogicalPlan> {
     ])
 }
 
-async fn publish(ctx: &SessionContext, plan: LogicalPlan) -> SparkResult<()> {
+pub(super) async fn publish(ctx: &SessionContext, plan: LogicalPlan) -> SparkResult<()> {
     ctx.extension::<CatalogManager>()?
         .create_temporary_view(
             VIEW,
@@ -132,14 +134,25 @@ async fn publish(ctx: &SessionContext, plan: LogicalPlan) -> SparkResult<()> {
 
 /// `createTable(..., seedRows)`: a Delta table with `columns`, seeded by an
 /// insert-all merge from the seed rows (every seed key is new).
-async fn create_seeded(
+pub(super) async fn create_seeded(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
     name: &Name,
     columns: Vec<spec::TableColumnDefinition>,
     seed: Option<LogicalPlan>,
 ) -> SparkResult<()> {
-    create_target(ctx, config.clone(), name, "delta", columns).await?;
+    create_seeded_with(ctx, config, name, columns, seed, vec![]).await
+}
+
+pub(super) async fn create_seeded_with(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    name: &Name,
+    columns: Vec<spec::TableColumnDefinition>,
+    seed: Option<LogicalPlan>,
+    properties: Vec<(String, String)>,
+) -> SparkResult<()> {
+    create_target_with(ctx, config.clone(), name, "delta", columns, properties).await?;
     if let Some(seed) = seed {
         publish(ctx, seed).await?;
         let seed_columns: Vec<String> = ctx
@@ -168,11 +181,11 @@ async fn create_seeded(
     Ok(())
 }
 
-fn minimal_columns() -> Vec<spec::TableColumnDefinition> {
+pub(super) fn minimal_columns() -> Vec<spec::TableColumnDefinition> {
     vec![column("id", spec::DataType::Int32, true), metadata_column()]
 }
 
-fn target_columns() -> Vec<spec::TableColumnDefinition> {
+pub(super) fn target_columns() -> Vec<spec::TableColumnDefinition> {
     vec![
         column("id", spec::DataType::Int32, true),
         column("value", spec::DataType::Utf8, true),
@@ -219,7 +232,7 @@ async fn merge_target(
     .await
 }
 
-fn id_key() -> SparkResult<Vec<UnqualifiedColumnName>> {
+pub(super) fn id_key() -> SparkResult<Vec<UnqualifiedColumnName>> {
     Ok(vec![key("id")?])
 }
 

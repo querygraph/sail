@@ -148,6 +148,18 @@ pub struct Completion {
     pub ack: Ack,
 }
 
+/// A ratified log entry; recovery publishes it from here if the crash came
+/// between ratification and publication.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RatifiedCommit {
+    pub sink: SinkIdentity,
+    pub version: u64,
+    pub staged_path: String,
+    pub action_digest: String,
+    pub intent: IntentId,
+    pub step: EffectStep,
+}
+
 /// A sink's catalog-ratified head.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SinkHead {

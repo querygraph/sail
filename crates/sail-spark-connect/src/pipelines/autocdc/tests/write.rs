@@ -146,6 +146,17 @@ pub(super) async fn create_target(
     format: &str,
     columns: Vec<spec::TableColumnDefinition>,
 ) -> SparkResult<()> {
+    create_target_with(ctx, config, name, format, columns, vec![]).await
+}
+
+pub(super) async fn create_target_with(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    name: &Name,
+    format: &str,
+    columns: Vec<spec::TableColumnDefinition>,
+    properties: Vec<(String, String)>,
+) -> SparkResult<()> {
     run_command(
         ctx,
         config,
@@ -167,7 +178,7 @@ pub(super) async fn create_target(
                 cluster_by: vec![],
                 mode: spec::CreateTableMode::Create,
                 options: vec![],
-                properties: vec![],
+                properties,
             },
         },
         None,

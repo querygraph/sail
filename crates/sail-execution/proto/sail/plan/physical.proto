@@ -941,6 +941,7 @@ message DeltaCommitExecNode {
   optional string user_metadata = 7;
   DeltaCommitContext commit_context = 8;
   string lakehouse_table_json = 9;
+  optional string fenced_write_json = 10;
 }
 
 message DeltaScanByAddsExecNode {

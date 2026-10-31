@@ -74,7 +74,10 @@ impl<S: Store> Driver<S> {
         sink: SinkIdentity,
         auxiliary: SinkIdentity,
     ) -> Result<TargetGuard> {
-        self.run(self.control.enroll(&target, physical, &sink, &auxiliary))
+        self.run(
+            self.control
+                .enroll(&target, physical, &sink, &auxiliary, (0, 0)),
+        )
     }
 
     fn put_checkpoint(&self, checkpoint: FlowCheckpoint) -> Result {

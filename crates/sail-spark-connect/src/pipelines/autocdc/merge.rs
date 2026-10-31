@@ -163,6 +163,7 @@ pub(super) fn auxiliary_merge(
             }),
         ],
         with_schema_evolution: false,
+        fenced_write: None,
     }
 }
 
@@ -231,5 +232,6 @@ pub(super) fn target_merge(
             }),
         ],
         with_schema_evolution: false,
+        fenced_write: None,
     }
 }

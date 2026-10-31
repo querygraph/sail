@@ -19,12 +19,13 @@ pub enum Table {
     Prepare,
     Receipt,
     Head,
+    RatifiedCommit,
     Operation,
     Ack,
 }
 
 impl Table {
-    pub const ALL: [Table; 9] = [
+    pub const ALL: [Table; 10] = [
         Table::Target,
         Table::Physical,
         Table::Flow,
@@ -32,6 +33,7 @@ impl Table {
         Table::Prepare,
         Table::Receipt,
         Table::Head,
+        Table::RatifiedCommit,
         Table::Operation,
         Table::Ack,
     ];
@@ -45,6 +47,7 @@ impl Table {
             Table::Prepare => "sdp_effect_prepare",
             Table::Receipt => "sdp_effect_receipt",
             Table::Head => "delta_head",
+            Table::RatifiedCommit => "delta_ratified_commit",
             Table::Operation => "sdp_operation",
             Table::Ack => "sdp_ack",
         }

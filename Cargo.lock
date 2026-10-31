@@ -8440,6 +8440,7 @@ version = "0.7.2"
 dependencies = [
  "arrow-schema",
  "async-stream",
+ "async-trait",
  "datafusion",
  "fastrace",
  "futures",
@@ -8472,6 +8473,7 @@ dependencies = [
  "sail-physical-optimizer",
  "sail-plan",
  "sail-python-udf",
+ "sail-sdp-control",
  "sail-session",
  "sail-sql-analyzer",
  "sail-telemetry",
@@ -8485,6 +8487,7 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tonic-types",
+ "url",
  "uuid",
 ]
 
