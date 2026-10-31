@@ -2,6 +2,8 @@ use datafusion_expr::{cast, col, lit};
 
 use super::*;
 
+mod floating;
+
 #[test]
 fn ansi_string_cast_preserves_nested_cast_rename_decisions() -> PlanResult<()> {
     let function = ScalarUDF::from(SparkAnsiStringCast::try_new(DataType::Int32, "INT".into())?);

@@ -266,6 +266,11 @@ impl PlanResolver<'_> {
             {
                 ScalarUDF::new_from_impl(SparkCastStringToInt32::new()).call(vec![expr])
             }
+            (
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View,
+                DataType::Float32 | DataType::Float64,
+                false,
+            ) if !self.config.ansi_mode => try_cast(expr, cast_to_type),
             (from, DataType::Timestamp(time_unit, _) | DataType::Duration(time_unit), _)
                 if from.is_numeric() =>
             {
