@@ -310,3 +310,5 @@ async fn metadata_schemas(
 }
 
 mod partitions;
+
+mod basic;
