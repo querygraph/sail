@@ -50,6 +50,7 @@ fn assert_status(status: Status) -> TestResult {
 #[test]
 fn direct_and_wrapped_structured_errors_preserve_complete_connect_metadata() -> TestResult {
     let errors = [
+        sail_plan::error::PlanError::Structured(Box::new(fixture())).into(),
         SparkError::Structured(Box::new(fixture())),
         SparkError::DataFusionError(DataFusionError::External(Box::new(fixture()))),
         SparkError::ArrowError(ArrowError::ExternalError(Box::new(fixture()))),

@@ -2,6 +2,7 @@ use datafusion::arrow::error::ArrowError;
 use datafusion::common::DataFusionError;
 use sail_catalog::error::CatalogError;
 use sail_common::error::CommonError;
+use sail_common_datafusion::error::StructuredSparkError;
 use sail_python_udf::error::PyUdfError;
 use sail_sql_analyzer::error::SqlError;
 use thiserror::Error;
@@ -43,6 +44,8 @@ pub enum PlanError {
     InternalError(String),
     #[error("analysis error: {0}")]
     AnalysisError(String),
+    #[error(transparent)]
+    Structured(#[from] Box<StructuredSparkError>),
     /// A relation owned by the caller's scope has not been resolved yet.
     #[error("unresolved scoped relation: {0:?}")]
     UnresolvedRelation(Vec<String>),

@@ -115,6 +115,7 @@ impl From<PlanError> for SparkError {
             PlanError::InternalError(message) => SparkError::InternalError(message),
             PlanError::NotImplemented(message) => SparkError::NotImplemented(message),
             PlanError::AnalysisError(message) => SparkError::AnalysisError(message),
+            PlanError::Structured(error) => SparkError::Structured(error),
             PlanError::UnresolvedRelation(name) => {
                 SparkError::AnalysisError(format!("unresolved scoped relation: {name:?}"))
             }
