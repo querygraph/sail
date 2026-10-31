@@ -1,5 +1,8 @@
 //! Pipeline-specific lowering reuses the SQL grammar without executing DDL.
 
+mod dataset;
+
+pub(crate) use dataset::validate as validate_dataset;
 use either::Either;
 use sail_common::spec;
 use sail_sql_parser::ast::keywords::Table;
@@ -44,6 +47,7 @@ fn from_ast_pipeline_statement_impl(
 ) -> SqlResult<PipelineStatement> {
     match statement {
         Statement::CreatePipelineDataset(dataset) => {
+            validate_dataset(&dataset)?;
             let streaming = matches!(dataset.kind, Either::Right(_));
             let table = match dataset.kind {
                 Either::Left((materialized, _)) => Table::new(materialized.span),

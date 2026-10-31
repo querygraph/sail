@@ -9,6 +9,7 @@ use thiserror::Error;
 pub struct StructuredSparkError {
     pub class: String,
     pub condition: String,
+    /// Empty when Spark defines no SQLSTATE (for example, legacy parser errors).
     pub sql_state: String,
     pub message: String,
     pub parameters: HashMap<String, String>,

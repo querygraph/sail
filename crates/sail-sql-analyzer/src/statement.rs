@@ -130,6 +130,7 @@ fn from_ast_statement_impl(
 ) -> SqlResult<spec::Plan> {
     match statement {
         Statement::CreatePipelineDataset(dataset) => {
+            crate::pipeline::validate_dataset(&dataset)?;
             Err(crate::pipeline::direct_dataset_execution_error(matches!(
                 dataset.kind,
                 Either::Right(_)

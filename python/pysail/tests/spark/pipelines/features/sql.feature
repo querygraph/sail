@@ -153,7 +153,7 @@ Feature: Declarative pipeline SQL
     Then pipeline dataset z_invalid is not published
 
   Scenario: Dataset location is rejected during registration
-    Given pipeline SQL file location.sql fails with location.sql
+    Given pipeline SQL file location.sql fails with Specifying location is not supported
       """
       CREATE MATERIALIZED VIEW output LOCATION '/tmp/unused-pipeline-location' AS SELECT 1 AS value;
       """

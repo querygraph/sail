@@ -43,3 +43,28 @@ fn direct_pipeline_ddl_keeps_unsupported_operation_hierarchy_and_metadata()
     }
     Ok(())
 }
+
+#[test]
+fn legacy_pipeline_parse_error_preserves_absent_sqlstate() -> Result<(), Box<dyn std::error::Error>>
+{
+    let statement = sail_sql_analyzer::parser::parse_one_statement(
+        "CREATE MATERIALIZED VIEW table1 LOCATION 'dbfs:/path/to/table' AS SELECT * FROM input",
+    )?;
+    let error = sail_sql_analyzer::statement::from_ast_statement(statement)
+        .err()
+        .ok_or("expected pipeline parse error")?;
+    let status: Status = SparkError::from(error).into();
+    let details = status.get_error_details();
+    let info = details.error_info().ok_or("missing ErrorInfo")?;
+    assert_eq!(
+        info.reason,
+        "org.apache.spark.sql.catalyst.parser.ParseException"
+    );
+    assert_eq!(info.metadata["errorClass"], "_LEGACY_ERROR_TEMP_0035");
+    assert!(!info.metadata.contains_key("sqlState"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&info.metadata["messageParameters"])?,
+        serde_json::json!({"message":"Specifying location is not supported for CREATE MATERIALIZED VIEW statements. The storage location for a pipeline dataset is managed by the pipeline itself."})
+    );
+    Ok(())
+}
