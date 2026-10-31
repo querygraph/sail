@@ -42,16 +42,19 @@ impl<'a> GraphScope<'a> {
             flow,
         }
     }
+    pub fn input_name(&self, name: &[String]) -> PlanResult<Name> {
+        let raw: Name = name.iter().map(|x| x.to_ascii_lowercase()).collect();
+        if self.graph.outputs.iter().any(|x| x.name == raw) {
+            Ok(raw)
+        } else {
+            self.qualify(&raw)
+        }
+    }
 }
 
 impl RelationScope for GraphScope<'_> {
     fn resolve(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>> {
-        let raw: Name = name.iter().map(|x| x.to_ascii_lowercase()).collect();
-        let name = if self.graph.outputs.iter().any(|x| x.name == raw) {
-            raw
-        } else {
-            self.qualify(&raw)?
-        };
+        let name = self.input_name(name)?;
         if self.graph.outputs.iter().any(|x| x.name == name) {
             self.reads
                 .lock()
