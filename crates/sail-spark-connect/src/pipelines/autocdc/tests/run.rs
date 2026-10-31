@@ -16,7 +16,7 @@ use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::task_resources::TaskResourceScope;
 use tokio::runtime::Handle;
 
-use super::super::run::{FlowRun, RunRecord, checkpoint_dir, run_flow};
+use super::super::run::{FlowRun, RunRecord, checkpoint_dir, run_flow, run_flows};
 use super::super::schema::Case;
 use super::super::write::Scd1Write;
 use super::super::{ChangeArgs, ScdType, SparkResult};
@@ -537,6 +537,273 @@ async fn after_a_full_refresh_an_event_below_the_old_watermark_lands() -> TestRe
     assert_eq!(
         rows(&ctx, config.clone(), &target).await?,
         vec![row(&["1", "fresh", "5", &meta("NULL", "5")])]
+    );
+    finish(&ctx).await?;
+    Ok(())
+}
+
+// ---- FullRefreshSuite:115–182: selective full refresh over two flows ----
+
+const DECLARED_TWO: &str = "CREATE STREAMING TABLE t_a (id INT NOT NULL, version BIGINT NOT NULL, \
+     __spark_autocdc_metadata STRUCT<deleteSequence: BIGINT, upsertSequence: BIGINT>) \
+     AS SELECT 1 AS id, CAST(1 AS BIGINT) AS version, \
+     named_struct('deleteSequence', CAST(NULL AS BIGINT), 'upsertSequence', CAST(1 AS BIGINT)) AS __spark_autocdc_metadata; \
+     CREATE STREAMING TABLE t_b (id INT NOT NULL, version BIGINT NOT NULL, \
+     __spark_autocdc_metadata STRUCT<deleteSequence: BIGINT, upsertSequence: BIGINT>) \
+     AS SELECT 1 AS id, CAST(1 AS BIGINT) AS version, \
+     named_struct('deleteSequence', CAST(NULL AS BIGINT), 'upsertSequence', CAST(1 AS BIGINT)) AS __spark_autocdc_metadata";
+
+async fn declared_two() -> SparkResult<GraphDefinition> {
+    let mut graph = crate::pipelines::PipelineGraph::new(
+        "test_catalog".into(),
+        "test_db".into(),
+        Default::default(),
+    );
+    crate::pipelines::sql::prepare(
+        crate::spark::connect::pipeline_command::DefineSqlGraphElements {
+            sql_text: Some(DECLARED_TWO.into()),
+            ..Default::default()
+        },
+        |_| async {
+            Err(crate::error::SparkError::internal(
+                "no catalog expression in fixture",
+            ))
+        },
+    )
+    .await?
+    .commit(&mut graph)?;
+    Ok(graph.definition)
+}
+
+/// Full refresh of only the selected tables (`SomeTables`).
+async fn selective_refresh(
+    ctx: &datafusion::prelude::SessionContext,
+    graph: &GraphDefinition,
+    selected: &[&str],
+) -> SparkResult<()> {
+    let resolver = sail_plan::resolver::PlanResolver::new(
+        ctx,
+        ctx.extension::<SparkSession>()?.plan_config()?,
+    );
+    let mut schemas = BTreeMap::new();
+    for output in &graph.outputs {
+        let mut plans = vec![];
+        for flow in graph.flows.iter().filter(|flow| flow.target == output.name) {
+            let named = resolver
+                .resolve_named_plan(spec::Plan::Query(flow.query.clone()))
+                .await?;
+            plans.push(match named.fields {
+                Some(fields) => sail_common_datafusion::rename::logical_plan::rename_logical_plan(
+                    named.plan, &fields,
+                )?,
+                None => named.plan,
+            });
+        }
+        schemas.insert(
+            output.name.clone(),
+            Arc::new(crate::pipelines::schema::infer(ctx, output, &plans)?),
+        );
+    }
+    let selection = crate::pipelines::selection::Selection::new(
+        graph,
+        &crate::spark::connect::pipeline_command::StartRun {
+            full_refresh_selection: selected.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        },
+    )?;
+    crate::pipelines::materialize::tables(ctx, graph, &schemas, &selection).await
+}
+
+fn pair_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, true),
+        Field::new("version", DataType::Int64, true),
+    ]))
+}
+
+fn pair(id: i32, version: i64) -> Vec<ScalarValue> {
+    vec![
+        ScalarValue::Int32(Some(id)),
+        ScalarValue::Int64(Some(version)),
+    ]
+}
+
+fn qualified(name: &str) -> Name {
+    vec!["test_catalog".into(), "test_db".into(), name.into()]
+}
+
+fn pair_flow(flow: &str, source: &str, target: &str) -> Flow {
+    Flow {
+        name: qualified(flow),
+        target: qualified(target),
+        query: spec::QueryPlan::new(spec::QueryNode::Read {
+            read_type: spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
+                name: qualified(source).into(),
+                temporal: None,
+                sample: None,
+                options: vec![],
+            })),
+            is_streaming: true,
+        }),
+        sql_conf: HashMap::new(),
+        catalog: "test_catalog".into(),
+        database: "test_db".into(),
+        auto_cdc: None,
+    }
+}
+
+// FullRefreshSuite:115–182: a selective full refresh wipes only the
+// requested target's auxiliary state; the other flow keeps suppressing.
+#[tokio::test]
+async fn a_selective_full_refresh_wipes_only_the_requested_targets_state() -> TestResult {
+    let (ctx, config) = context()?;
+    let scope = TaskResourceScope::new(Handle::current());
+    let (t_a, t_b) = (qualified("t_a"), qualified("t_b"));
+    let (events_a, events_b, name_a, name_b) = (
+        qualified("events_a"),
+        qualified("events_b"),
+        qualified("flow_a"),
+        qualified("flow_b"),
+    );
+    let columns = || {
+        vec![
+            super::write::column("id", spec::DataType::Int32, false),
+            super::write::column("version", spec::DataType::Int64, false),
+            super::write::metadata_column(),
+        ]
+    };
+    create_target(&ctx, config.clone(), &t_a, "delta", columns()).await?;
+    create_target(&ctx, config.clone(), &t_b, "delta", columns()).await?;
+    let args = ChangeArgs::new(
+        vec![key("id")?],
+        attribute("version"),
+        ScdType::Type1,
+        None,
+        None,
+    )?;
+    let write_a = Scd1Write {
+        flow_name: "test_catalog.test_db.flow_a",
+        destination: &t_a,
+        destination_format: Some("delta"),
+        args: &args,
+        sequencing_type: &spec::DataType::Int64,
+        case: Case::Insensitive,
+    };
+    let write_b = Scd1Write {
+        flow_name: "test_catalog.test_db.flow_b",
+        destination: &t_b,
+        ..write_a
+    };
+    let output = |name: Name| Output {
+        name,
+        kind: OutputType::Table,
+        definition: DefineOutput::default(),
+        schema: None,
+        view: None,
+    };
+    let graph = GraphDefinition {
+        catalog: "test_catalog".into(),
+        database: "test_db".into(),
+        sql_conf: HashMap::new(),
+        outputs: vec![
+            output(events_a.clone()),
+            output(events_b.clone()),
+            output(t_a.clone()),
+            output(t_b.clone()),
+        ],
+        flows: vec![],
+    };
+    let (flow_a, flow_b) = (
+        pair_flow("flow_a", "events_a", "t_a"),
+        pair_flow("flow_b", "events_b", "t_b"),
+    );
+    let relations = BTreeMap::new();
+    let root = warehouse(&ctx)?;
+    let source_a1 = DeterministicSource::new("events_a", pair_schema());
+    source_a1.create_partition("p0");
+    source_a1.append("p0", vec![pair(1, 10)]);
+    let source_b = DeterministicSource::new("events_b", pair_schema());
+    source_b.create_partition("p0");
+    source_b.append("p0", vec![pair(1, 10)]);
+    let dir_a = checkpoint_dir(&root, &t_a, &name_a, false)?;
+    let dir_b = checkpoint_dir(&root, &t_b, &name_b, false)?;
+    let run_a = FlowRun {
+        graph: &graph,
+        flow: &flow_a,
+        relations: &relations,
+        source_name: &events_a,
+        source: &source_a1,
+        write: &write_a,
+        checkpoint: &dir_a,
+        max_rows_per_partition: 100,
+    };
+    let run_b = FlowRun {
+        flow: &flow_b,
+        source_name: &events_b,
+        source: &source_b,
+        write: &write_b,
+        checkpoint: &dir_b,
+        ..run_a
+    };
+    let outcomes = run_flows(&ctx, config.clone(), &scope, &[run_a, run_b])
+        .await
+        .map_err(|(_, error)| error)?;
+    assert_eq!(
+        outcomes.iter().map(|o| o.batches).collect::<Vec<_>>(),
+        vec![1, 1]
+    );
+    for target in [&t_a, &t_b] {
+        assert_eq!(
+            rows(&ctx, config.clone(), target).await?,
+            vec![row(&["1", "10", &meta("NULL", "10")])]
+        );
+    }
+    // Run 2: full refresh only t_a; t_b's auxiliary state must persist.
+    selective_refresh(&ctx, &declared_two().await?, &["t_a"]).await?;
+    assert!(rows(&ctx, config.clone(), &t_a).await?.is_empty());
+    assert_eq!(
+        rows(&ctx, config.clone(), &t_b).await?,
+        vec![row(&["1", "10", &meta("NULL", "10")])]
+    );
+    let source_a2 = DeterministicSource::new("events_a", pair_schema());
+    source_a2.create_partition("p0");
+    source_a2.append("p0", vec![pair(1, 5)]);
+    source_b.append("p0", vec![pair(1, 5)]);
+    let dir_a2 = checkpoint_dir(&root, &t_a, &name_a, true)?;
+    assert!(dir_a2.ends_with("1"));
+    let run_a2 = FlowRun {
+        graph: &graph,
+        flow: &flow_a,
+        relations: &relations,
+        source_name: &events_a,
+        source: &source_a2,
+        write: &write_a,
+        checkpoint: &dir_a2,
+        max_rows_per_partition: 100,
+    };
+    let run_b2 = FlowRun {
+        flow: &flow_b,
+        source_name: &events_b,
+        source: &source_b,
+        write: &write_b,
+        checkpoint: &dir_b,
+        ..run_a2
+    };
+    let outcomes = run_flows(&ctx, config.clone(), &scope, &[run_a2, run_b2])
+        .await
+        .map_err(|(_, error)| error)?;
+    assert_eq!(
+        outcomes.iter().map(|o| o.batches).collect::<Vec<_>>(),
+        vec![1, 1]
+    );
+    assert_eq!(
+        rows(&ctx, config.clone(), &t_a).await?,
+        vec![row(&["1", "5", &meta("NULL", "5")])]
+    );
+    // t_b: the seq 10 row still wins; the seq 5 event was dropped.
+    assert_eq!(
+        rows(&ctx, config.clone(), &t_b).await?,
+        vec![row(&["1", "10", &meta("NULL", "10")])]
     );
     finish(&ctx).await?;
     Ok(())

@@ -234,3 +234,24 @@ pub(super) async fn run_flow(
     }
     Ok(RunOutcome { batches, record })
 }
+
+/// `TriggeredGraphExecution`: the flows of a run start in the given
+/// (topological) order; this runs them one at a time, each to its frontier,
+/// and stops at the first failure, returning the outcomes completed before
+/// it with the error. Concurrency (`maxConcurrentFlows`) and watchdog
+/// retries are not modelled.
+pub(super) async fn run_flows(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    scope: &TaskResourceScope,
+    runs: &[FlowRun<'_>],
+) -> Result<Vec<RunOutcome>, (Vec<RunOutcome>, SparkError)> {
+    let mut outcomes = Vec::with_capacity(runs.len());
+    for run in runs {
+        match run_flow(ctx, config.clone(), scope, run).await {
+            Ok(outcome) => outcomes.push(outcome),
+            Err(error) => return Err((outcomes, error)),
+        }
+    }
+    Ok(outcomes)
+}
