@@ -6,7 +6,7 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::{FieldRef, Schema};
 use datafusion::common::{Result, plan_datafusion_err, plan_err};
 use datafusion::logical_expr::physical_planning_context::ScalarSubqueryResults;
-use datafusion::logical_expr::{LambdaParametersProgress, ValueOrLambda};
+use datafusion::logical_expr::{HigherOrderUDF, LambdaParametersProgress, ValueOrLambda};
 use datafusion::physical_expr::expressions::{LambdaExpr, LambdaVariable};
 use datafusion::physical_expr::{HigherOrderFunctionExpr, PhysicalExpr};
 use datafusion::physical_plan::ExecutionPlan;
@@ -253,6 +253,22 @@ impl RemotePhysicalProtoConverter {
             .udf
             .ok_or_else(|| plan_datafusion_err!("missing higher-order function UDF"))?;
         let fun = try_decode_higher_order_udf(&udf)?;
+        let args = self.decode_higher_order_args(fun.as_ref(), inputs, input_schema, ctx)?;
+        Ok(Arc::new(HigherOrderFunctionExpr::try_new_with_schema(
+            fun,
+            args,
+            input_schema,
+            Arc::clone(ctx.task_ctx().session_config().options()),
+        )?))
+    }
+
+    fn decode_higher_order_args(
+        &self,
+        fun: &HigherOrderUDF,
+        inputs: &[PhysicalExprNode],
+        input_schema: &Schema,
+        ctx: &PhysicalPlanDecodeContext<'_>,
+    ) -> Result<Vec<Arc<dyn PhysicalExpr>>> {
         let mut decoded_values = Vec::with_capacity(inputs.len());
         let mut value_or_lambda = Vec::with_capacity(inputs.len());
 
@@ -267,41 +283,77 @@ impl RemotePhysicalProtoConverter {
             }
         }
 
-        let param_sets = match fun.lambda_parameters(0, &value_or_lambda)? {
-            LambdaParametersProgress::Complete(params) => params,
-            LambdaParametersProgress::Partial(_) => {
-                return plan_err!("`{}` returned partial lambda parameters", fun.name());
-            }
-        };
-
-        let mut lambda_index = 0usize;
-        let args = inputs
+        // Some lambda parameter types depend on the output fields of earlier
+        // lambdas. Decode known bodies first, then resolve dependent parameters.
+        // The UDF signature owns the same iteration limit used by DataFusion.
+        let num_lambdas = value_or_lambda
             .iter()
-            .enumerate()
-            .map(|(index, input)| {
+            .filter(|arg| matches!(arg, ValueOrLambda::Lambda(_)))
+            .count();
+        for step in 0..=fun.signature().lambda_parameters_max_iterations {
+            let (complete, param_sets) = match fun.lambda_parameters(step, &value_or_lambda)? {
+                LambdaParametersProgress::Complete(params) => {
+                    (true, params.into_iter().map(Some).collect::<Vec<_>>())
+                }
+                LambdaParametersProgress::Partial(params) => (false, params),
+            };
+            // Partial results align with the present lambdas. Complete results
+            // may include unused trailing parameter sets for optional lambdas,
+            // as HigherOrderFunctionExpr permits (and this decoder did before).
+            if (!complete && param_sets.len() != num_lambdas)
+                || (complete && param_sets.len() < num_lambdas)
+            {
+                return plan_err!(
+                    "`{}` returned {} parameter sets for {num_lambdas} lambdas",
+                    fun.name(),
+                    param_sets.len()
+                );
+            }
+            let mut lambda_index = 0usize;
+            for (index, input) in inputs.iter().enumerate() {
                 if let Some((params, body)) = lambda_proto_parts(input)? {
                     let fields = param_sets.get(lambda_index).ok_or_else(|| {
                         plan_datafusion_err!("missing lambda parameter fields for `{}`", fun.name())
                     })?;
                     lambda_index += 1;
-
+                    let Some(fields) = fields else {
+                        // None means no new information; retain any prior field/body.
+                        continue;
+                    };
+                    if params.len() > fields.len() {
+                        return plan_err!(
+                            "`{}` lambda declares {} parameters but only {} are available",
+                            fun.name(),
+                            params.len(),
+                            fields.len()
+                        );
+                    }
                     let schema = extend_lambda_schema(input_schema, &params, fields);
                     let body = self.proto_to_physical_expr(body, &schema, ctx)?;
-                    Ok(Arc::new(LambdaExpr::try_new(params, body)?) as Arc<dyn PhysicalExpr>)
-                } else {
-                    decoded_values[index].clone().ok_or_else(|| {
-                        plan_datafusion_err!("missing decoded higher-order argument")
-                    })
+                    if !complete {
+                        value_or_lambda[index] =
+                            ValueOrLambda::Lambda(Some(body.return_field(&schema)?));
+                    }
+                    decoded_values[index] =
+                        Some(Arc::new(LambdaExpr::try_new(params, body)?) as Arc<dyn PhysicalExpr>);
                 }
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(Arc::new(HigherOrderFunctionExpr::try_new_with_schema(
-            fun,
-            args,
-            input_schema,
-            Arc::clone(ctx.task_ctx().session_config().options()),
-        )?))
+            }
+            if complete {
+                let args = decoded_values
+                    .into_iter()
+                    .map(|arg| {
+                        arg.ok_or_else(|| {
+                            plan_datafusion_err!("missing decoded higher-order argument")
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                return Ok(args);
+            }
+        }
+        plan_err!(
+            "`{}` exceeded its lambda parameter resolution limit",
+            fun.name()
+        )
     }
 }
 
@@ -359,3 +411,7 @@ fn extend_lambda_schema(base: &Schema, params: &[String], fields: &[FieldRef]) -
     }
     Schema::new_with_metadata(output, base.metadata().clone())
 }
+
+#[cfg(test)]
+#[path = "converter/staged_lambda_tests.rs"]
+mod staged_lambda_tests;
