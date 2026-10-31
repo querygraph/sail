@@ -308,3 +308,5 @@ async fn metadata_schemas(
     }
     Ok(schemas)
 }
+
+mod partitions;

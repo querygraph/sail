@@ -19,6 +19,8 @@ use crate::error::{SparkError, SparkResult};
 use crate::session::SparkSession;
 use crate::spark::connect::{OutputType, pipeline_command as pc};
 
+mod errors;
+
 /// Materialize the selected table metadata before executing any batch flow,
 /// matching Spark's DatasetManager. A failed write can leave an empty target.
 pub(super) async fn tables(
@@ -88,10 +90,7 @@ pub(super) async fn tables(
         }
         if !details.clustering_columns.is_empty() {
             if !details.partition_cols.is_empty() {
-                return Err(analysis(
-                    "SPECIFY_CLUSTER_BY_WITH_PARTITIONED_BY_IS_NOT_ALLOWED",
-                    quoted(&output.name),
-                ));
+                return Err(errors::partition_and_cluster());
             }
             return Err(SparkError::unsupported("pipeline table clustering"));
         }
@@ -127,9 +126,9 @@ pub(super) async fn tables(
                             || !matches!(old.transform, None | Some(PartitionTransform::Identity))
                     })
             {
-                return Err(analysis(
-                    "CANNOT_UPDATE_PARTITION_COLUMNS",
-                    quoted(&output.name),
+                return Err(errors::partition_change(
+                    &partition_by,
+                    &details.partition_cols,
                 ));
             }
             if output.kind == OutputType::Table {
