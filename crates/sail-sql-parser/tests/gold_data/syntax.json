@@ -1863,6 +1863,37 @@
               }
             },
             {
+              "name": "CreatePipelineDataset",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Keyword(Create)"
+                  },
+                  {
+                    "nonTerminal": "Either(Tuple(Keyword(Materialized), Keyword(View)), Tuple(Keyword(Streaming), Keyword(Table)))"
+                  },
+                  {
+                    "nonTerminal": "Option(Tuple(Keyword(If), Keyword(Not), Keyword(Exists)))"
+                  },
+                  {
+                    "nonTerminal": "ObjectName"
+                  },
+                  {
+                    "nonTerminal": "Option(ColumnDefinitionList)"
+                  },
+                  {
+                    "nonTerminal": "Option(Tuple(Keyword(Using), Identifier))"
+                  },
+                  {
+                    "nonTerminal": "Vector(CreateTableClause)"
+                  },
+                  {
+                    "nonTerminal": "Option(AsQueryClause)"
+                  }
+                ]
+              }
+            },
+            {
               "name": "CreateTableClause",
               "node": {
                 "choice": [
@@ -2948,19 +2979,6 @@
               }
             },
             {
-              "name": "Either(Identifier, StringLiteral)",
-              "node": {
-                "choice": [
-                  {
-                    "nonTerminal": "Identifier"
-                  },
-                  {
-                    "nonTerminal": "StringLiteral"
-                  }
-                ]
-              }
-            },
-            {
               "name": "Either(Keyword(Alter), Keyword(Change))",
               "node": {
                 "choice": [
@@ -3203,6 +3221,32 @@
                   },
                   {
                     "nonTerminal": "IdentList"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "Either(Tuple(Keyword(Materialized), Keyword(View)), Tuple(Keyword(Streaming), Keyword(Table)))",
+              "node": {
+                "choice": [
+                  {
+                    "nonTerminal": "Tuple(Keyword(Materialized), Keyword(View))"
+                  },
+                  {
+                    "nonTerminal": "Tuple(Keyword(Streaming), Keyword(Table))"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "Either(Tuple(Operator(LeftParenthesis), ObjectName, Operator(RightParenthesis)), ObjectName)",
+              "node": {
+                "choice": [
+                  {
+                    "nonTerminal": "Tuple(Operator(LeftParenthesis), ObjectName, Operator(RightParenthesis))"
+                  },
+                  {
+                    "nonTerminal": "ObjectName"
                   }
                 ]
               }
@@ -5287,6 +5331,14 @@
               }
             },
             {
+              "name": "Keyword(Flow)",
+              "node": {
+                "terminal": {
+                  "keyword": "FLOW"
+                }
+              }
+            },
+            {
               "name": "Keyword(Following)",
               "node": {
                 "terminal": {
@@ -5755,6 +5807,14 @@
               "node": {
                 "terminal": {
                   "keyword": "MATCHED"
+                }
+              }
+            },
+            {
+              "name": "Keyword(Materialized)",
+              "node": {
+                "terminal": {
+                  "keyword": "MATERIALIZED"
                 }
               }
             },
@@ -6451,6 +6511,22 @@
               "node": {
                 "terminal": {
                   "keyword": "STORED"
+                }
+              }
+            },
+            {
+              "name": "Keyword(Stream)",
+              "node": {
+                "terminal": {
+                  "keyword": "STREAM"
+                }
+              }
+            },
+            {
+              "name": "Keyword(Streaming)",
+              "node": {
+                "terminal": {
+                  "keyword": "STREAMING"
                 }
               }
             },
@@ -7849,6 +7925,14 @@
               "node": {
                 "optional": {
                   "nonTerminal": "DataType"
+                }
+              }
+            },
+            {
+              "name": "Option(DatabaseKeyword)",
+              "node": {
+                "optional": {
+                  "nonTerminal": "DatabaseKeyword"
                 }
               }
             },
@@ -10340,6 +10424,35 @@
                   {
                     "sequence": [
                       {
+                        "nonTerminal": "CreatePipelineDataset"
+                      }
+                    ]
+                  },
+                  {
+                    "sequence": [
+                      {
+                        "nonTerminal": "Keyword(Create)"
+                      },
+                      {
+                        "nonTerminal": "Keyword(Flow)"
+                      },
+                      {
+                        "nonTerminal": "ObjectName"
+                      },
+                      {
+                        "nonTerminal": "Option(Tuple(Keyword(Comment), StringLiteral))"
+                      },
+                      {
+                        "nonTerminal": "Keyword(As)"
+                      },
+                      {
+                        "nonTerminal": "Box(Statement)"
+                      }
+                    ]
+                  },
+                  {
+                    "sequence": [
+                      {
                         "nonTerminal": "Query"
                       }
                     ]
@@ -10398,20 +10511,7 @@
                         "nonTerminal": "Keyword(Catalog)"
                       },
                       {
-                        "nonTerminal": "Either(Identifier, StringLiteral)"
-                      }
-                    ]
-                  },
-                  {
-                    "sequence": [
-                      {
-                        "nonTerminal": "Keyword(Use)"
-                      },
-                      {
-                        "nonTerminal": "DatabaseKeyword"
-                      },
-                      {
-                        "nonTerminal": "ObjectName"
+                        "nonTerminal": "Expression"
                       }
                     ]
                   },
@@ -10425,6 +10525,19 @@
                       },
                       {
                         "nonTerminal": "Identifier"
+                      }
+                    ]
+                  },
+                  {
+                    "sequence": [
+                      {
+                        "nonTerminal": "Keyword(Use)"
+                      },
+                      {
+                        "nonTerminal": "Option(DatabaseKeyword)"
+                      },
+                      {
+                        "nonTerminal": "ObjectName"
                       }
                     ]
                   },
@@ -11346,6 +11459,19 @@
                   {
                     "sequence": [
                       {
+                        "nonTerminal": "Keyword(Stream)"
+                      },
+                      {
+                        "nonTerminal": "Either(Tuple(Operator(LeftParenthesis), ObjectName, Operator(RightParenthesis)), ObjectName)"
+                      },
+                      {
+                        "nonTerminal": "Option(AliasClause)"
+                      }
+                    ]
+                  },
+                  {
+                    "sequence": [
+                      {
                         "nonTerminal": "ValuesClause"
                       },
                       {
@@ -11407,6 +11533,9 @@
                       },
                       {
                         "nonTerminal": "Operator(RightParenthesis)"
+                      },
+                      {
+                        "nonTerminal": "Option(Box(TableSampleClause))"
                       },
                       {
                         "nonTerminal": "Vector(TableModifier)"
@@ -12376,6 +12505,19 @@
               }
             },
             {
+              "name": "Tuple(Keyword(Materialized), Keyword(View))",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Keyword(Materialized)"
+                  },
+                  {
+                    "nonTerminal": "Keyword(View)"
+                  }
+                ]
+              }
+            },
+            {
               "name": "Tuple(Keyword(Not), Keyword(Null))",
               "node": {
                 "sequence": [
@@ -12549,6 +12691,19 @@
                   },
                   {
                     "nonTerminal": "FileFormat"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "Tuple(Keyword(Streaming), Keyword(Table))",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Keyword(Streaming)"
+                  },
+                  {
+                    "nonTerminal": "Keyword(Table)"
                   }
                 ]
               }
@@ -12736,6 +12891,22 @@
                   },
                   {
                     "nonTerminal": "Option(Tuple(Operator(Comma), IntegerLiteral))"
+                  },
+                  {
+                    "nonTerminal": "Operator(RightParenthesis)"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "Tuple(Operator(LeftParenthesis), ObjectName, Operator(RightParenthesis))",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Operator(LeftParenthesis)"
+                  },
+                  {
+                    "nonTerminal": "ObjectName"
                   },
                   {
                     "nonTerminal": "Operator(RightParenthesis)"
