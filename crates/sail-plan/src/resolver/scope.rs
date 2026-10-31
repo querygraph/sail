@@ -12,10 +12,23 @@ pub(super) const VIEW_NAMESPACE_PART: &str = "view.catalogAndNamespace.part.";
 pub trait RelationScope: Send + Sync {
     fn resolve(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>>;
 
+    /// Resolve a target produced by a computed IDENTIFIER expression, after
+    /// native CTE lookup. Callers may distinguish this later binding phase from
+    /// named inputs. Existing scopes retain the same lookup by default.
+    fn resolve_late_bound(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>> {
+        self.resolve(name)
+    }
+
     /// Bind an external name using the caller's captured namespace. This keeps
     /// independent planning requests from mutating shared catalog defaults.
     fn qualify(&self, name: &[String]) -> PlanResult<Vec<String>> {
         Ok(name.to_vec())
+    }
+
+    /// Qualify a computed target after its late lookup hook declines it.
+    /// This defaults to the existing captured namespace policy.
+    fn qualify_late_bound(&self, name: &[String]) -> PlanResult<Vec<String>> {
+        self.qualify(name)
     }
 
     /// The captured catalog followed by namespace components, when this scope
@@ -75,6 +88,13 @@ impl RelationScope for ViewScope<'_> {
     fn resolve(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>> {
         match self.parent {
             Some(parent) => parent.resolve(&self.qualify(name)?),
+            None => Ok(None),
+        }
+    }
+
+    fn resolve_late_bound(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>> {
+        match self.parent {
+            Some(parent) => parent.resolve_late_bound(&self.qualify(name)?),
             None => Ok(None),
         }
     }

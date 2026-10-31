@@ -43,6 +43,16 @@ impl PlanResolver<'_> {
         table: spec::ReadNamedTable,
         state: &mut PlanResolverState,
     ) -> PlanResult<LogicalPlan> {
+        self.resolve_query_read_named_table_with_scope(table, state, false)
+            .await
+    }
+
+    async fn resolve_query_read_named_table_with_scope(
+        &self,
+        table: spec::ReadNamedTable,
+        state: &mut PlanResolverState,
+        late_bound: bool,
+    ) -> PlanResult<LogicalPlan> {
         let spec::ReadNamedTable {
             name,
             temporal,
@@ -102,9 +112,12 @@ impl PlanResolver<'_> {
         }
 
         let reference: Vec<String> = name.clone().into();
-        if let Some(scope) = self.relation_scope
-            && let Some(plan) = scope.resolve(&reference)?
-        {
+        let scoped = match self.relation_scope {
+            Some(scope) if late_bound => scope.resolve_late_bound(&reference)?,
+            Some(scope) => scope.resolve(&reference)?,
+            None => None,
+        };
+        if let Some(plan) = scoped {
             if temporal.is_some() {
                 return Err(PlanError::unsupported("time travel on a scoped relation"));
             }
@@ -122,6 +135,7 @@ impl PlanResolver<'_> {
             };
         }
         let reference = match self.relation_scope {
+            Some(scope) if late_bound => scope.qualify_late_bound(&reference)?,
             Some(scope) => scope.qualify(&reference)?,
             None => reference,
         };
@@ -327,7 +341,7 @@ impl PlanResolver<'_> {
         let name = sail_sql_analyzer::expression::from_ast_object_name(
             sail_sql_analyzer::parser::parse_object_name(&name_str)?,
         )?;
-        self.resolve_query_read_named_table(
+        self.resolve_query_read_named_table_with_scope(
             spec::ReadNamedTable {
                 name,
                 temporal: None,
@@ -335,6 +349,7 @@ impl PlanResolver<'_> {
                 options,
             },
             state,
+            true,
         )
         .await
     }

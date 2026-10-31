@@ -348,3 +348,6 @@ mod view_publication;
 
 #[path = "read_case_tests.rs"]
 mod read_case;
+
+#[path = "late_bound_scope_tests.rs"]
+mod late_bound_scope;
