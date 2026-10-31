@@ -5,6 +5,7 @@ mod execution;
 mod graph;
 mod materialize;
 mod properties;
+mod query_function_guard;
 mod reanalysis;
 mod schema;
 mod schema_merge;
@@ -20,6 +21,7 @@ use std::time::SystemTime;
 
 use datafusion::prelude::SessionContext;
 pub(crate) use graph::PipelineGraph;
+pub(crate) use query_function_guard::PipelineRequest;
 use sail_catalog::manager::CatalogManager;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_sql_analyzer::expression::from_ast_object_name;

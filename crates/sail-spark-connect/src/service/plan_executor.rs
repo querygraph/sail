@@ -20,6 +20,7 @@ use crate::executor::{
     Executor, ExecutorBatch, ExecutorMetadata, ExecutorMode, ExecutorOutput, ExecutorOutputStream,
     to_arrow_batch,
 };
+use crate::pipelines::PipelineRequest;
 use crate::service::config_manager::handle_sql_config;
 use crate::session::SparkSession;
 use crate::spark::connect::execute_plan_response::{
@@ -224,6 +225,7 @@ pub(crate) async fn handle_execute_merge_into_table_command(
 pub(crate) async fn handle_execute_sql_command(
     ctx: &SessionContext,
     sql: SqlCommand,
+    request: PipelineRequest,
     metadata: ExecutorMetadata,
 ) -> SparkResult<ExecutePlanResponseStream> {
     let spark = ctx.extension::<SparkSession>()?;
@@ -242,9 +244,9 @@ pub(crate) async fn handle_execute_sql_command(
             })),
         }
     };
-    let plan: spec::Plan = relation.clone().try_into()?;
+    let plan = request.parse_sql_command(relation.clone())?;
     match plan {
-        spec::Plan::Command(command) => {
+        spec::Plan::Command(command) if !request.defers_sql() => {
             let mode = ExecutorMode::command_with_completion(move |schema, data| {
                 let data = concat_batches(&schema, data.iter())?;
                 let relation = Relation {
@@ -262,7 +264,7 @@ pub(crate) async fn handle_execute_sql_command(
             });
             handle_execute_plan(ctx, spec::Plan::Command(command), metadata, mode).await
         }
-        spec::Plan::Query(_) => {
+        spec::Plan::Command(_) | spec::Plan::Query(_) => {
             let result = ExecutorBatch::SqlCommandResult(Box::new(SqlCommandResult {
                 relation: Some(relation),
             }));

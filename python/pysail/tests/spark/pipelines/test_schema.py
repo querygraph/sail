@@ -72,7 +72,8 @@ def test_declared_nonnullable_field_cannot_receive_nullable_data(pipeline_spark,
 
         @dp.materialized_view(schema=StructType([StructField("id", LongType(), nullable=False)]))
         def output():
-            return pipeline_spark.createDataFrame([(1,), (None,)], "id BIGINT")
+            # A DDL string would need an analysis RPC, which a query function may not send.
+            return pipeline_spark.createDataFrame([(1,), (None,)], StructType([StructField("id", LongType())]))
 
     with pytest.raises(AnalysisException, match="USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE"):
         run(dry=True)

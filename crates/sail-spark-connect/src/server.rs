@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::error::{ProtoFieldExt, SparkError, SparkResult};
 use crate::executor::ExecutorMetadata;
+use crate::pipelines::PipelineRequest;
 use crate::service;
 use crate::service::ExecutePlanResponseStream;
 use crate::spark::connect::analyze_plan_request::Analyze;
@@ -52,6 +53,7 @@ fn is_reattachable(
 async fn handle_command(
     ctx: &SessionContext,
     command: crate::spark::connect::command::CommandType,
+    request: PipelineRequest,
     metadata: ExecutorMetadata,
 ) -> SparkResult<ExecutePlanResponseStream> {
     use crate::spark::connect::command::CommandType;
@@ -70,7 +72,7 @@ async fn handle_command(
             service::handle_execute_write_operation_v2(ctx, write, metadata).await
         }
         CommandType::SqlCommand(sql) => {
-            service::handle_execute_sql_command(ctx, sql, metadata).await
+            service::handle_execute_sql_command(ctx, sql, request, metadata).await
         }
         CommandType::WriteStreamOperationStart(start) => {
             service::handle_execute_write_stream_operation_start(ctx, start, metadata).await
@@ -128,6 +130,7 @@ impl SparkConnectService for SparkConnectServer {
     ) -> Result<Response<Self::ExecutePlanStream>, Status> {
         let request = request.into_inner();
         debug!("{request:?}");
+        let pipeline_request = PipelineRequest::of(request.user_context.as_ref())?;
         let session_id = request.session_id;
         let user_id = request.user_context.map(|u| u.user_id).unwrap_or_default();
         let metadata = ExecutorMetadata {
@@ -144,6 +147,7 @@ impl SparkConnectService for SparkConnectServer {
             .map_err(SparkError::from)?;
         let Plan { op_type: op } = request.plan.required("plan")?;
         let op = op.required("plan op")?;
+        pipeline_request.check_execution(&op)?;
         let stream = match op {
             plan::OpType::Root(relation) => {
                 service::handle_execute_relation(&ctx, relation, metadata).await?
@@ -152,7 +156,7 @@ impl SparkConnectService for SparkConnectServer {
                 command_type: command,
             }) => {
                 let command = command.required("command")?;
-                handle_command(&ctx, command, metadata).await?
+                handle_command(&ctx, command, pipeline_request, metadata).await?
             }
             plan::OpType::CompressedOperation(_) => {
                 return Err(Status::unimplemented("compressed operation plan"));
@@ -169,6 +173,7 @@ impl SparkConnectService for SparkConnectServer {
 
         let request = request.into_inner();
         debug!("{request:?}");
+        let pipeline_request = PipelineRequest::of(request.user_context.as_ref())?;
         let session_id = request.session_id.clone();
         let user_id = request.user_context.map(|u| u.user_id).unwrap_or_default();
         let ctx = self
@@ -176,6 +181,7 @@ impl SparkConnectService for SparkConnectServer {
             .get_or_create_session_context(session_id, user_id)
             .await
             .map_err(SparkError::from)?;
+        pipeline_request.check_analysis()?;
         let analyze = request.analyze.required("analyze")?;
         let result = match analyze {
             Analyze::Schema(schema) => {

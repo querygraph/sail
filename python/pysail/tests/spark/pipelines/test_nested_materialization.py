@@ -8,7 +8,7 @@ Spark Connect retains execution entries, so each refresh registers a new graph.
 import pytest
 from pyspark import pipelines as dp
 from pyspark.pipelines.graph_element_registry import graph_element_registration_context
-from pyspark.sql.types import StructType
+from pyspark.sql.types import ArrayType, IntegerType, StructField, StructType
 
 
 @pytest.mark.parametrize("nested", [False, True], ids=["arrays-and-maps", "nested-arrays-and-maps"])
@@ -33,8 +33,10 @@ def test_nested_table_schemas_after_two_materializations(pipeline_spark, pipelin
             if nested:
                 dp.materialized_view(name="b")(lambda: pipeline_spark.sql(b_query))
             else:
+                # A DDL string would need an analysis RPC, which a query function may not send.
+                arr_schema = StructType([StructField("arr", ArrayType(IntegerType()))])
                 dp.materialized_view(name="b")(
-                    lambda: pipeline_spark.createDataFrame([([1, 3, 5],), ([2, 4, 6],)], "arr ARRAY<int>")
+                    lambda: pipeline_spark.createDataFrame([([1, 3, 5],), ([2, 4, 6],)], arr_schema)
                 )
             dp.materialized_view(name="c")(lambda: pipeline_spark.sql(c_query))
         run()
