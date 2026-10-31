@@ -57,6 +57,8 @@ impl FieldInfo {
 pub(super) struct PlanResolverStateConfig {
     /// Reject non-foldable expressions before lowering can erase their provenance.
     pub require_foldable: bool,
+    /// Table IDENTIFIER keeps subqueries unresolved while allowing type-only replacements.
+    pub table_identifier: bool,
     pub arrow_allow_large_var_types: bool,
     /// Keep source columns in COUNT arguments while resolving SQL PIVOT aggregates.
     /// Implicit pivot grouping needs those references before the aggregate is rewritten.
@@ -474,6 +476,17 @@ impl PlanResolverState {
     /// Returns the positional parameter value at the given 0-based index, if any.
     pub fn get_positional_param_value(&self, index: usize) -> Option<&ScalarValue> {
         self.positional_param_values.get(index)
+    }
+
+    /// Look up the existing named or one-based positional placeholder binding.
+    pub fn get_placeholder_value(&self, placeholder: &str) -> Option<&ScalarValue> {
+        let key = placeholder.get(1..)?;
+        self.get_param_value(key).or_else(|| {
+            key.parse::<usize>()
+                .ok()
+                .and_then(|index| index.checked_sub(1))
+                .and_then(|index| self.get_positional_param_value(index))
+        })
     }
 
     /// Enters a scope where the given lambda function parameters are in scope.

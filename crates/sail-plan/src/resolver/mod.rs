@@ -12,6 +12,7 @@ mod constraint;
 mod data_type;
 mod expression;
 mod function;
+mod identifier;
 mod lakehouse;
 mod literal;
 pub mod plan;

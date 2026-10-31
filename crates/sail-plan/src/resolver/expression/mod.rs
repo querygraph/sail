@@ -108,6 +108,19 @@ impl PlanResolver<'_> {
     ) -> PlanResult<NamedExpr> {
         use spec::Expr;
 
+        if state.config().table_identifier
+            && matches!(
+                &expr,
+                Expr::InSubquery { .. }
+                    | Expr::ScalarSubquery { .. }
+                    | Expr::Exists { .. }
+                    | Expr::Subquery { .. }
+            )
+        {
+            return Err(PlanError::analysis(
+                "[NOT_A_CONSTANT_STRING.NOT_CONSTANT] table identifier subquery is unresolved",
+            ));
+        }
         if state.config().require_foldable
             && matches!(
                 &expr,

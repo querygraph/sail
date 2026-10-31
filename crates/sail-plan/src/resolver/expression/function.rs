@@ -89,6 +89,17 @@ impl PlanResolver<'_> {
                 "[NOT_A_CONSTANT_STRING.NOT_CONSTANT] user-defined or higher-order function is not foldable",
             ));
         }
+        if state.config().table_identifier
+            && canonical_function_name == "typeof"
+            && catalog_manager
+                .get_function(&canonical_function_name)?
+                .is_none()
+        {
+            // Spark prepares this runtime replacement into a type literal before
+            // foldability validation. Its discarded argument need not be foldable;
+            // table identifier subqueries remain unresolved in the child scope.
+            state.config_mut().require_foldable = false;
+        }
         if let Some(udf) = catalog_manager.get_function(&canonical_function_name)?
             && udf.inner().is::<PySparkUnresolvedUDF>()
         {
