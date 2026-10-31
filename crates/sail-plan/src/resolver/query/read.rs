@@ -42,8 +42,9 @@ impl PlanResolver<'_> {
         &self,
         table: spec::ReadNamedTable,
         state: &mut PlanResolverState,
+        is_streaming: bool,
     ) -> PlanResult<LogicalPlan> {
-        self.resolve_query_read_named_table_with_scope(table, state, false)
+        self.resolve_query_read_named_table_with_scope(table, state, false, is_streaming)
             .await
     }
 
@@ -52,6 +53,7 @@ impl PlanResolver<'_> {
         table: spec::ReadNamedTable,
         state: &mut PlanResolverState,
         late_bound: bool,
+        is_streaming: bool,
     ) -> PlanResult<LogicalPlan> {
         let spec::ReadNamedTable {
             name,
@@ -113,8 +115,8 @@ impl PlanResolver<'_> {
 
         let reference: Vec<String> = name.clone().into();
         let scoped = match self.relation_scope {
-            Some(scope) if late_bound => scope.resolve_late_bound(&reference)?,
-            Some(scope) => scope.resolve(&reference)?,
+            Some(scope) if late_bound => scope.resolve_late_bound_read(&reference, is_streaming)?,
+            Some(scope) => scope.resolve_read(&reference, is_streaming)?,
             None => None,
         };
         if let Some(plan) = scoped {
@@ -329,6 +331,7 @@ impl PlanResolver<'_> {
         &self,
         table: spec::ReadDynamicTable,
         state: &mut PlanResolverState,
+        is_streaming: bool,
     ) -> PlanResult<LogicalPlan> {
         let spec::ReadDynamicTable {
             name,
@@ -348,6 +351,7 @@ impl PlanResolver<'_> {
             },
             state,
             true,
+            is_streaming,
         )
         .await
     }

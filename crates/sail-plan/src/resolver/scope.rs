@@ -12,11 +12,30 @@ pub(super) const VIEW_NAMESPACE_PART: &str = "view.catalogAndNamespace.part.";
 pub trait RelationScope: Send + Sync {
     fn resolve(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>>;
 
+    /// Resolve a named read without discarding its requested mode. Existing
+    /// scopes keep their lookup semantics until they opt into mode-specific inputs.
+    fn resolve_read(
+        &self,
+        name: &[String],
+        _is_streaming: bool,
+    ) -> PlanResult<Option<LogicalPlan>> {
+        self.resolve(name)
+    }
+
     /// Resolve a target produced by a computed IDENTIFIER expression, after
     /// native CTE lookup. Callers may distinguish this later binding phase from
     /// named inputs. Existing scopes retain the same lookup by default.
     fn resolve_late_bound(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>> {
         self.resolve(name)
+    }
+
+    /// Preserve the later binding phase as well as the requested read mode.
+    fn resolve_late_bound_read(
+        &self,
+        name: &[String],
+        _is_streaming: bool,
+    ) -> PlanResult<Option<LogicalPlan>> {
+        self.resolve_late_bound(name)
     }
 
     /// Bind an external name using the caller's captured namespace. This keeps
@@ -85,6 +104,24 @@ impl<'a> ViewScope<'a> {
 }
 
 impl RelationScope for ViewScope<'_> {
+    fn resolve_read(&self, name: &[String], is_streaming: bool) -> PlanResult<Option<LogicalPlan>> {
+        match self.parent {
+            Some(parent) => parent.resolve_read(&self.qualify(name)?, is_streaming),
+            None => Ok(None),
+        }
+    }
+
+    fn resolve_late_bound_read(
+        &self,
+        name: &[String],
+        is_streaming: bool,
+    ) -> PlanResult<Option<LogicalPlan>> {
+        match self.parent {
+            Some(parent) => parent.resolve_late_bound_read(&self.qualify(name)?, is_streaming),
+            None => Ok(None),
+        }
+    }
+
     fn resolve(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>> {
         match self.parent {
             Some(parent) => parent.resolve(&self.qualify(name)?),

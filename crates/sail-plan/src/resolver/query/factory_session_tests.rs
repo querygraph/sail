@@ -84,6 +84,7 @@ async fn source_read(scoped: bool, format_path: bool) -> TestResult {
                     options: vec![],
                 },
                 &mut PlanResolverState::new(),
+                false,
             )
             .await?
     } else {

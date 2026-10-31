@@ -351,3 +351,155 @@ mod read_case;
 
 #[path = "late_bound_scope_tests.rs"]
 mod late_bound_scope;
+
+#[derive(Debug, PartialEq)]
+struct ScopedRead {
+    name: Vec<String>,
+    streaming: bool,
+    late: bool,
+}
+struct ModeInputs {
+    plan: LogicalPlan,
+    reads: std::sync::Mutex<Vec<ScopedRead>>,
+}
+impl ModeInputs {
+    fn record(
+        &self,
+        name: &[String],
+        streaming: bool,
+        late: bool,
+    ) -> PlanResult<Option<LogicalPlan>> {
+        self.reads
+            .lock()
+            .map_err(|e| crate::error::PlanError::internal(e.to_string()))?
+            .push(ScopedRead {
+                name: name.to_vec(),
+                streaming,
+                late,
+            });
+        Ok(Some(self.plan.clone()))
+    }
+}
+impl RelationScope for ModeInputs {
+    fn resolve(&self, _: &[String]) -> PlanResult<Option<LogicalPlan>> {
+        Err(crate::error::PlanError::internal("read mode bypassed"))
+    }
+    fn resolve_read(&self, name: &[String], streaming: bool) -> PlanResult<Option<LogicalPlan>> {
+        self.record(name, streaming, false)
+    }
+    fn resolve_late_bound_read(
+        &self,
+        name: &[String],
+        streaming: bool,
+    ) -> PlanResult<Option<LogicalPlan>> {
+        self.record(name, streaming, true)
+    }
+}
+
+#[tokio::test]
+async fn scoped_named_and_computed_reads_preserve_mode_and_binding_phase() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let inputs = ModeInputs {
+        plan: fixture.inputs.0.clone(),
+        reads: Default::default(),
+    };
+    let resolver = PlanResolver::new(&fixture.ctx, Arc::new(PlanConfig::default()))
+        .with_relation_scope(&inputs);
+    let mut expected = vec![];
+    for streaming in [false, true] {
+        for late in [false, true] {
+            let read_type = if late {
+                spec::ReadType::DynamicTable(Box::new(spec::ReadDynamicTable {
+                    name: sail_sql_analyzer::expression::from_ast_expression(
+                        sail_sql_analyzer::parser::parse_expression("'input'")?,
+                    )?,
+                    sample: None,
+                    options: vec![],
+                }))
+            } else {
+                spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
+                    name: spec::ObjectName::bare("input"),
+                    temporal: None,
+                    sample: None,
+                    options: vec![],
+                }))
+            };
+            resolver
+                .resolve_named_plan(spec::Plan::Query(spec::QueryPlan::new(
+                    spec::QueryNode::Read {
+                        read_type,
+                        is_streaming: streaming,
+                    },
+                )))
+                .await?;
+            expected.push(ScopedRead {
+                name: vec!["input".into()],
+                streaming,
+                late,
+            });
+        }
+    }
+    let cte = sail_sql_analyzer::statement::from_ast_statement(
+        sail_sql_analyzer::parser::parse_one_statement(
+            "WITH input AS (SELECT 1 AS id) SELECT * FROM input",
+        )?,
+    )?;
+    resolver.resolve_named_plan(cte).await?;
+    assert_eq!(
+        *inputs.reads.lock().map_err(|_| "reads poisoned")?,
+        expected,
+        "CTE lookup must precede a scope read"
+    );
+    // A legacy scope which only implements resolve still handles both modes.
+    for streaming in [false, true] {
+        let mut query = input();
+        let spec::QueryNode::Read { is_streaming, .. } = &mut query.node else {
+            return Err("fixture read missing".into());
+        };
+        *is_streaming = streaming;
+        fixture
+            .resolver()
+            .resolve_named_plan(spec::Plan::Query(query))
+            .await?;
+    }
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn stored_view_scope_forwards_read_mode_and_namespace() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let inputs = ModeInputs {
+        plan: fixture.inputs.0.clone(),
+        reads: Default::default(),
+    };
+    let manager = fixture.ctx.extension::<CatalogManager>()?;
+    let properties = vec![
+        ("view.catalogAndNamespace.numParts".into(), "2".into()),
+        ("view.catalogAndNamespace.part.0".into(), "catalog".into()),
+        ("view.catalogAndNamespace.part.1".into(), "db".into()),
+    ];
+    let scope = crate::resolver::scope::ViewScope::from_properties(
+        manager.as_ref(),
+        Some(&inputs),
+        &properties,
+    )?
+    .ok_or("view scope missing")?;
+    let mut expected = vec![];
+    for streaming in [false, true] {
+        scope.resolve_read(&["input".into()], streaming)?;
+        scope.resolve_late_bound_read(&["input".into()], streaming)?;
+        for late in [false, true] {
+            expected.push(ScopedRead {
+                name: vec!["catalog".into(), "db".into(), "input".into()],
+                streaming,
+                late,
+            });
+        }
+    }
+    assert_eq!(
+        *inputs.reads.lock().map_err(|_| "reads poisoned")?,
+        expected
+    );
+    Ok(())
+}
