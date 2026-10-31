@@ -119,3 +119,7 @@ mod tests;
 #[cfg(test)]
 #[path = "identifier/provenance_tests.rs"]
 mod provenance_tests;
+
+#[cfg(test)]
+#[path = "identifier/arithmetic_tests.rs"]
+mod arithmetic_tests;
