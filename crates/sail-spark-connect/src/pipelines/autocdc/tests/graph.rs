@@ -65,9 +65,20 @@ fn define_relation_flow(
 /// against resolution failures is covered by the Connect-level Python tests.
 fn post_resolution_checks(graph: &PipelineGraph) -> SparkResult<()> {
     let definition = &graph.definition;
-    definition.validate()?;
+    // No flow here reads a view, so a query shows each flow's analyzed mode.
+    let streaming = definition
+        .flows
+        .iter()
+        .map(|flow| {
+            (
+                flow.name.clone(),
+                crate::service::is_streaming_query_plan(&flow.query),
+            )
+        })
+        .collect();
+    definition.validate(&streaming)?;
     validate_multiple_flows_globally(definition)?;
-    definition.validate()?;
+    definition.validate(&streaming)?;
     validate_temporary_views(definition)
 }
 
