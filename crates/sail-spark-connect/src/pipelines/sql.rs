@@ -97,6 +97,13 @@ where
         Err(SparkError::AnalysisError(message)) => Err(PreparationFailure::Analysis(format!(
             "Failed to resolve catalog expression: {message}"
         ))),
+        Err(SparkError::Structured(error))
+            if error.class == "org.apache.spark.sql.AnalysisException" =>
+        {
+            Err(PreparationFailure::Analysis(format!(
+                "Failed to resolve catalog expression: {error}"
+            )))
+        }
         Err(error) => Err(PreparationFailure::Evaluation(error)),
     }
 }
