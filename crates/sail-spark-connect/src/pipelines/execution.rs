@@ -53,9 +53,20 @@ pub(super) async fn execute(
             .iter()
             .find(|x| &x.target == name)
             .ok_or_else(|| analysis("PIPELINE_DATASET_WITHOUT_FLOW", name.join(".")))?;
-        let config = spark.plan_config_with_overrides(flow.sql_conf.clone())?;
-        let resolved =
-            super::reanalysis::resolve_inputs(ctx, graph, &analyzed, name, config.clone()).await?;
+        let accepted = analyzed
+            .accepted_confs
+            .get(&flow.name)
+            .ok_or_else(|| SparkError::internal("accepted flow configuration missing"))?;
+        let config = spark.plan_config_with_overrides(accepted.clone())?;
+        let resolved = super::reanalysis::resolve_inputs(
+            ctx,
+            graph,
+            &analyzed,
+            name,
+            config.clone(),
+            accepted,
+        )
+        .await?;
         let scope = GraphScope::new(graph, &resolved, flow);
         run_command(ctx, config, table_write_command(output, flow), Some(&scope)).await?;
     }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Mutex, Weak};
 
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -11,10 +12,12 @@ use sail_catalog::provider::{
     CreateDatabaseOptions, CreateTableColumnOptions, CreateTableMode, CreateTableOptions,
 };
 use sail_common_datafusion::datasource::{DataSource, DataSourceRegistry, SinkInfo, SourceInfo};
+use sail_common_datafusion::extension::SessionExtensionAccessor;
 
 use super::*;
 use crate::pipelines::graph::PipelineGraph;
 use crate::pipelines::{analysis, catalog_preparation_tests, sql};
+use crate::session::SparkSession;
 use crate::spark::connect::pipeline_command as pc;
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
@@ -152,6 +155,7 @@ async fn separate_commands_reresolve_views_and_release_each_provider() -> TestRe
             &analyzed,
             &target,
             ctx.extension::<SparkSession>()?.plan_config()?,
+            &HashMap::new(),
         )
         .await?;
         assert_eq!(resolved.len(), 1);
@@ -195,8 +199,15 @@ async fn table_stops_reanalysis_and_uses_the_consuming_command_configuration() -
         .clone();
     assert!(!config.case_sensitive);
     config.case_sensitive = true;
-    let resolved =
-        resolve_inputs(&ctx, &graph, &analyzed, &name("target"), Arc::new(config)).await?;
+    let resolved = resolve_inputs(
+        &ctx,
+        &graph,
+        &analyzed,
+        &name("target"),
+        Arc::new(config),
+        &HashMap::new(),
+    )
+    .await?;
     assert_eq!(resolved.len(), 1);
     assert!(resolved.contains_key(&name("barrier")));
     let calls = events(&trace)?;
@@ -232,7 +243,7 @@ async fn graph_persisted_view_uses_its_definition_namespace_without_catalog_publ
         .await?;
     table(&ctx, &["test_catalog", "view_db", "backing"], "namespace").await?;
     table(&ctx, &["backing"], "wrong-namespace").await?;
-    let graph = definition("USE view_db; SET spark.sql.caseSensitive=true; CREATE VIEW p AS SELECT id FROM backing; USE test_db; SET spark.sql.caseSensitive=false; CREATE MATERIALIZED VIEW target AS SELECT id FROM view_db.p").await?;
+    let graph = definition("USE view_db; SET spark.sql.caseSensitive=true; CREATE VIEW p AS SELECT id FROM backing; USE test_db; SET spark.sql.caseSensitive=true; CREATE MATERIALIZED VIEW target AS SELECT id FROM view_db.p").await?;
     let analyzed = analysis::analyze(&ctx, &graph).await?;
     let baseline = events(&trace)?.len();
     let resolved = resolve_inputs(
@@ -240,7 +251,9 @@ async fn graph_persisted_view_uses_its_definition_namespace_without_catalog_publ
         &graph,
         &analyzed,
         &name("target"),
-        ctx.extension::<SparkSession>()?.plan_config()?,
+        ctx.extension::<SparkSession>()?
+            .plan_config_with_overrides(analyzed.accepted_confs[&name("target")].clone())?,
+        &analyzed.accepted_confs[&name("target")],
     )
     .await?;
     assert!(resolved.contains_key(&vec!["test_catalog".into(), "view_db".into(), "p".into()]));

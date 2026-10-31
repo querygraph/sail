@@ -1,13 +1,4 @@
 mod analysis;
-// Pure flow-configuration arithmetic; wired by the resolver-side unit, so the
-// expectation below is fulfilled until then and fails the build once it is wired.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by the first-pass/merge resolver wiring, a separate unit"
-    )
-)]
 mod config;
 mod execution;
 mod graph;

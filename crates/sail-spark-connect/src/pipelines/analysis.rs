@@ -6,11 +6,9 @@ use datafusion::common::DFSchema;
 use datafusion::logical_expr::{EmptyRelation, LogicalPlan};
 use datafusion::prelude::SessionContext;
 use sail_catalog::provider::CreateViewOptions;
-use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_plan::error::{PlanError, PlanResult};
-use sail_plan::resolver::PlanResolver;
 use sail_plan::resolver::scope::RelationScope;
 
 use super::graph::{Flow, GraphDefinition, Name, analysis, quoted};
@@ -100,6 +98,7 @@ pub(super) struct AnalyzedGraph {
     pub dependencies: BTreeMap<Name, BTreeSet<Name>>,
     pub schemas: BTreeMap<Name, SchemaRef>,
     pub publications: BTreeMap<Name, CreateViewOptions>,
+    pub accepted_confs: BTreeMap<Name, HashMap<String, String>>,
 }
 
 pub(super) async fn analyze(
@@ -112,6 +111,9 @@ pub(super) async fn analyze(
     let mut order = vec![];
     let mut dependencies = BTreeMap::new();
     let mut publications = BTreeMap::new();
+    let mut accepted_confs = BTreeMap::new();
+    let base = HashMap::new();
+    let source_case_sensitive = spark.plan_config()?.case_sensitive;
     while order.len() < graph.outputs.len() {
         let before = order.len();
         for output in &graph.outputs {
@@ -122,31 +124,22 @@ pub(super) async fn analyze(
             let mut plans = vec![];
             let mut pending = false;
             for flow in graph.flows.iter().filter(|x| x.target == output.name) {
-                let scope = GraphScope {
+                let context = super::config::resolve::FlowContext {
+                    ctx,
                     graph,
                     resolved: &resolved,
-                    reads: Mutex::default(),
-                    flow,
+                    accepted: &accepted_confs,
+                    base: &base,
+                    source_case_sensitive,
                 };
-                let config = spark.plan_config_with_overrides(flow.sql_conf.clone())?;
-                let resolver = PlanResolver::new(ctx, config).with_relation_scope(&scope);
-                let result = match &output.view {
-                    Some(definition) => resolver
-                        .resolve_view_publication(definition.clone())
-                        .await
-                        .map(|(plan, options)| {
+                match context.resolve(flow, output.view.as_ref()).await? {
+                    super::config::resolve::FlowResolution::Resolved(result) => {
+                        inputs.extend(result.reads);
+                        accepted_confs.insert(flow.name.clone(), result.accepted);
+                        if let Some(options) = result.publication {
                             publications.insert(output.name.clone(), options);
-                            plan
-                        }),
-                    None => {
-                        resolver
-                            .resolve_named_plan(spec::Plan::Query(flow.query.clone()))
-                            .await
-                    }
-                };
-                inputs.extend(scope.reads.into_inner()?);
-                match result {
-                    Ok(plan) => {
+                        }
+                        let plan = result.plan;
                         let plan = if let Some(fields) = plan.fields {
                             rename_logical_plan(plan.plan, &fields)?
                         } else {
@@ -154,11 +147,11 @@ pub(super) async fn analyze(
                         };
                         plans.push(plan);
                     }
-                    Err(PlanError::UnresolvedRelation(_)) => {
+                    super::config::resolve::FlowResolution::Pending(reads) => {
+                        inputs.extend(reads);
                         pending = true;
                         break;
                     }
-                    Err(error) => return Err(error.into()),
                 }
             }
             dependencies.insert(output.name.clone(), inputs);
@@ -234,6 +227,7 @@ pub(super) async fn analyze(
             .map(|(name, plan)| (name, Arc::new(plan.schema().as_arrow().clone())))
             .collect(),
         publications,
+        accepted_confs,
     })
 }
 

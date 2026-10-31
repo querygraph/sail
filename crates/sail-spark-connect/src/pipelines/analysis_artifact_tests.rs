@@ -11,6 +11,7 @@ use datafusion::common::{Result, internal_datafusion_err};
 use datafusion::datasource::{MemTable, TableProvider, provider_as_source};
 use datafusion::logical_expr::{Expr, LogicalPlan, TableSource, TableType};
 use datafusion::physical_plan::ExecutionPlan;
+use sail_common::spec;
 use sail_common_datafusion::datasource::{DataSource, DataSourceRegistry, SinkInfo, SourceInfo};
 
 use super::*;
