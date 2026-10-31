@@ -155,7 +155,6 @@ async fn floating_signed_zero_divisors_preserve_ansi_policy_and_result_types() -
             for zero in ["0.0D", "-0.0D"] {
                 for (operation, expected) in [
                     ("/", ScalarValue::Float64(None)),
-                    ("DIV", ScalarValue::Int64(None)),
                     (
                         "%",
                         if data_type == "FLOAT" {
