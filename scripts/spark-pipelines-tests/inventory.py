@@ -15,9 +15,7 @@ import subprocess
 from pathlib import Path
 
 SPARK_COMMIT = "617618396087429b5627a86ce933bb0f5d6645cb"
-CALL = re.compile(
-    r"\b(test|testQuietly|testWithName|registerTest|gridTest|namedGridTest|booleanGridTest)\s*\("
-)
+CALL = re.compile(r"\b(test|testQuietly|testWithName|registerTest|gridTest|namedGridTest|booleanGridTest)\s*\(")
 
 
 def argument(source: str, start: int) -> tuple[str, int]:
@@ -59,26 +57,50 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     root = args.spark_source.resolve()
-    commit = subprocess.check_output(
-        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
-    ).strip()
+    commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
     if commit != SPARK_COMMIT:
         parser.error(f"Expected {SPARK_COMMIT}, found {commit}")
     roots = [
-        "sql/pipelines/src/test",
+        "sql/pipelines/src/test/scala",
         "sql/connect/server/src/test/scala/org/apache/spark/sql/connect/pipelines",
+        "sql/hive/src/test/scala/org/apache/spark/sql/hive/pipelines",
     ]
-    subprocess.run(
-        ["git", "-C", str(root), "diff", "--exit-code", "HEAD", "--", *roots], check=True
-    )
+    command = "sql/core/src/test/scala/org/apache/spark/sql/execution/command/"
+    service = "sql/connect/server/src/test/scala/org/apache/spark/sql/connect/service/"
+    # Shared suites contain unrelated tests. These source-pin-bound declarations
+    # select only their SDP obligations; dedicated parser suites retain all calls.
+    mixed = {
+        command + "DDLSuite.scala": {2522, 2533, 2544},
+        service + "SparkConnectSessionHolderSuite.scala": {676},
+        service + "SparkConnectSessionManagerSuite.scala": {158},
+        "sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/HiveDDLSuite.scala": set(),
+    }
+    extra = [
+        command + "CreatePipelineDatasetAsSelectParserSuiteBase.scala",
+        command + "v2/CreateMaterializedViewAsSelectParserSuite.scala",
+        command + "v2/CreateStreamingTableAsSelectParserSuite.scala",
+        command + "v2/CreateStreamingTableParserSuite.scala",
+        command + "v2/CreateFlowCommandSuite.scala",
+        *mixed,
+    ]
+    names = subprocess.check_output(
+        ["git", "-C", str(root), "ls-tree", "-r", "--name-only", SPARK_COMMIT, "--", *roots, *extra],
+        text=True,
+    ).splitlines()
     cases = []
     files = {}
-    for path in sorted(path for directory in roots for path in (root / directory).rglob("*.scala")):
-        source = path.read_text()
-        name = path.relative_to(root).as_posix()
+    for name in sorted(name for name in names if name.endswith(".scala")):
+        # Read immutable Git blobs, including files absent from a sparse checkout.
+        data = subprocess.check_output(["git", "-C", str(root), "show", f"{SPARK_COMMIT}:{name}"])
+        source = data.decode()
+        files[name] = hashlib.sha256(data).hexdigest()
+        selected = set()
         for match in CALL.finditer(source):
             expression, _ = argument(source, match.end())
             line = source.count("\n", 0, match.start()) + 1
+            if name in mixed and line not in mixed[name]:
+                continue
+            selected.add(line)
             cases.append(
                 {
                     "id": f"{name}:{line}",
@@ -90,13 +112,14 @@ def main() -> None:
                     "sail_tests": [],
                 }
             )
-            files[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        if name in mixed and selected != mixed[name]:
+            raise RuntimeError(f"Pinned SDP declarations not found in {name}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(
             {
                 "spark_commit": commit,
-                "kind": "static Scala test call sites; parameter expansion outstanding",
+                "kind": "static SDP declaration sites including parser/lifecycle scope; runtime expansion separate",
                 "source_sha256": files,
                 "cases": cases,
             },
