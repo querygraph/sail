@@ -24,3 +24,6 @@ where
     /// of the input. This makes the options available during parsing without cloning.
     fn parser(args: A, options: &'a ParserOptions) -> impl Parser<'a, I, Self, E> + Clone;
 }
+
+#[cfg(test)]
+mod tests;

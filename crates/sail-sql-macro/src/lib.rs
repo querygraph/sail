@@ -14,7 +14,7 @@ pub(crate) mod utils;
 /// For enums, the variants are parsed as choices (or nested choices for enums with many variants).
 /// For structs, the fields are parsed sequentially.
 ///
-/// The parser cannot be derived for enums with unit variants, or structs with no fields.
+/// Unit variants require a custom variant parser. Structs with no fields are not supported.
 /// The parser cannot be derived for types corresponding to a grammar with left recursion,
 /// or a grammar requiring operator precedence handling.
 /// In such cases, the `TreeParser` trait should be implemented manually.
@@ -58,6 +58,12 @@ pub(crate) mod utils;
 ///   Such unit argument is accepted for terminal parsers or derived parsers without the
 ///   `parser(dependency = "...")` attribute.
 ///
+///   On an enum variant, `function` instead supplies the complete parser for that
+///   variant. It receives the same declared parsers and SQL options as a field hook,
+///   and returns the containing enum. The enum's choice, boxing and label handling
+///   still apply. Fields keep their AST layout and need no `TreeParser` implementation.
+///   Field-level `parser` attributes cannot be combined with a custom variant parser.
+///
 /// * `parser(backtrack)`
 ///
 ///   This can be specified for individual `Option<T>` fields. The parser first tries the
@@ -70,7 +76,7 @@ pub(crate) mod utils;
 ///   so an explicit assertion field may be needed to check its boundary. Annotating multiple
 ///   fields can increase parsing costs when several interpretations fail.
 ///
-/// The `parser` attribute is not allowed for at the enum variant level.
+/// Only `parser(function = expr)` is supported at the enum variant level.
 #[proc_macro_derive(TreeParser, attributes(parser))]
 pub fn derive_tree_parser(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

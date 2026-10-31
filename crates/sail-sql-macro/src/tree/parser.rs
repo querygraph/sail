@@ -171,11 +171,24 @@ fn derive_fields(
 }
 
 fn derive_enum_variant(enum_name: &Ident, variant: &Variant) -> syn::Result<TokenStream> {
-    AttributeExtractor::try_new(ATTRIBUTE, &variant.attrs)?.expect_empty()?;
+    let mut extractor = AttributeExtractor::try_new(ATTRIBUTE, &variant.attrs)?;
+    let function = extractor.extract_argument_value(AttributeArgument::FUNCTION, Ok)?;
+    extractor.expect_empty()?;
+    if let Some(function) = function {
+        // A variant parser constructs the existing enum directly. Field parser
+        // attributes would be ignored, so reject them rather than hide a typo.
+        for field in &variant.fields {
+            AttributeExtractor::try_new(ATTRIBUTE, &field.attrs)?.expect_empty()?;
+        }
+        return Ok(quote! { { let f = #function; f(args.clone(), options) } });
+    }
     let variant_name = &variant.ident;
     let name = quote! { #enum_name::#variant_name };
     derive_fields(name, variant, &variant.fields)
 }
+
+#[cfg(test)]
+mod tests;
 
 fn derive_struct(struct_name: &Ident, fields: &Fields) -> syn::Result<TokenStream> {
     derive_fields(quote! { #struct_name }, fields, fields)
