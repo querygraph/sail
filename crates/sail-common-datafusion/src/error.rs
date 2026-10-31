@@ -1,6 +1,5 @@
 mod catalog;
 mod identifier;
-mod structured;
 
 use std::collections::HashSet;
 use std::fmt;
@@ -10,8 +9,8 @@ pub use catalog::catalog_not_found_error;
 use datafusion::arrow::error::ArrowError;
 use datafusion_common::DataFusionError;
 pub use identifier::quote_sql_identifier;
+pub use sail_common::error::StructuredSparkError;
 use serde::{Deserialize, Serialize};
-pub use structured::StructuredSparkError;
 use thiserror::Error;
 
 /// An error with a cause received from a remote worker.

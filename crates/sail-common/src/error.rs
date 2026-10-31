@@ -1,3 +1,8 @@
+mod identifier;
+mod structured;
+
+pub use identifier::quote_sql_identifier;
+pub use structured::StructuredSparkError;
 use thiserror::Error;
 
 pub type CommonResult<T> = Result<T, CommonError>;
