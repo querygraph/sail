@@ -22,6 +22,7 @@ use crate::catalog::SparkCatalogObjectDisplay;
 use crate::config::PlanConfig;
 use crate::formatter::SparkPlanFormatter;
 use crate::function::common::{FunctionContextInput, ScalarFunctionBuilder, ScalarFunctionInput};
+use crate::function::constant_context::ConstantContext;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -305,7 +306,7 @@ fn non_foldable_annotation_prevents_builder_invocation() -> TestResult {
             arguments: vec![],
             function_context: FunctionContextInput {
                 require_foldable,
-                constant_context: false,
+                constant_context: ConstantContext::Ordinary,
                 argument_display_names: &[],
                 plan_config: &config,
                 session_context: &context,

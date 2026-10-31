@@ -6,6 +6,7 @@ use datafusion_common::DFSchema;
 use super::tests::{context, expression};
 use super::*;
 use crate::config::PlanConfig;
+use crate::function::constant_context::ConstantContext;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -34,7 +35,7 @@ async fn constant_type_validation_precedes_arithmetic_and_restores_ordinary_poli
                     .contains("NOT_A_CONSTANT_STRING.WRONG_TYPE"),
                 "ansi={ansi_mode} {sql}: {error}"
             );
-            assert!(!state.config().constant_context);
+            assert_eq!(state.config().constant_context, ConstantContext::Ordinary);
             assert!(!state.config().require_foldable);
         }
         // The datatype must remain BIGINT even when ANSI mode would evaluate
@@ -51,7 +52,7 @@ async fn constant_type_validation_precedes_arithmetic_and_restores_ordinary_poli
                 .await?,
             "foo"
         );
-        assert!(!state.config().constant_context);
+        assert_eq!(state.config().constant_context, ConstantContext::Ordinary);
         let plan = sail_sql_analyzer::statement::from_ast_statement(
             sail_sql_analyzer::parser::parse_one_statement("SELECT 1 DIV 0")?,
         )?;

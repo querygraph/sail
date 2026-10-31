@@ -14,6 +14,7 @@ use crate::function::common::ScalarFunction;
 
 mod aggregate;
 pub(crate) mod common;
+pub(crate) mod constant_context;
 pub(crate) mod datetime_utils;
 mod generator;
 mod metadata;

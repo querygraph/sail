@@ -6,6 +6,7 @@ use datafusion_expr::LogicalPlan;
 use sail_common::spec;
 
 use crate::error::{PlanError, PlanResult};
+use crate::function::constant_context::ConstantContext;
 use crate::resolver::PlanResolver;
 use crate::resolver::expression::NamedExpr;
 use crate::resolver::query::{CteInfo, CteKind, MissingInputBoundaries, MissingInputResolution};
@@ -58,7 +59,7 @@ pub(super) struct PlanResolverStateConfig {
     /// Reject non-foldable expressions before lowering can erase their provenance.
     pub require_foldable: bool,
     /// Lower constant-name arguments without losing their function foldability.
-    pub constant_context: bool,
+    pub constant_context: ConstantContext,
     /// Table IDENTIFIER keeps subqueries unresolved while allowing type-only replacements.
     pub table_identifier: bool,
     pub arrow_allow_large_var_types: bool,

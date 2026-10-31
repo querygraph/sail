@@ -288,7 +288,12 @@ impl PlanResolver<'_> {
             func
         };
 
-        let func = if non_foldable && state.config().constant_context {
+        let func = if non_foldable
+            && state
+                .config()
+                .constant_context
+                .retain_function_foldability()
+        {
             ScalarFunctionBuilder::mark_non_foldable(func)
         } else {
             func

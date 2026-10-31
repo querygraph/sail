@@ -13,6 +13,7 @@ use sail_sql_analyzer::expression::from_ast_object_name;
 use sail_sql_analyzer::parser::parse_object_name;
 
 use crate::error::{PlanError, PlanResult};
+use crate::function::constant_context::ConstantContext;
 use crate::resolver::PlanResolver;
 use crate::resolver::state::PlanResolverState;
 
@@ -32,7 +33,7 @@ impl PlanResolver<'_> {
         let schema = Arc::new(DFSchema::empty());
         let mut state = PlanResolverState::new();
         state.config_mut().require_foldable = true;
-        state.config_mut().constant_context = true;
+        state.config_mut().constant_context = ConstantContext::Identifier;
         let resolved = self
             .resolve_expression(expression, &schema, &mut state)
             .await

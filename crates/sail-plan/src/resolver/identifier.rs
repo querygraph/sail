@@ -10,6 +10,7 @@ use sail_common::spec;
 use sail_common_datafusion::literal::LiteralEvaluator;
 
 use crate::error::{PlanError, PlanResult};
+use crate::function::constant_context::ConstantContext;
 use crate::resolver::PlanResolver;
 use crate::resolver::state::PlanResolverState;
 
@@ -23,7 +24,7 @@ impl PlanResolver<'_> {
     ) -> PlanResult<String> {
         let mut scope = state.enter_config_scope();
         scope.state().config_mut().require_foldable = true;
-        scope.state().config_mut().constant_context = true;
+        scope.state().config_mut().constant_context = ConstantContext::Identifier;
         scope.state().config_mut().table_identifier = true;
         let resolved = self
             .resolve_expression(expression, &Arc::new(DFSchema::empty()), scope.state())
@@ -51,7 +52,7 @@ impl PlanResolver<'_> {
         state: &mut PlanResolverState,
     ) -> PlanResult<String> {
         let mut scope = state.enter_config_scope();
-        scope.state().config_mut().constant_context = true;
+        scope.state().config_mut().constant_context = ConstantContext::Identifier;
         let resolved = self
             .resolve_expression(expression, schema, scope.state())
             .await?;

@@ -16,6 +16,7 @@ use sail_function::sketch::{DEFAULT_HLL_LG_CONFIG_K, DEFAULT_THETA_LG_NOM_ENTRIE
 
 use crate::config::PlanConfig;
 use crate::error::{IntoPlanResult, PlanError, PlanResult};
+use crate::function::constant_context::ConstantContext;
 
 pub struct FunctionContextInput<'a> {
     /// The names of function arguments.
@@ -31,7 +32,7 @@ pub struct FunctionContextInput<'a> {
     /// Require foldability before a builder can erase function provenance.
     pub require_foldable: bool,
     /// Preserve non-foldability in the lowered expression in constant-name contexts.
-    pub constant_context: bool,
+    pub constant_context: ConstantContext,
 }
 
 pub struct ScalarFunctionInput<'a> {
@@ -52,7 +53,10 @@ impl ScalarFunctionBuilder {
                     "[NOT_A_CONSTANT_STRING.NOT_CONSTANT] function is not foldable",
                 ));
             }
-            let preserve = input.function_context.constant_context;
+            let preserve = input
+                .function_context
+                .constant_context
+                .retain_function_foldability();
             let expression = function(input)?;
             Ok(if preserve {
                 Self::mark_non_foldable(expression)

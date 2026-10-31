@@ -13,6 +13,7 @@ use sail_common_datafusion::extension::SessionExtensionAccessor;
 use super::tests::{context, expression};
 use super::*;
 use crate::config::PlanConfig;
+use crate::function::constant_context::ConstantContext;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -138,7 +139,10 @@ async fn identifier_constant_context_restores_parameters_and_state_after_errors(
         } else {
             assert!(result.is_err());
         }
-        assert!(!params.state().config().constant_context);
+        assert_eq!(
+            params.state().config().constant_context,
+            ConstantContext::Ordinary
+        );
         assert!(!params.state().config().require_foldable);
         assert!(!params.state().config().table_identifier);
         assert!(params.state().config().arrow_allow_large_var_types);
@@ -146,7 +150,7 @@ async fn identifier_constant_context_restores_parameters_and_state_after_errors(
     }
     drop(params);
     assert!(state.get_param_value("col").is_none());
-    assert!(!state.config().constant_context);
+    assert_eq!(state.config().constant_context, ConstantContext::Ordinary);
     Ok(())
 }
 

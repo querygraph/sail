@@ -1090,6 +1090,7 @@ mod tests {
     use super::*;
     use crate::config::PlanConfig;
     use crate::function::common::FunctionContextInput;
+    use crate::function::constant_context::ConstantContext;
 
     fn sum_test_schema(data_type: DataType) -> PlanResult<Arc<DFSchema>> {
         Ok(Arc::new(DFSchema::try_from(Schema::new(vec![
@@ -1132,7 +1133,7 @@ mod tests {
             preserve_count_argument_columns: false,
             function_context: FunctionContextInput {
                 require_foldable: false,
-                constant_context: false,
+                constant_context: ConstantContext::Ordinary,
                 argument_display_names: &argument_display_names,
                 plan_config: &plan_config,
                 session_context: &session_context,

@@ -875,6 +875,7 @@ mod tests {
     use super::*;
     use crate::config::PlanConfig;
     use crate::function::common::FunctionContextInput;
+    use crate::function::constant_context::ConstantContext;
 
     #[test]
     fn string_sum_window_reuses_mode_specific_coercion_and_window_spec() -> PlanResult<()> {
@@ -904,7 +905,7 @@ mod tests {
                 distinct: false,
                 function_context: FunctionContextInput {
                     require_foldable: false,
-                    constant_context: false,
+                    constant_context: ConstantContext::Ordinary,
                     argument_display_names: &argument_display_names,
                     plan_config: &plan_config,
                     session_context: &session_context,
