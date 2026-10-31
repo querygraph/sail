@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
+#[cfg(test)]
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use sail_common::spec;
@@ -63,8 +64,8 @@ impl VirtualTableSchema {
         arrow_schema(&resolver, fields)
     }
 
-    /// Existing eager validation entry point. The lazy scope integration will
-    /// call load during reads and defer this compatibility check until later.
+    /// Validate declaration compatibility after successful query resolution.
+    /// A read uses load directly and does not run this graph validation.
     pub fn validate(&self, ctx: &SessionContext) -> SparkResult<Schema> {
         let inferred = self.inferred_fields()?;
         if self.declared.is_none() {
@@ -96,6 +97,18 @@ impl VirtualTableSchema {
         Ok(declared)
     }
 
+    /// Force unread incoming schemas only after graph validation. A declaration
+    /// supplies the exported table schema, but cannot suppress a failed merge.
+    pub fn final_schema(&self, ctx: &SessionContext) -> SparkResult<Schema> {
+        let inferred = self.inferred_fields()?;
+        if self.declared.is_some() {
+            self.load(ctx)
+        } else {
+            let resolver = PlanResolver::new(ctx, ctx.extension::<SparkSession>()?.plan_config()?);
+            arrow_schema(&resolver, inferred)
+        }
+    }
+
     fn inferred_fields(&self) -> SparkResult<spec::Fields> {
         self.incoming
             .iter()
@@ -112,6 +125,8 @@ impl VirtualTableSchema {
     }
 }
 
+// Legacy helper shared by native metadata/SQL fixtures.
+#[cfg(test)]
 pub(super) fn infer(
     ctx: &SessionContext,
     output: &Output,

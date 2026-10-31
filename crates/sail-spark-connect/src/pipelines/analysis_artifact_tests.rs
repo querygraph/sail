@@ -194,6 +194,15 @@ async fn analysis_temporary_clock_remains_unfolded() -> TestResult {
 
 #[tokio::test]
 async fn temporary_working_plan_remains_available_for_analysis_helper_execution() -> TestResult {
+    view_working_plan_remains_available("TEMPORARY VIEW").await
+}
+
+#[tokio::test]
+async fn persisted_working_plan_remains_available_for_analysis_helper_execution() -> TestResult {
+    view_working_plan_remains_available("VIEW").await
+}
+
+async fn view_working_plan_remains_available(kind: &str) -> TestResult {
     let ctx = crate::pipelines::catalog_preparation_tests::context()?;
     let leases = Arc::new(Mutex::new(vec![]));
     let scans = Arc::new(AtomicUsize::new(0));
@@ -207,7 +216,7 @@ async fn temporary_working_plan_remains_available_for_analysis_helper_execution(
         .write()
         .config_mut()
         .set_extension(Arc::new(registry));
-    let mut graph = definition("CREATE TEMPORARY VIEW temp AS SELECT * FROM artifact_probe.`input`; CREATE MATERIALIZED VIEW target AS SELECT * FROM temp").await?;
+    let mut graph = definition(&format!("CREATE {kind} temp AS SELECT * FROM artifact_probe.`input`; CREATE MATERIALIZED VIEW target AS SELECT * FROM temp")).await?;
     let read = graph.flows[1].query.clone();
     graph.flows[1].query = spec::QueryPlan::new(spec::QueryNode::Tail {
         input: Box::new(read),
@@ -519,6 +528,94 @@ async fn unresolved_query_precedes_persisted_view_source_restrictions() -> TestR
                 .values()
                 .all(|error| error.to_string().contains("missing_source"))
         );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn virtual_schema_errors_follow_actual_reads_and_unresolved_queries() -> TestResult {
+    let ctx = sql::tests::resolution_context()?;
+    ctx.state_ref()
+        .write()
+        .config_mut()
+        .set_extension(Arc::new(DataSourceRegistry::new()));
+    for declared in [false, true] {
+        for read in [false, true] {
+            for missing in ["none", "first", "last"] {
+                if missing == "none" && (declared || !read) {
+                    // These three graphs force schemas after query resolution;
+                    // their raw final merge diagnostic has a separate contract.
+                    continue;
+                }
+                let mut statements = vec![
+                    "CREATE MATERIALIZED VIEW events_int AS SELECT 1 AS id".to_string(),
+                    "CREATE MATERIALIZED VIEW events_str AS SELECT 'x' AS id".to_string(),
+                    format!(
+                        "CREATE STREAMING TABLE merged{}",
+                        if declared { " (id INT)" } else { "" }
+                    ),
+                    "CREATE FLOW merged_int AS INSERT INTO merged BY NAME SELECT * FROM STREAM(events_int)".to_string(),
+                    "CREATE FLOW merged_str AS INSERT INTO merged BY NAME SELECT * FROM STREAM(events_str)".to_string(),
+                ];
+                if read {
+                    statements
+                        .push("CREATE MATERIALIZED VIEW consumer AS SELECT id FROM merged".into());
+                    statements.push(
+                        "CREATE MATERIALIZED VIEW downstream AS SELECT * FROM consumer".into(),
+                    );
+                }
+                let bad =
+                    "CREATE MATERIALIZED VIEW late AS SELECT * FROM missing_source".to_string();
+                match missing {
+                    "first" => statements.insert(0, bad),
+                    "last" => statements.push(bad),
+                    _ => {}
+                }
+                let graph = definition(&statements.join(";")).await?;
+                let Some(AnalysisError::Unresolved(failures)) = analyze(&ctx, &graph).await.err()
+                else {
+                    return Err(format!("expected unresolved report: declared={declared}, read={read}, missing={missing}").into());
+                };
+                let direct: Vec<_> = failures
+                    .direct
+                    .keys()
+                    .filter_map(|name| name.last().map(String::as_str))
+                    .collect();
+                let mut expected = vec![];
+                if read && !declared {
+                    expected.push("consumer");
+                }
+                if missing != "none" {
+                    expected.push("late");
+                }
+                assert_eq!(
+                    direct, expected,
+                    "declared={declared}, read={read}, missing={missing}"
+                );
+                let downstream: Vec<_> = failures
+                    .downstream
+                    .keys()
+                    .filter_map(|name| name.last().map(String::as_str))
+                    .collect();
+                assert_eq!(
+                    downstream,
+                    if read && !declared {
+                        vec!["downstream"]
+                    } else {
+                        vec![]
+                    }
+                );
+                for (name, error) in &failures.direct {
+                    if name.last().is_some_and(|name| name == "consumer") {
+                        assert!(
+                            error
+                                .to_string()
+                                .contains("UNABLE_TO_INFER_PIPELINE_TABLE_SCHEMA")
+                        );
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }

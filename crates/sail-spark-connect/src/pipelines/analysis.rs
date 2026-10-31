@@ -12,7 +12,8 @@ use sail_plan::error::{PlanError, PlanResult};
 use sail_plan::resolver::scope::RelationScope;
 
 use super::graph::{Flow, GraphDefinition, Name, analysis, quoted};
-use crate::error::{SparkResult, StructuredSparkError};
+use super::schema::VirtualTableSchema;
+use crate::error::{SparkError, SparkResult, StructuredSparkError};
 use crate::session::SparkSession;
 use crate::spark::connect::OutputType;
 use crate::spark::connect::pipeline_command::define_output;
@@ -24,6 +25,7 @@ pub(super) struct GraphScope<'a> {
     pub resolved: &'a BTreeMap<Name, LogicalPlan>,
     pub reads: Mutex<BTreeSet<Name>>,
     pub flow: &'a Flow,
+    virtual_tables: Option<(&'a SessionContext, &'a BTreeMap<Name, VirtualTableSchema>)>,
 }
 
 impl<'a> GraphScope<'a> {
@@ -38,7 +40,16 @@ impl<'a> GraphScope<'a> {
             resolved,
             reads: Mutex::default(),
             flow,
+            virtual_tables: None,
         }
+    }
+    pub fn with_virtual_tables(
+        mut self,
+        ctx: &'a SessionContext,
+        tables: &'a BTreeMap<Name, VirtualTableSchema>,
+    ) -> Self {
+        self.virtual_tables = Some((ctx, tables));
+        self
     }
     pub fn input_name(&self, name: &[String]) -> PlanResult<Name> {
         let raw: Name = name.iter().map(|x| x.to_ascii_lowercase()).collect();
@@ -58,6 +69,15 @@ impl RelationScope for GraphScope<'_> {
                 .lock()
                 .map_err(|e| PlanError::internal(e.to_string()))?
                 .insert(name.clone());
+            if let Some((ctx, tables)) = self.virtual_tables
+                && let Some(table) = tables.get(&name)
+            {
+                let schema = table.load(ctx).map_err(schema_plan_error)?;
+                return Ok(Some(LogicalPlan::EmptyRelation(EmptyRelation {
+                    produce_one_row: false,
+                    schema: Arc::new(DFSchema::try_from(schema)?),
+                })));
+            }
             self.resolved
                 .get(&name)
                 .cloned()
@@ -105,6 +125,24 @@ impl RelationScope for GraphScope<'_> {
     }
 }
 
+// Keep native diagnostic types/cause chains across the scope's PlanResult boundary.
+fn schema_plan_error(error: SparkError) -> PlanError {
+    match error {
+        SparkError::Structured(error) => PlanError::Structured(error),
+        SparkError::DataFusionError(error) => PlanError::DataFusionError(error),
+        SparkError::ArrowError(error) => PlanError::ArrowError(error),
+        SparkError::AnalysisError(message) => PlanError::AnalysisError(message),
+        SparkError::InvalidArgument(message) => PlanError::InvalidArgument(message),
+        SparkError::MissingArgument(message) => PlanError::MissingArgument(message),
+        SparkError::NotImplemented(message) => PlanError::NotImplemented(message),
+        SparkError::NotSupported(message) => PlanError::NotSupported(message),
+        SparkError::InternalError(message) => PlanError::InternalError(message),
+        other => PlanError::DataFusionError(datafusion::common::DataFusionError::External(
+            Box::new(other),
+        )),
+    }
+}
+
 pub(super) struct AnalyzedGraph {
     pub order: Vec<Name>,
     pub dependencies: BTreeMap<Name, BTreeSet<Name>>,
@@ -132,6 +170,7 @@ async fn analyze_queries(
     graph.validate_bindings()?;
     let spark = ctx.extension::<SparkSession>()?;
     let mut resolved = BTreeMap::new();
+    let mut virtual_tables = BTreeMap::new();
     let mut order = vec![];
     let mut flow_plans: BTreeMap<Name, LogicalPlan> = BTreeMap::new();
     let mut flow_reads: BTreeMap<Name, BTreeSet<Name>> = BTreeMap::new();
@@ -145,7 +184,7 @@ async fn analyze_queries(
     while order.len() < graph.outputs.len() {
         let before = order.len();
         for output in &graph.outputs {
-            if resolved.contains_key(&output.name) {
+            if resolved.contains_key(&output.name) || virtual_tables.contains_key(&output.name) {
                 continue;
             }
             let mut inputs = BTreeSet::new();
@@ -166,6 +205,7 @@ async fn analyze_queries(
                     ctx,
                     graph,
                     resolved: &resolved,
+                    virtual_tables: Some(&virtual_tables),
                     accepted: &accepted_confs,
                     base: &base,
                     source_case_sensitive,
@@ -205,22 +245,27 @@ async fn analyze_queries(
             if pending {
                 continue;
             }
-            // A dataset without a producer has no query to resolve. Carry its
-            // empty schema until graph validation reports DATASET_WITHOUT_FLOW,
-            // including for temporary views.
-            let plan = if output.kind == OutputType::TemporaryView && !plans.is_empty() {
+            if (output.kind == OutputType::TemporaryView || output.view.is_some())
+                && !plans.is_empty()
+            {
                 if plans.len() != 1 {
                     return Err(analysis("MULTIPLE_QUERIES_FOR_VIEW", quoted(&output.name)));
                 }
-                plans.remove(0)
+                resolved.insert(output.name.clone(), plans.remove(0));
             } else {
-                let schema = super::schema::infer(ctx, output, &plans)?;
-                LogicalPlan::EmptyRelation(EmptyRelation {
-                    produce_one_row: false,
-                    schema: Arc::new(DFSchema::try_from(schema)?),
-                })
-            };
-            resolved.insert(output.name.clone(), plan);
+                // Construct the virtual input, not its schema. An unread output
+                // must not fail inference ahead of another unresolved query.
+                virtual_tables.insert(
+                    output.name.clone(),
+                    VirtualTableSchema::new(
+                        output,
+                        plans
+                            .iter()
+                            .map(|plan| Arc::new(plan.schema().as_arrow().clone()))
+                            .collect(),
+                    ),
+                );
+            }
             order.push(output.name.clone());
             // Only unfinished multi-flow outputs need cached working plans.
             // Materialized inputs keep schemas rather than source providers.
@@ -240,6 +285,13 @@ async fn analyze_queries(
                 });
             }
             return Ok(Err(ResolutionFailures::new(graph, failures)?));
+        }
+    }
+    // Spark validates declarations for table identifiers represented by a
+    // same-named flow, after every query has resolved successfully.
+    for flow in &graph.flows {
+        if let Some(table) = virtual_tables.get(&flow.name) {
+            table.validate(ctx)?;
         }
     }
     // Persisted-view source restrictions are graph validation, after successful
@@ -280,13 +332,17 @@ async fn analyze_queries(
             )?;
         }
     }
+    let mut schemas: BTreeMap<_, _> = resolved
+        .into_iter()
+        .map(|(name, plan)| (name, Arc::new(plan.schema().as_arrow().clone())))
+        .collect();
+    for (name, table) in virtual_tables {
+        schemas.insert(name, Arc::new(table.final_schema(ctx)?));
+    }
     Ok(Ok(AnalyzedGraph {
         order: super::topology::order(&dependencies)?,
         dependencies,
-        schemas: resolved
-            .into_iter()
-            .map(|(name, plan)| (name, Arc::new(plan.schema().as_arrow().clone())))
-            .collect(),
+        schemas,
         publications,
         accepted_confs,
     }))

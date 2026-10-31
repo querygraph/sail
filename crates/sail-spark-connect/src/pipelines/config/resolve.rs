@@ -111,6 +111,7 @@ pub(in crate::pipelines) struct FlowContext<'a> {
     pub ctx: &'a SessionContext,
     pub graph: &'a GraphDefinition,
     pub resolved: &'a BTreeMap<Name, LogicalPlan>,
+    pub virtual_tables: Option<&'a BTreeMap<Name, crate::pipelines::schema::VirtualTableSchema>>,
     pub accepted: &'a BTreeMap<Name, ConfMap>,
     pub base: &'a ConfMap,
     pub source_case_sensitive: bool,
@@ -122,7 +123,12 @@ impl FlowContext<'_> {
     ) -> SparkResult<Name> {
         reads
             .into_iter()
-            .find(|name| !self.resolved.contains_key(*name))
+            .find(|name| {
+                !self.resolved.contains_key(*name)
+                    && !self
+                        .virtual_tables
+                        .is_some_and(|tables| tables.contains_key(*name))
+            })
             .cloned()
             .ok_or_else(|| SparkError::internal("pending flow has no unavailable input"))
     }
@@ -178,6 +184,10 @@ impl FlowContext<'_> {
         );
         let config = spark.plan_config_with_overrides(overlay(self.base, &semantic))?;
         let scope = GraphScope::new(self.graph, self.resolved, flow);
+        let scope = match self.virtual_tables {
+            Some(tables) => scope.with_virtual_tables(self.ctx, tables),
+            None => scope,
+        };
         let resolver = PlanResolver::new(self.ctx, config)
             .with_relation_scope(&scope)
             .with_source_read_case_sensitive(self.source_case_sensitive);

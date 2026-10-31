@@ -87,6 +87,7 @@ pub(super) async fn resolve_inputs(
                 ctx,
                 graph,
                 resolved: &resolved,
+                virtual_tables: None,
                 accepted: &accepted,
                 base: command_conf,
                 source_case_sensitive: command_config.case_sensitive,
