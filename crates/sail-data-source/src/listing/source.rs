@@ -23,10 +23,12 @@ use object_store::{ObjectMeta, ObjectStore};
 use sail_common_datafusion::datasource::{
     DataSource, OptionLayer, SinkInfo, SinkMode, SourceInfo, find_path_in_options,
 };
+use sail_common_datafusion::schema_validation::validate_field_names;
 use url::Url;
 
 use crate::listing::partition::{
     inferred_partition_fields, partition_directory_names, prepare_explicit_partitions,
+    without_partition_fields,
 };
 use crate::listing::table::{ListingTableSource, ListingTableSourceConfig};
 use crate::listing::utils::{
@@ -273,6 +275,7 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
 
         let prepared = match schema {
             Some(schema) => {
+                validate_field_names(schema.fields(), read_case_sensitive)?;
                 read_format
                     .prepare_explicit_schema(
                         ctx,
@@ -304,15 +307,26 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
                     .infer_schema(ctx, &inference_files, compression, read_case_sensitive)
                     .await?;
                 let schema = rewrite_unsupported_fields(schema);
+                // Check the complete physical schema before partition columns
+                // replace file columns; replacement must not hide duplicates.
+                validate_field_names(schema.fields(), read_case_sensitive)?;
 
                 let discovered_partitions = infer_partitions(&inference_files)?;
                 // With no prepared supplied schema, Spark uses all discovered
                 // partitions even when explicit selectors were provided.
                 let partition_fields = inferred_partition_fields(&discovered_partitions);
+                let schema = Arc::new(without_partition_fields(
+                    &schema,
+                    &partition_fields,
+                    read_case_sensitive,
+                ));
                 (schema, partition_fields, discovered_partitions)
             }
         };
 
+        // Partition names are checked separately; shadowing a file column
+        // does not make the directory field a duplicate.
+        validate_field_names(&partition_fields, read_case_sensitive)?;
         let partition_directory_names =
             partition_directory_names(&partition_fields, &discovered_partitions)?;
         validate_partition_directory_names(&inference_files, &partition_directory_names)?;
@@ -450,3 +464,7 @@ mod inference_selection_tests;
 #[cfg(test)]
 #[path = "explicit_schema_tests.rs"]
 mod explicit_schema_tests;
+
+#[cfg(test)]
+#[path = "schema_validation_tests.rs"]
+mod schema_validation_tests;

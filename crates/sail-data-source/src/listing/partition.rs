@@ -86,6 +86,19 @@ pub(super) fn prepare_explicit_partitions(
             })
             .collect::<Result<Vec<_>>>()?
     };
+    Ok((
+        without_partition_fields(schema, &partitions, case_sensitive),
+        partitions,
+    ))
+}
+
+/// Directory partition values replace matching physical file columns. Keep this
+/// preparation identical for supplied and inferred schemas.
+pub(super) fn without_partition_fields(
+    schema: &Schema,
+    partitions: &[FieldRef],
+    case_sensitive: bool,
+) -> Schema {
     let file_fields = schema
         .fields()
         .iter()
@@ -96,10 +109,7 @@ pub(super) fn prepare_explicit_partitions(
         })
         .cloned()
         .collect::<Vec<_>>();
-    Ok((
-        Schema::new_with_metadata(file_fields, schema.metadata().clone()),
-        partitions,
-    ))
+    Schema::new_with_metadata(file_fields, schema.metadata().clone())
 }
 
 /// Resolve the fields selected by existing schema preparation back to observed
