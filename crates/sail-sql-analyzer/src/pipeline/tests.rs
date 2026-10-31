@@ -69,3 +69,6 @@ fn direct_flow_execution_preserves_spark_error_and_registration_path() -> TestRe
     ));
     Ok(())
 }
+
+mod dataset_positive;
+mod flow_parser;
