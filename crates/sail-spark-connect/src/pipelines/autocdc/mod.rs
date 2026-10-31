@@ -21,6 +21,7 @@ mod errors;
 mod lookup;
 mod microbatch;
 mod prepared;
+mod reconcile;
 mod schema;
 #[cfg(test)]
 mod tests;

@@ -110,4 +110,5 @@ mod graph;
 mod lookup;
 mod microbatch;
 mod prepared;
+mod reconcile;
 mod schema;
