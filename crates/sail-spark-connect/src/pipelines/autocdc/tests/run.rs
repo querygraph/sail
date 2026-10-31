@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::ScalarValue;
+use sail_catalog::manager::CatalogManager;
 use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::task_resources::TaskResourceScope;
@@ -18,7 +19,7 @@ use tokio::runtime::Handle;
 use super::super::run::{FlowRun, RunRecord, checkpoint_dir, run_flow};
 use super::super::schema::Case;
 use super::super::write::Scd1Write;
-use super::super::{ChangeArgs, ScdType};
+use super::super::{ChangeArgs, ScdType, SparkResult};
 use super::write::{
     attribute, context, create_target, finish, key, meta, row, rows, target, target_columns,
 };
@@ -298,6 +299,244 @@ async fn a_reset_creates_the_next_checkpoint_version_and_restarts() -> TestResul
     assert_eq!(
         rows(&ctx, config.clone(), &target).await?,
         vec![row(&["1", "alice", "1", &meta("NULL", "1")])]
+    );
+    finish(&ctx).await?;
+    Ok(())
+}
+
+// ---- AutoCdcScd1FullRefreshSuite: a run, a full refresh, a reset run ----
+
+const DECLARED_TARGET: &str = "CREATE STREAMING TABLE target (id INT NOT NULL, name STRING, version BIGINT NOT NULL, \
+     __spark_autocdc_metadata STRUCT<deleteSequence: BIGINT, upsertSequence: BIGINT>) \
+     AS SELECT 1 AS id, 'x' AS name, CAST(1 AS BIGINT) AS version, \
+     named_struct('deleteSequence', CAST(NULL AS BIGINT), 'upsertSequence', CAST(1 AS BIGINT)) AS __spark_autocdc_metadata";
+
+/// The target as a declared streaming table of the graph, so
+/// `materialize::tables` can full-refresh it as `DatasetManager` does.
+async fn declared_graph() -> SparkResult<GraphDefinition> {
+    let mut graph = crate::pipelines::PipelineGraph::new(
+        "test_catalog".into(),
+        "test_db".into(),
+        Default::default(),
+    );
+    crate::pipelines::sql::prepare(
+        crate::spark::connect::pipeline_command::DefineSqlGraphElements {
+            sql_text: Some(DECLARED_TARGET.into()),
+            ..Default::default()
+        },
+        |_| async {
+            Err(crate::error::SparkError::internal(
+                "no catalog expression in fixture",
+            ))
+        },
+    )
+    .await?
+    .commit(&mut graph)?;
+    Ok(graph.definition)
+}
+
+/// `State.reset` + `DatasetManager.materializeDatasets` for a full refresh of
+/// every table: truncate the target and drop its auxiliary table (unit A1).
+async fn full_refresh(
+    ctx: &datafusion::prelude::SessionContext,
+    graph: &GraphDefinition,
+) -> SparkResult<()> {
+    let resolver = sail_plan::resolver::PlanResolver::new(
+        ctx,
+        ctx.extension::<SparkSession>()?.plan_config()?,
+    );
+    let mut schemas = BTreeMap::new();
+    for output in &graph.outputs {
+        let mut plans = vec![];
+        for flow in graph.flows.iter().filter(|flow| flow.target == output.name) {
+            let named = resolver
+                .resolve_named_plan(spec::Plan::Query(flow.query.clone()))
+                .await?;
+            plans.push(match named.fields {
+                Some(fields) => sail_common_datafusion::rename::logical_plan::rename_logical_plan(
+                    named.plan, &fields,
+                )?,
+                None => named.plan,
+            });
+        }
+        schemas.insert(
+            output.name.clone(),
+            Arc::new(crate::pipelines::schema::infer(ctx, output, &plans)?),
+        );
+    }
+    let selection = crate::pipelines::selection::Selection::new(
+        graph,
+        &crate::spark::connect::pipeline_command::StartRun {
+            full_refresh_all: Some(true),
+            ..Default::default()
+        },
+    )?;
+    crate::pipelines::materialize::tables(ctx, graph, &schemas, &selection).await
+}
+
+// FullRefreshSuite:34–71: the refreshed run wipes the target rows and the
+// auxiliary table, and the new run brings only its own events.
+#[tokio::test]
+async fn a_full_refresh_wipes_the_target_and_the_auxiliary_table() -> TestResult {
+    let (ctx, config) = context()?;
+    let scope = TaskResourceScope::new(Handle::current());
+    let target = target();
+    create_target(&ctx, config.clone(), &target, "delta", target_columns()).await?;
+    let args = ChangeArgs::new(
+        vec![key("id")?],
+        attribute("version"),
+        ScdType::Type1,
+        None,
+        None,
+    )?;
+    let write = Scd1Write {
+        flow_name: "test_catalog.test_db.auto_cdc_flow",
+        destination: &target,
+        destination_format: Some("delta"),
+        args: &args,
+        sequencing_type: &spec::DataType::Int64,
+        case: Case::Insensitive,
+    };
+    let root = warehouse(&ctx)?;
+    let graph = graph();
+    let flow = flow();
+    let relations = BTreeMap::new();
+    let first_source = DeterministicSource::new("events", source_schema());
+    first_source.create_partition("p0");
+    first_source.append("p0", vec![event(1, "alice", 5)]);
+    let first_dir = checkpoint_dir(&root, &target, &flow_name(), false)?;
+    let first = FlowRun {
+        graph: &graph,
+        flow: &flow,
+        relations: &relations,
+        source_name: &source_name(),
+        source: &first_source,
+        write: &write,
+        checkpoint: &first_dir,
+        max_rows_per_partition: 100,
+    };
+    run_flow(&ctx, config.clone(), &scope, &first).await?;
+    let aux = super::super::auxiliary::table_name(&target);
+    assert!(
+        ctx.extension::<CatalogManager>()?
+            .get_table_or_view(&aux)
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        rows(&ctx, config.clone(), &target).await?,
+        vec![row(&["1", "alice", "5", &meta("NULL", "5")])]
+    );
+    full_refresh(&ctx, &declared_graph().await?).await?;
+    assert!(rows(&ctx, config.clone(), &target).await?.is_empty());
+    assert!(
+        ctx.extension::<CatalogManager>()?
+            .get_table_or_view(&aux)
+            .await
+            .is_err()
+    );
+    let second_source = DeterministicSource::new("events", source_schema());
+    second_source.create_partition("p0");
+    second_source.append("p0", vec![event(2, "bob", 1)]);
+    let reset_dir = checkpoint_dir(&root, &target, &flow_name(), true)?;
+    let second = FlowRun {
+        source: &second_source,
+        checkpoint: &reset_dir,
+        ..first
+    };
+    run_flow(&ctx, config.clone(), &scope, &second).await?;
+    assert_eq!(
+        rows(&ctx, config.clone(), &target).await?,
+        vec![row(&["2", "bob", "1", &meta("NULL", "1")])]
+    );
+    assert!(
+        ctx.extension::<CatalogManager>()?
+            .get_table_or_view(&aux)
+            .await
+            .is_ok()
+    );
+    finish(&ctx).await?;
+    Ok(())
+}
+
+// FullRefreshSuite:73–113: after a full refresh, an event with a sequence
+// below the previous run's recorded delete lands.
+#[tokio::test]
+async fn after_a_full_refresh_an_event_below_the_old_watermark_lands() -> TestResult {
+    let (ctx, config) = context()?;
+    let scope = TaskResourceScope::new(Handle::current());
+    let target = target();
+    create_target(&ctx, config.clone(), &target, "delta", target_columns()).await?;
+    let args = ChangeArgs::new(
+        vec![key("id")?],
+        attribute("version"),
+        ScdType::Type1,
+        Some(super::write::eq_true("is_delete")),
+        Some(super::super::ColumnSelection::Exclude(vec![key(
+            "is_delete",
+        )?])),
+    )?;
+    let write = Scd1Write {
+        flow_name: "test_catalog.test_db.auto_cdc_flow",
+        destination: &target,
+        destination_format: Some("delta"),
+        args: &args,
+        sequencing_type: &spec::DataType::Int64,
+        case: Case::Insensitive,
+    };
+    let flagged_schema: SchemaRef = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, true),
+        Field::new("name", DataType::Utf8, true),
+        Field::new("version", DataType::Int64, true),
+        Field::new("is_delete", DataType::Boolean, true),
+    ]));
+    let flagged = |id: i32, name: &str, version: i64, delete: bool| {
+        vec![
+            ScalarValue::Int32(Some(id)),
+            ScalarValue::Utf8(Some(name.into())),
+            ScalarValue::Int64(Some(version)),
+            ScalarValue::Boolean(Some(delete)),
+        ]
+    };
+    let root = warehouse(&ctx)?;
+    let graph = graph();
+    let flow = flow();
+    let relations = BTreeMap::new();
+    let first_source = DeterministicSource::new("events", flagged_schema.clone());
+    first_source.create_partition("p0");
+    first_source.append("p0", vec![flagged(1, "alice", 10, true)]);
+    let first_dir = checkpoint_dir(&root, &target, &flow_name(), false)?;
+    let first = FlowRun {
+        graph: &graph,
+        flow: &flow,
+        relations: &relations,
+        source_name: &source_name(),
+        source: &first_source,
+        write: &write,
+        checkpoint: &first_dir,
+        max_rows_per_partition: 100,
+    };
+    run_flow(&ctx, config.clone(), &scope, &first).await?;
+    assert!(rows(&ctx, config.clone(), &target).await?.is_empty());
+    let aux = super::super::auxiliary::table_name(&target);
+    assert_eq!(
+        rows(&ctx, config.clone(), &aux).await?,
+        vec![row(&["1", &meta("10", "NULL")])]
+    );
+    full_refresh(&ctx, &declared_graph().await?).await?;
+    let second_source = DeterministicSource::new("events", flagged_schema);
+    second_source.create_partition("p0");
+    second_source.append("p0", vec![flagged(1, "fresh", 5, false)]);
+    let reset_dir = checkpoint_dir(&root, &target, &flow_name(), true)?;
+    let second = FlowRun {
+        source: &second_source,
+        checkpoint: &reset_dir,
+        ..first
+    };
+    run_flow(&ctx, config.clone(), &scope, &second).await?;
+    assert_eq!(
+        rows(&ctx, config.clone(), &target).await?,
+        vec![row(&["1", "fresh", "5", &meta("NULL", "5")])]
     );
     finish(&ctx).await?;
     Ok(())
