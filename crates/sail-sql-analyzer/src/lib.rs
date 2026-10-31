@@ -7,4 +7,5 @@ pub mod pipeline;
 pub mod query;
 pub mod source;
 pub mod statement;
+mod validation;
 mod value;

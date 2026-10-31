@@ -311,5 +311,6 @@ async fn view_source_intervals_preserve_file_atomicity_and_namespace_reset() -> 
 }
 
 mod flow_name;
+mod insert_validation;
 mod preparation;
 mod unsupported;

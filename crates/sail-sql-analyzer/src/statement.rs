@@ -128,6 +128,7 @@ fn from_ast_statement_impl(
     statement: Statement,
     source: Option<&SqlSource<'_>>,
 ) -> SqlResult<spec::Plan> {
+    crate::validation::validate_insert_modes(&statement)?;
     match statement {
         Statement::CreatePipelineDataset(dataset) => {
             crate::pipeline::validate_dataset(&dataset)?;

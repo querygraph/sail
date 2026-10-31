@@ -60,10 +60,15 @@ impl<'a> SqlSource<'a> {
             .tokens
             .as_slice()
             .map((length..length).into(), map_parser_input);
-        create_parser::<_, chumsky::extra::Err<chumsky::error::Rich<_, _>>>(&self.options)
-            .parse(tokens)
-            .into_result()
-            .map_err(SqlError::parser)
+        let statements =
+            create_parser::<_, chumsky::extra::Err<chumsky::error::Rich<_, _>>>(&self.options)
+                .parse(tokens)
+                .into_result()
+                .map_err(SqlError::parser)?;
+        for statement in &statements {
+            crate::validation::validate_insert_modes(statement)?;
+        }
+        Ok(statements)
     }
 
     pub fn parse_one_statement(&self) -> SqlResult<Statement> {
@@ -80,12 +85,17 @@ impl<'a> SqlSource<'a> {
             .tokens
             .as_slice()
             .map((length..length).into(), map_parser_input);
-        create_parser_with_spans::<_, chumsky::extra::Err<chumsky::error::Rich<_, _>>>(
-            &self.options,
-        )
+        let statements = create_parser_with_spans::<
+            _,
+            chumsky::extra::Err<chumsky::error::Rich<_, _>>,
+        >(&self.options)
         .parse(tokens)
         .into_result()
-        .map_err(SqlError::parser)
+        .map_err(SqlError::parser)?;
+        for (statement, _) in &statements {
+            crate::validation::validate_insert_modes(statement)?;
+        }
+        Ok(statements)
     }
 
     /// Statement intervals retain trailing trivia, unlike a view's query text.

@@ -45,6 +45,7 @@ fn from_ast_pipeline_statement_impl(
     statement: Statement,
     source: Option<&SqlSource<'_>>,
 ) -> SqlResult<PipelineStatement> {
+    crate::validation::validate_insert_modes(&statement)?;
     match statement {
         Statement::CreatePipelineDataset(dataset) => {
             validate_dataset(&dataset)?;
