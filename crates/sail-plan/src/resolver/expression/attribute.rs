@@ -359,12 +359,21 @@ impl PlanResolver<'_> {
             // Spark checks root ambiguity before extracting fields. An unsupported
             // extraction must not hide a second root and bind the first one instead.
             // Spark deduplicates matches of the same attribute (e.g. `SELECT a, a`).
-            if fields.any(|(other_qualifier, _, other)| {
-                other_qualifier != qualifier || other.origin() != info.origin()
+            if let Some((other_qualifier, _, other)) = fields.find(|(other_qualifier, _, other)| {
+                *other_qualifier != qualifier || other.origin() != info.origin()
             }) {
-                return Err(PlanError::AnalysisError(format!(
-                    "ambiguous attribute: {name:?}"
-                )));
+                // Allocate diagnostic state only once ambiguity is established.
+                let mut seen = std::collections::HashSet::from([
+                    (qualifier.cloned(), info.origin()),
+                    (other_qualifier.cloned(), other.origin()),
+                ]);
+                let mut qualifiers = vec![qualifier, other_qualifier];
+                for (other_qualifier, _, other) in fields {
+                    if seen.insert((other_qualifier.cloned(), other.origin())) {
+                        qualifiers.push(other_qualifier);
+                    }
+                }
+                return Err(self.ambiguous_attribute(name, root.as_ref(), qualifiers)?);
             }
             return match self.resolve_potentially_nested_field(
                 col((qualifier, field)),

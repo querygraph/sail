@@ -1,3 +1,4 @@
+mod identifier;
 mod structured;
 
 use std::collections::HashSet;
@@ -6,6 +7,7 @@ use std::fmt::Formatter;
 
 use datafusion::arrow::error::ArrowError;
 use datafusion_common::DataFusionError;
+pub use identifier::quote_sql_identifier;
 use serde::{Deserialize, Serialize};
 pub use structured::StructuredSparkError;
 use thiserror::Error;

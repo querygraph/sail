@@ -157,10 +157,10 @@ fn diagnostic_identifier_formatting_preserves_spark_attribute_syntax() -> TestRe
         ("x.`a.b`", "`x`.`a.b`"),
         ("__auto_generated_subquery_name.x", "`x`"),
     ] {
-        assert_eq!(sql_identifier(name)?, expected);
+        assert_eq!(quote_sql_identifier(name)?, expected);
     }
     for name in [".a", "a.", "a..b", "a`b", "`a`b", "`a"] {
-        assert!(sql_identifier(name).is_err(), "{name}");
+        assert!(quote_sql_identifier(name).is_err(), "{name}");
     }
     Ok(())
 }
