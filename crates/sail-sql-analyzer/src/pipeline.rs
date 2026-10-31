@@ -125,3 +125,27 @@ fn from_ast_pipeline_statement_impl(
         },
     }
 }
+
+/// Spark rejects direct execution of a pipeline dataset while registration uses
+/// the separate lowering path above. Keep the error's client-visible metadata.
+pub(crate) fn direct_dataset_execution_error(streaming: bool) -> SqlError {
+    let dataset_type = if streaming {
+        "STREAMING TABLE"
+    } else {
+        "MATERIALIZED VIEW"
+    };
+    Box::new(sail_common::error::StructuredSparkError {
+        class: "org.apache.spark.SparkUnsupportedOperationException".into(),
+        condition: "UNSUPPORTED_FEATURE.CREATE_PIPELINE_DATASET_QUERY_EXECUTION".into(),
+        sql_state: "0A000".into(),
+        message: format!(
+            "The feature is not supported: Direct execution of a CREATE ... {dataset_type} query. \
+             To create a pipeline dataset, create and execute a pipeline with a SQL file containing \
+             your query attached in the pipeline definition."
+        ),
+        parameters: std::collections::HashMap::from([("pipelineDatasetType".into(), dataset_type.into())]),
+    }).into()
+}
+
+#[cfg(test)]
+mod tests;

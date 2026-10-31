@@ -129,9 +129,15 @@ fn from_ast_statement_impl(
     source: Option<&SqlSource<'_>>,
 ) -> SqlResult<spec::Plan> {
     match statement {
-        Statement::CreatePipelineDataset(_) | Statement::CreatePipelineFlow { .. } => Err(
-            SqlError::unsupported("pipeline declarations require a pipeline registration context"),
-        ),
+        Statement::CreatePipelineDataset(dataset) => {
+            Err(crate::pipeline::direct_dataset_execution_error(matches!(
+                dataset.kind,
+                Either::Right(_)
+            )))
+        }
+        Statement::CreatePipelineFlow { .. } => Err(SqlError::unsupported(
+            "pipeline declarations require a pipeline registration context",
+        )),
         Statement::Query(query) => {
             let plan = from_ast_query(query)?;
             Ok(spec::Plan::Query(plan))

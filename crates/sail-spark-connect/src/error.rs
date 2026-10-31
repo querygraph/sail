@@ -356,6 +356,9 @@ fn spark_status(class: &str, message: &str, mut metadata: HashMap<String, String
         "org.apache.spark.sql.connector.catalog.CatalogNotFoundException" => format!(
             "[\"{class}\",\"org.apache.spark.SparkException\",\"java.lang.Exception\",\"java.lang.Throwable\",\"java.lang.Object\"]"
         ),
+        "org.apache.spark.SparkUnsupportedOperationException" => format!(
+            "[\"{class}\",\"java.lang.UnsupportedOperationException\",\"java.lang.RuntimeException\",\"java.lang.Exception\",\"java.lang.Throwable\",\"java.lang.Object\"]"
+        ),
         "org.apache.spark.SparkArithmeticException" => format!(
             "[\"{class}\",\"java.lang.ArithmeticException\",\"java.lang.RuntimeException\",\"java.lang.Exception\",\"java.lang.Throwable\",\"java.lang.Object\"]"
         ),
