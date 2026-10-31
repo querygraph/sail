@@ -45,6 +45,8 @@ use crate::span::TokenSpan;
 use crate::token::{Token, TokenLabel};
 use crate::tree::{SyntaxDescriptor, TreeParser, TreeSyntax, TreeText};
 
+mod insert;
+
 /// Parse a statement terminator: a semicolon or the end of input.
 pub(crate) fn statement_end<'a, I, E>(
     options: &'a ParserOptions,
@@ -70,7 +72,7 @@ pub enum Statement {
         name: ObjectName,
         comment: Option<(Comment, StringLiteral)>,
         r#as: As,
-        #[parser(function = |(s, _, _, _), _| boxed(s))]
+        #[parser(function = |(s, _, _, _), o| boxed(Insert::parser((), o).rewind().ignore_then(s)))]
         statement: Box<Statement>,
     },
     Query(#[parser(function = |(_, q, _, _), _| q)] Query),
@@ -299,18 +301,16 @@ pub enum Statement {
         #[parser(function = |(_, q, _, _), _| q)]
         query: Query,
     },
+    #[parser(function = |(_, q, e, _), o| insert::statement((q, e), o))]
     InsertInto {
-        #[parser(function = |(_, q, _, _), o| compose(q, o))]
         with: Option<WithClause>,
         insert: Insert,
         into_or_overwrite: Either<Into, Overwrite>,
         table: Option<Table>,
         name: ObjectName,
-        #[parser(function = |(_, _, e, _), o| compose(e, o))]
         partition: Option<PartitionClause>,
         if_not_exists: Option<(If, Not, Exists)>,
         columns: Option<Either<(By, Name), IdentList>>,
-        #[parser(function = |(_, q, _, _), _| q)]
         query: Query,
     },
     MergeInto {

@@ -1300,7 +1300,7 @@
       "input": "REPLACE TABLE my_tab (id bigint, p1 string)\nSTORED BY 'handler'",
       "exception": "\n[INVALID_STATEMENT_OR_CLAUSE] The statement or clause: STORED BY is not valid. SQLSTATE: 42601\n== SQL (line 2, position 1) ==\nSTORED BY 'handler'\n^^^^^^^^^^^^^^^^^^^\n",
       "output": {
-        "failure": "invalid argument: found BY at 51:53 expected 'AS'"
+        "failure": "[PARSE_SYNTAX_ERROR] Syntax error at or near 'BY'."
       }
     },
     {

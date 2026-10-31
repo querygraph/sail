@@ -58,6 +58,16 @@ impl SqlError {
     {
         SqlError::SqlParserError(Box::new(ParserDiagnostics::from_errors(errors)))
     }
+
+    pub(crate) fn parser_with_source<T, S>(errors: Vec<Rich<'_, T, S>>, source: &str) -> Self
+    where
+        T: fmt::Display,
+        S: Into<TokenSpan> + Clone,
+    {
+        SqlError::SqlParserError(Box::new(
+            ParserDiagnostics::from_errors(errors).with_source(source),
+        ))
+    }
 }
 
 impl From<CommonError> for SqlError {

@@ -450,7 +450,7 @@
     {
       "input": "-- single comment\\\nwith line continuity\nSELECT * FROM a",
       "output": {
-        "failure": "invalid argument: found continuity at 29:39 expected '(', or 'AS'"
+        "failure": "[PARSE_SYNTAX_ERROR] Syntax error at or near 'continuity'."
       }
     },
     {

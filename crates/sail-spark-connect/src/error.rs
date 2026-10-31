@@ -16,6 +16,9 @@ use sail_plan::error::PlanError;
 use sail_python_udf::error::PyErrExtractor;
 use sail_session::error::SessionError;
 use sail_sql_analyzer::error::SqlError;
+
+#[cfg(test)]
+mod syntax_tests;
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinError;
@@ -98,7 +101,10 @@ impl From<SqlError> for SparkError {
             SqlError::InvalidArgument(message) => SparkError::InvalidArgument(message),
             SqlError::NotSupported(message) => SparkError::NotSupported(message),
             SqlError::InternalError(message) => SparkError::InternalError(message),
-            SqlError::SqlParserError(e) => SparkError::InvalidArgument(e.to_string()),
+            SqlError::SqlParserError(error) => match error.spark_syntax_error() {
+                Some(error) => SparkError::Structured(Box::new(error)),
+                None => SparkError::InvalidArgument(error.to_string()),
+            },
             SqlError::NotImplemented(message) => SparkError::NotImplemented(message),
             SqlError::AnalysisError(message) => SparkError::AnalysisError(message),
         }

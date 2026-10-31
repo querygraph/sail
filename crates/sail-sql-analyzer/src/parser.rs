@@ -23,6 +23,9 @@ use crate::literal::datetime::{
 };
 use crate::literal::interval::{IntervalValue, parse_unqualified_interval_string};
 
+#[cfg(test)]
+mod syntax_tests;
+
 pub(crate) fn map_parser_input<'a, C>(
     (t, s): &'a (Token<'a>, SimpleSpan<usize, C>),
 ) -> (&'a Token<'a>, &'a SimpleSpan<usize, C>) {

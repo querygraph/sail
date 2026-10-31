@@ -500,7 +500,7 @@
       "input": "SELECT /*+ HINT() */ * FROM t",
       "exception": "\n[PARSE_SYNTAX_ERROR] Syntax error at or near ')'. SQLSTATE: 42601 (line 1, pos 16)\n\n== SQL ==\nSELECT /*+ HINT() */ * FROM t\n----------------^^^\n",
       "output": {
-        "failure": "invalid argument: found ) at 16:17 expected expression"
+        "failure": "[PARSE_SYNTAX_ERROR] Syntax error at or near ')'."
       }
     },
     {
@@ -1183,7 +1183,7 @@
       "input": "SELECT /*+ INDEX(a b c) */ * from default.t",
       "exception": "\n[PARSE_SYNTAX_ERROR] Syntax error at or near 'b'. SQLSTATE: 42601 (line 1, pos 19)\n\n== SQL ==\nSELECT /*+ INDEX(a b c) */ * from default.t\n-------------------^^^\n",
       "output": {
-        "failure": "invalid argument: found b at 19:20 expected '->', '.', '(', '[', '::', 'ESCAPE', 'IS', 'NOT', 'IN', '*', '/', '%', 'DIV', '+', '-', '||', '>>>', '>>', '<<', '&', '^', '|', '!=', '!>', '!<', '==', '=', '>=', '>', '<=>', '<=', '<>', '<', 'BETWEEN', 'LIKE', 'ILIKE', 'RLIKE', 'REGEXP', 'SIMILAR', 'AND', 'OR', ',', or ')'"
+        "failure": "[PARSE_SYNTAX_ERROR] Syntax error at or near 'b'."
       }
     },
     {

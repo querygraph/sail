@@ -64,7 +64,7 @@ impl<'a> SqlSource<'a> {
             create_parser::<_, chumsky::extra::Err<chumsky::error::Rich<_, _>>>(&self.options)
                 .parse(tokens)
                 .into_result()
-                .map_err(SqlError::parser)?;
+                .map_err(|errors| SqlError::parser_with_source(errors, self.text))?;
         for statement in &statements {
             crate::validation::validate_insert_modes(statement)?;
         }
@@ -91,7 +91,7 @@ impl<'a> SqlSource<'a> {
         >(&self.options)
         .parse(tokens)
         .into_result()
-        .map_err(SqlError::parser)?;
+        .map_err(|errors| SqlError::parser_with_source(errors, self.text))?;
         for (statement, _) in &statements {
             crate::validation::validate_insert_modes(statement)?;
         }

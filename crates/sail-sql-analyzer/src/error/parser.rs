@@ -2,15 +2,18 @@
 
 use std::fmt;
 
-use chumsky::error::{Rich, RichReason};
+use chumsky::error::{Rich, RichPattern, RichReason};
 use sail_sql_parser::span::TokenSpan;
 
 use super::ParserErrorDisplay;
+
+mod spark;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParserFailureReason {
     ExpectedFound {
         expected: Vec<String>,
+        expects_end_of_input: bool,
         found: Option<String>,
     },
     Custom(String),
@@ -28,11 +31,17 @@ pub struct ParserFailure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParserDiagnostics {
     failures: Vec<ParserFailure>,
+    source: Option<String>,
 }
 
 impl ParserDiagnostics {
     pub fn failures(&self) -> &[ParserFailure] {
         &self.failures
+    }
+
+    pub(super) fn with_source(mut self, source: &str) -> Self {
+        self.source = Some(source.to_owned());
+        self
     }
 
     pub(super) fn from_errors<T, S>(errors: Vec<Rich<'_, T, S>>) -> Self
@@ -41,6 +50,7 @@ impl ParserDiagnostics {
         S: Into<TokenSpan> + Clone,
     {
         Self {
+            source: None,
             failures: errors
                 .into_iter()
                 .map(|error| ParserFailure {
@@ -48,6 +58,9 @@ impl ParserDiagnostics {
                         RichReason::ExpectedFound { expected, found } => {
                             ParserFailureReason::ExpectedFound {
                                 expected: expected.iter().map(ToString::to_string).collect(),
+                                expects_end_of_input: expected
+                                    .iter()
+                                    .any(|pattern| matches!(pattern, RichPattern::EndOfInput)),
                                 found: found.as_ref().map(|token| token.to_string()),
                             }
                         }

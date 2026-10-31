@@ -4,7 +4,7 @@
       "input": "\nSELECT * FROM (\n  SELECT year, course, earnings FROM courseSales\n)\nPIVOT (\n  sum(earnings)\n  FOR test-test IN ('dotNET', 'Java')\n);\n        ",
       "exception": "\n[INVALID_IDENTIFIER] The unquoted identifier test-test is invalid and must be back quoted as: `test-test`.\nUnquoted identifiers can only contain ASCII letters ('a' - 'z', 'A' - 'Z'), digits ('0' - '9'), and underbar ('_').\nUnquoted identifiers must also not start with a digit.\nDifferent data sources and meta stores may impose additional restrictions on valid identifiers. SQLSTATE: 42602 (line 7, pos 10)\n\n== SQL ==\n\nSELECT * FROM (\n  SELECT year, course, earnings FROM courseSales\n)\nPIVOT (\n  sum(earnings)\n  FOR test-test IN ('dotNET', 'Java')\n----------^^^\n);\n        \n",
       "output": {
-        "failure": "invalid argument: found test at 98:102 expected '('"
+        "failure": "[PARSE_SYNTAX_ERROR] Syntax error at or near 'test'."
       }
     },
     {
@@ -53,7 +53,7 @@
       "input": "SELECT 1 IS ! NULL",
       "exception": "\n[SYNTAX_DISCONTINUED.BANG_EQUALS_NOT] Support of the clause or keyword: ! has been discontinued in this context. The '!' keyword is only supported as an alias for the prefix operator 'NOT'.\nUse the 'NOT' keyword instead for infix clauses such as `NOT LIKE`, `NOT IN`, `NOT BETWEEN`, etc.\nTo re-enable the '!' keyword, set \"spark.sql.legacy.bangEqualsNot\" to \"true\". SQLSTATE: 42601\n== SQL (line 1, position 13) ==\nSELECT 1 IS ! NULL\n            ^\n",
       "output": {
-        "failure": "invalid argument: found ! at 12:13 expected 'NOT', 'FALSE', 'TRUE', 'UNKNOWN', 'NULL', or 'DISTINCT'"
+        "failure": "[PARSE_SYNTAX_ERROR] Syntax error at or near '!'."
       }
     },
     {
@@ -95,14 +95,14 @@
       "input": "SELECT cast('a' as Varchar)",
       "exception": "\n[DATATYPE_MISSING_SIZE] DataType \"VARCHAR\" requires a length parameter, for example \"VARCHAR\"(10). Please specify the length. SQLSTATE: 42K01\n== SQL (line 1, position 20) ==\nSELECT cast('a' as Varchar)\n                   ^^^^^^^\n",
       "output": {
-        "failure": "invalid argument: found ) at 26:27 expected '('"
+        "failure": "[PARSE_SYNTAX_ERROR] Syntax error at or near ')'."
       }
     },
     {
       "input": "SELECT cast(1 as badtype)",
       "exception": "\n[UNSUPPORTED_DATATYPE] Unsupported data type \"BADTYPE\". SQLSTATE: 0A000\n== SQL (line 1, position 18) ==\nSELECT cast(1 as badtype)\n                 ^^^^^^^\n",
       "output": {
-        "failure": "invalid argument: found badtype at 17:24 expected data type"
+        "failure": "[PARSE_SYNTAX_ERROR] Syntax error at or near 'badtype'."
       }
     }
   ]

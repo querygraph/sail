@@ -117,7 +117,7 @@ fn from_ast_pipeline_statement_impl(
             } = *statement
             else {
                 return Err(SqlError::analysis(
-                    "[PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR] Only INSERT INTO by name flows supported; partition specifications and target column lists are not allowed.",
+                    "Unable flow type. Only INSERT INTO flows are supported.",
                 ));
             };
             // Spark validates the INSERT policy before resolving the target name.

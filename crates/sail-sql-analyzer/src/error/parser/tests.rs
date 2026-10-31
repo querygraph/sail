@@ -10,6 +10,39 @@ use crate::source::SqlSource;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
+fn source_renderer_keeps_eof_and_legacy_fallbacks_distinct() -> TestResult {
+    let error = SqlSource::new("SELECT")?
+        .parse_statements()
+        .err()
+        .ok_or("missing EOF error")?;
+    let SqlError::SqlParserError(diagnostic) = error else {
+        return Err("expected parser error".into());
+    };
+    let rendered = diagnostic
+        .spark_syntax_error()
+        .ok_or("missing EOF rendering")?;
+    assert_eq!(
+        rendered.parameters.get("error").map(String::as_str),
+        Some("end of input")
+    );
+    let custom = ParserDiagnostics::from_errors(vec![Rich::<char, SimpleSpan>::custom(
+        (0..1).into(),
+        "custom",
+    )])
+    .with_source("x");
+    assert!(custom.spark_syntax_error().is_none());
+    let errors = just::<_, _, chumsky::extra::Err<Rich<_, _>>>('x')
+        .parse(" ")
+        .into_result()
+        .err()
+        .ok_or("expected whitespace mismatch")?;
+    let diagnostic = ParserDiagnostics::from_errors(errors);
+    assert!(diagnostic.spark_syntax_error().is_none());
+    assert!(diagnostic.with_source(" ").spark_syntax_error().is_none());
+    Ok(())
+}
+
+#[test]
 fn owned_failures_preserve_custom_reasons_order_spans_and_display() {
     let errors = vec![
         Rich::<char, SimpleSpan>::custom((2..5).into(), "first"),
@@ -49,6 +82,7 @@ fn expected_found_keeps_token_and_eof_distinct() -> TestResult {
         let ParserFailureReason::ExpectedFound {
             expected,
             found: actual,
+            ..
         } = &failure.reason
         else {
             return Err("expected a structured token mismatch".into());
@@ -58,6 +92,26 @@ fn expected_found_keeps_token_and_eof_distinct() -> TestResult {
         assert_eq!(failure.span.start, 0);
         assert_eq!(failure.span.end, input.len());
     }
+    Ok(())
+}
+
+#[test]
+fn trailing_statement_token_does_not_invent_an_empty_recovery_hint() -> TestResult {
+    let error = SqlSource::new("CREATE FLOW f AS INSERT INTO output BY NAME SELECT 1 )")?
+        .parse_statements()
+        .err()
+        .ok_or("expected trailing-token error")?;
+    let SqlError::SqlParserError(diagnostic) = error else {
+        return Err("expected parser error".into());
+    };
+    assert!(diagnostic.failures().iter().any(|failure| matches!(
+        failure.reason,
+        ParserFailureReason::ExpectedFound {
+            expects_end_of_input: true,
+            ..
+        }
+    )));
+    assert!(diagnostic.spark_syntax_error().is_none());
     Ok(())
 }
 

@@ -125,7 +125,10 @@ impl From<SqlError> for PlanError {
     fn from(value: SqlError) -> Self {
         match value {
             SqlError::Structured(error) => PlanError::Structured(error),
-            SqlError::SqlParserError(error) => PlanError::InvalidArgument(error.to_string()),
+            SqlError::SqlParserError(error) => match error.spark_syntax_error() {
+                Some(error) => PlanError::Structured(Box::new(error)),
+                None => PlanError::InvalidArgument(error.to_string()),
+            },
             SqlError::MissingArgument(message) => PlanError::MissingArgument(message),
             SqlError::InvalidArgument(message) => PlanError::InvalidArgument(message),
             SqlError::NotImplemented(message) => PlanError::NotImplemented(message),
