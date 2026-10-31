@@ -305,6 +305,7 @@ fn non_foldable_annotation_prevents_builder_invocation() -> TestResult {
             arguments: vec![],
             function_context: FunctionContextInput {
                 require_foldable,
+                constant_context: false,
                 argument_display_names: &[],
                 plan_config: &config,
                 session_context: &context,

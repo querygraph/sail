@@ -95,8 +95,9 @@ impl PlanResolver<'_> {
         schema: &DFSchemaRef,
         state: &mut PlanResolverState,
     ) -> PlanResult<NamedExpr> {
-        let resolved = self.resolve_expression(expr, schema, state).await?;
-        let name = self.evaluate_identifier_expr(resolved, state)?;
+        let name = self
+            .resolve_scalar_identifier_expr(expr, schema, state)
+            .await?;
         let object_name = sail_sql_analyzer::expression::from_ast_object_name(
             sail_sql_analyzer::parser::parse_object_name(&name)?,
         )?;

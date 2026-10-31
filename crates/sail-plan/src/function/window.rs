@@ -904,6 +904,7 @@ mod tests {
                 distinct: false,
                 function_context: FunctionContextInput {
                     require_foldable: false,
+                    constant_context: false,
                     argument_display_names: &argument_display_names,
                     plan_config: &plan_config,
                     session_context: &session_context,

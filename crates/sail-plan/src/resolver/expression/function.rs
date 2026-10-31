@@ -14,7 +14,9 @@ use sail_function::scalar::multi_expr::MultiExpr;
 use sail_python_udf::udf::pyspark_unresolved_udf::PySparkUnresolvedUDF;
 
 use crate::error::{PlanError, PlanResult};
-use crate::function::common::{AggFunctionInput, FunctionContextInput, ScalarFunctionInput};
+use crate::function::common::{
+    AggFunctionInput, FunctionContextInput, ScalarFunctionBuilder, ScalarFunctionInput,
+};
 use crate::function::{
     get_built_in_aggregate_function, get_built_in_function, is_higher_order_function,
 };
@@ -95,8 +97,8 @@ impl PlanResolver<'_> {
                 .get_function(&canonical_function_name)?
                 .is_none()
         {
-            // Spark prepares this runtime replacement into a type literal before
-            // foldability validation. Its discarded argument need not be foldable;
+            // Spark typeof is foldable by override and reads only its argument's
+            // resolved type. Its discarded argument need not be foldable;
             // table identifier subqueries remain unresolved in the child scope.
             state.config_mut().require_foldable = false;
         }
@@ -140,8 +142,10 @@ impl PlanResolver<'_> {
 
         // FIXME: `is_user_defined_function` is always false,
         //   so we need to check UDFs before built-in functions.
+        let mut non_foldable = is_higher_order_function(&canonical_function_name);
         let func = match catalog_manager.get_function(&canonical_function_name)? {
             Some(udf) => {
+                non_foldable = true;
                 if ignore_nulls.is_some() || filter.is_some() || order_by.is_some() {
                     return Err(PlanError::invalid("invalid scalar function clause"));
                 }
@@ -190,6 +194,7 @@ impl PlanResolver<'_> {
                             arguments,
                             function_context: FunctionContextInput {
                                 require_foldable: state.config().require_foldable,
+                                constant_context: state.config().constant_context,
                                 argument_display_names: &argument_display_names,
                                 plan_config: &self.config,
                                 session_context: self.ctx,
@@ -250,6 +255,7 @@ impl PlanResolver<'_> {
                                         .preserve_count_argument_columns,
                                     function_context: FunctionContextInput {
                                         require_foldable: state.config().require_foldable,
+                                        constant_context: state.config().constant_context,
                                         argument_display_names: &argument_display_names,
                                         plan_config: &self.config,
                                         session_context: self.ctx,
@@ -278,6 +284,12 @@ impl PlanResolver<'_> {
         // resolution, which sees the whole expression tree, can bind.
         let func = if has_lambda_argument && !state.in_lambda_scope() {
             func.resolve_lambda_variables(schema)?.data
+        } else {
+            func
+        };
+
+        let func = if non_foldable && state.config().constant_context {
+            ScalarFunctionBuilder::mark_non_foldable(func)
         } else {
             func
         };

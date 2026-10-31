@@ -32,6 +32,7 @@ impl PlanResolver<'_> {
         let schema = Arc::new(DFSchema::empty());
         let mut state = PlanResolverState::new();
         state.config_mut().require_foldable = true;
+        state.config_mut().constant_context = true;
         let resolved = self
             .resolve_expression(expression, &schema, &mut state)
             .await

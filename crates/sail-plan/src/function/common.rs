@@ -30,6 +30,8 @@ pub struct FunctionContextInput<'a> {
     pub schema: &'a DFSchemaRef,
     /// Require foldability before a builder can erase function provenance.
     pub require_foldable: bool,
+    /// Preserve non-foldability in the lowered expression in constant-name contexts.
+    pub constant_context: bool,
 }
 
 pub struct ScalarFunctionInput<'a> {
@@ -50,8 +52,18 @@ impl ScalarFunctionBuilder {
                     "[NOT_A_CONSTANT_STRING.NOT_CONSTANT] function is not foldable",
                 ));
             }
-            function(input)
+            let preserve = input.function_context.constant_context;
+            let expression = function(input)?;
+            Ok(if preserve {
+                Self::mark_non_foldable(expression)
+            } else {
+                expression
+            })
         })
+    }
+
+    pub fn mark_non_foldable(expression: expr::Expr) -> expr::Expr {
+        sail_common_datafusion::literal::mark_non_foldable(expression)
     }
 
     pub fn nullary<F, R>(f: F) -> ScalarFunction

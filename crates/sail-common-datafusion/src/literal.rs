@@ -1,9 +1,12 @@
 use datafusion::arrow::array::{RecordBatch, RecordBatchOptions};
 use datafusion::physical_expr::create_physical_expr;
-use datafusion_common::{DFSchema, Result, ScalarValue, exec_datafusion_err, exec_err};
+use datafusion_common::{DFSchema, Result, ScalarValue, exec_datafusion_err, exec_err, plan_err};
 use datafusion_expr::execution_props::ExecutionProps;
 use datafusion_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion_expr::{ColumnarValue, Expr};
+
+mod non_foldable;
+pub use non_foldable::mark_non_foldable;
 
 pub struct LiteralEvaluator {
     schema: DFSchema,
@@ -35,6 +38,12 @@ impl LiteralEvaluator {
     }
 
     pub fn evaluate(&self, expr: &Expr) -> Result<ScalarValue> {
+        // Do not let value materialization erase an inactive branch's provenance.
+        if non_foldable::contains_marker(expr)? {
+            return plan_err!(
+                "[NOT_A_CONSTANT_STRING.NOT_CONSTANT] non-foldable function cannot be materialized"
+            );
+        }
         let expr = create_physical_expr(
             expr,
             &self.schema,

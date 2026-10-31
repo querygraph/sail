@@ -20,7 +20,7 @@ use crate::formatter::SparkPlanFormatter;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn context() -> Result<SessionContext, Box<dyn std::error::Error>> {
+pub(super) fn context() -> Result<SessionContext, Box<dyn std::error::Error>> {
     let provider = MemoryCatalogProvider::new("catalog".into(), vec!["db"].try_into()?, None);
     let manager = CatalogManager::try_new(CatalogManagerOptions {
         catalogs: HashMap::from([(
@@ -42,7 +42,7 @@ fn context() -> Result<SessionContext, Box<dyn std::error::Error>> {
         SessionStateBuilder::new().with_config(config).build(),
     ))
 }
-fn expression(sql: &str) -> PlanResult<spec::Expr> {
+pub(super) fn expression(sql: &str) -> PlanResult<spec::Expr> {
     Ok(sail_sql_analyzer::expression::from_ast_expression(
         sail_sql_analyzer::parser::parse_expression(sql)?,
     )?)

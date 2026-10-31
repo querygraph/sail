@@ -157,6 +157,7 @@ impl PlanResolver<'_> {
                         distinct: is_distinct,
                         function_context: FunctionContextInput {
                             require_foldable: state.config().require_foldable,
+                            constant_context: state.config().constant_context,
                             argument_display_names: &argument_display_names,
                             plan_config: &self.config,
                             session_context: self.ctx,

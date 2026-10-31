@@ -23,6 +23,7 @@ impl PlanResolver<'_> {
     ) -> PlanResult<String> {
         let mut scope = state.enter_config_scope();
         scope.state().config_mut().require_foldable = true;
+        scope.state().config_mut().constant_context = true;
         scope.state().config_mut().table_identifier = true;
         let resolved = self
             .resolve_expression(expression, &Arc::new(DFSchema::empty()), scope.state())
@@ -39,6 +40,21 @@ impl PlanResolver<'_> {
                 }
                 error => error,
             })?;
+        self.evaluate_identifier_expr(resolved, scope.state())
+    }
+
+    /// Scalar arguments finish semantic resolution before constant validation.
+    pub(super) async fn resolve_scalar_identifier_expr(
+        &self,
+        expression: spec::Expr,
+        schema: &datafusion_common::DFSchemaRef,
+        state: &mut PlanResolverState,
+    ) -> PlanResult<String> {
+        let mut scope = state.enter_config_scope();
+        scope.state().config_mut().constant_context = true;
+        let resolved = self
+            .resolve_expression(expression, schema, scope.state())
+            .await?;
         self.evaluate_identifier_expr(resolved, scope.state())
     }
 
@@ -99,3 +115,7 @@ impl PlanResolver<'_> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "identifier/provenance_tests.rs"]
+mod provenance_tests;

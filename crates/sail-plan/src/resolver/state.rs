@@ -57,6 +57,8 @@ impl FieldInfo {
 pub(super) struct PlanResolverStateConfig {
     /// Reject non-foldable expressions before lowering can erase their provenance.
     pub require_foldable: bool,
+    /// Lower constant-name arguments without losing their function foldability.
+    pub constant_context: bool,
     /// Table IDENTIFIER keeps subqueries unresolved while allowing type-only replacements.
     pub table_identifier: bool,
     pub arrow_allow_large_var_types: bool,
