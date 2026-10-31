@@ -3,9 +3,8 @@ use std::sync::Arc;
 use arrow::datatypes::DataType;
 use datafusion::optimizer::simplify_expressions::ExprSimplifier;
 use datafusion_common::DFSchema;
-use datafusion_common::tree_node::TreeNode;
 use datafusion_expr::simplify::SimplifyContextBuilder;
-use datafusion_expr::{Expr, ExprSchemable, Volatility};
+use datafusion_expr::{Expr, ExprSchemable};
 use sail_catalog::utils::quote_names_if_needed;
 use sail_common::spec;
 use sail_common_datafusion::literal::{LiteralEvaluator, LiteralValue};
@@ -98,36 +97,7 @@ impl PlanResolver<'_> {
     /// Check before simplification or physical evaluation can erase a volatile
     /// function or row-dependent child. Resolution calls this for each child too.
     pub(super) fn require_constant_expression(expression: &Expr) -> PlanResult<()> {
-        let non_constant = expression.exists(|node| {
-            Ok(match node {
-                Expr::Literal(..)
-                | Expr::Alias(..)
-                | Expr::BinaryExpr(..)
-                | Expr::Negative(..)
-                | Expr::Cast(..)
-                | Expr::TryCast(..)
-                | Expr::Not(..)
-                | Expr::IsNull(..)
-                | Expr::IsNotNull(..)
-                | Expr::IsTrue(..)
-                | Expr::IsNotTrue(..)
-                | Expr::IsFalse(..)
-                | Expr::IsNotFalse(..)
-                | Expr::IsUnknown(..)
-                | Expr::IsNotUnknown(..)
-                | Expr::Between(..)
-                | Expr::Like(..)
-                | Expr::SimilarTo(..)
-                | Expr::Case(..)
-                | Expr::InList(..) => false,
-                Expr::ScalarFunction(function) => {
-                    function.func.signature().volatility == Volatility::Volatile
-                        || function.func.as_async().is_some()
-                }
-                _ => true,
-            })
-        })?;
-        if non_constant {
+        if !validation::is_constant_expression(expression)? {
             Err(PlanError::analysis(
                 "[NOT_A_CONSTANT_STRING.NOT_CONSTANT] expression is not foldable",
             ))
@@ -139,3 +109,8 @@ impl PlanResolver<'_> {
 
 #[cfg(test)]
 mod tests;
+
+mod validation;
+
+#[cfg(test)]
+mod validation_tests;
