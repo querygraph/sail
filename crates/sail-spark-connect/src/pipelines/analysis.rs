@@ -205,30 +205,6 @@ async fn analyze_queries(
             if pending {
                 continue;
             }
-            if output.view.is_some()
-                && let Some(temporary) = graph.outputs.iter().find(|candidate| {
-                    candidate.kind == OutputType::TemporaryView
-                        && dependencies[&output.name].contains(&candidate.name)
-                })
-            {
-                return Err(Box::new(StructuredSparkError {
-                    class: "org.apache.spark.sql.AnalysisException".into(),
-                    condition: "INVALID_TEMP_OBJ_REFERENCE".into(),
-                    sql_state: "42K0F".into(),
-                    message: format!(
-                        "view {} references temporary view {}",
-                        quoted(&output.name),
-                        quoted(&temporary.name)
-                    ),
-                    parameters: HashMap::from([
-                        ("obj".into(), "view".into()),
-                        ("objName".into(), quoted(&output.name)),
-                        ("tempObj".into(), "temporary view".into()),
-                        ("tempObjName".into(), quoted(&temporary.name)),
-                    ]),
-                })
-                .into());
-            }
             // A dataset without a producer has no query to resolve. Carry its
             // empty schema until graph validation reports DATASET_WITHOUT_FLOW,
             // including for temporary views.
@@ -264,6 +240,34 @@ async fn analyze_queries(
                 });
             }
             return Ok(Err(ResolutionFailures::new(graph, failures)?));
+        }
+    }
+    // Persisted-view source restrictions are graph validation, after successful
+    // query resolution (GraphValidations.validateSuccessfulFlowAnalysis).
+    for output in &graph.outputs {
+        if output.view.is_some()
+            && let Some(temporary) = graph.outputs.iter().find(|candidate| {
+                candidate.kind == OutputType::TemporaryView
+                    && dependencies[&output.name].contains(&candidate.name)
+            })
+        {
+            return Err(Box::new(StructuredSparkError {
+                class: "org.apache.spark.sql.AnalysisException".into(),
+                condition: "INVALID_TEMP_OBJ_REFERENCE".into(),
+                sql_state: "42K0F".into(),
+                message: format!(
+                    "view {} references temporary view {}",
+                    quoted(&output.name),
+                    quoted(&temporary.name)
+                ),
+                parameters: HashMap::from([
+                    ("obj".into(), "view".into()),
+                    ("objName".into(), quoted(&output.name)),
+                    ("tempObj".into(), "temporary view".into()),
+                    ("tempObjName".into(), quoted(&temporary.name)),
+                ]),
+            })
+            .into());
         }
     }
     // Spark resolves the graph before validating its semantics. In particular,

@@ -488,3 +488,37 @@ async fn unresolved_report_releases_working_providers_without_scanning() -> Test
     assert_eq!(scans.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn unresolved_query_precedes_persisted_view_source_restrictions() -> TestResult {
+    let ctx = sql::tests::resolution_context()?;
+    ctx.state_ref()
+        .write()
+        .config_mut()
+        .set_extension(Arc::new(DataSourceRegistry::new()));
+    for text in [
+        "CREATE TEMPORARY VIEW temporary AS SELECT 1 AS id; CREATE VIEW persisted AS SELECT * FROM temporary; CREATE MATERIALIZED VIEW missing AS SELECT * FROM missing_source",
+        "CREATE MATERIALIZED VIEW missing AS SELECT * FROM missing_source; CREATE TEMPORARY VIEW temporary AS SELECT 1 AS id; CREATE VIEW persisted AS SELECT * FROM temporary",
+    ] {
+        let graph = definition(text).await?;
+        let Some(AnalysisError::Unresolved(failures)) = analyze(&ctx, &graph).await.err() else {
+            return Err("persisted-view validation masked query resolution".into());
+        };
+        assert_eq!(
+            failures
+                .direct
+                .keys()
+                .map(|name| name.last().map(String::as_str))
+                .collect::<Vec<_>>(),
+            [Some("missing")]
+        );
+        assert!(failures.downstream.is_empty());
+        assert!(
+            failures
+                .direct
+                .values()
+                .all(|error| error.to_string().contains("missing_source"))
+        );
+    }
+    Ok(())
+}
