@@ -225,6 +225,7 @@ use sail_function::scalar::math::spark_try_mult::SparkTryMult;
 use sail_function::scalar::math::spark_try_subtract::SparkTrySubtract;
 use sail_function::scalar::math::spark_unhex::SparkUnHex;
 use sail_function::scalar::math::spark_uniform::SparkUniform;
+use sail_function::scalar::math::zero_division::{SparkZeroDivisionError, ZeroDivisionKind};
 use sail_function::scalar::misc::hll_sketch::{HllSketchEstimateFunction, HllUnionFunction};
 use sail_function::scalar::misc::raise_error::RaiseError;
 use sail_function::scalar::misc::spark_aes::{
@@ -3941,6 +3942,12 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             "multi_expr" => Ok(Arc::new(ScalarUDF::from(MultiExpr::new()))),
             "normalize_float_keys" => Ok(Arc::new(ScalarUDF::from(NormalizeFloatKeys::new()))),
             "raise_error" => Ok(Arc::new(ScalarUDF::from(RaiseError::new()))),
+            "spark_divide_by_zero" => Ok(Arc::new(ScalarUDF::from(SparkZeroDivisionError::new(
+                ZeroDivisionKind::Divide,
+            )))),
+            "spark_remainder_by_zero" => Ok(Arc::new(ScalarUDF::from(
+                SparkZeroDivisionError::new(ZeroDivisionKind::Remainder),
+            ))),
             "random_poisson" => Ok(Arc::new(ScalarUDF::from(RandPoisson::new()))),
             "randn" => Ok(Arc::new(ScalarUDF::from(Randn::new()))),
             "spark_cast_to_variant" => Ok(Arc::new(ScalarUDF::from(SparkCastToVariant::new()))),
@@ -4170,6 +4177,7 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             || node_inner.is::<RepeatFunc>()
             || node_inner.is::<ParseUrl>()
             || node_inner.is::<RaiseError>()
+            || node_inner.is::<SparkZeroDivisionError>()
             || node_inner.is::<Randn>()
             || node_inner.is::<Random>()
             || node_inner.is::<RandPoisson>()
@@ -9329,3 +9337,7 @@ mod file_scan_identity_tests;
 
 #[cfg(test)]
 mod orc_tests;
+
+#[cfg(test)]
+#[path = "codec/zero_division_tests.rs"]
+mod zero_division_tests;

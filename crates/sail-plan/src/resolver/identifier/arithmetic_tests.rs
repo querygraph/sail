@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use arrow::error::ArrowError;
-use datafusion_common::DFSchema;
+use datafusion_common::{DFSchema, ScalarValue};
 
 use super::tests::{context, expression};
 use super::*;
@@ -56,14 +55,146 @@ async fn constant_type_validation_precedes_arithmetic_and_restores_ordinary_poli
         let plan = sail_sql_analyzer::statement::from_ast_statement(
             sail_sql_analyzer::parser::parse_one_statement("SELECT 1 DIV 0")?,
         )?;
-        let ordinary = resolver.resolve_named_plan(plan).await;
+        // Lowering succeeds; an actually evaluated zero divisor still fails in ANSI.
+        let ordinary = resolver.resolve_named_plan(plan).await?;
+        let result = async {
+            ctx.execute_logical_plan(ordinary.plan)
+                .await?
+                .collect()
+                .await
+        }
+        .await;
         if ansi_mode {
-            assert!(matches!(
-                ordinary,
-                Err(PlanError::ArrowError(ArrowError::DivideByZero))
-            ));
+            let error = result.err().ok_or("ANSI zero division was accepted")?;
+            assert!(error.to_string().contains("DIVIDE_BY_ZERO"), "{error}");
         } else {
-            assert!(ordinary.is_ok());
+            let batches = result?;
+            assert_eq!(
+                batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                1
+            );
+            assert_eq!(
+                ScalarValue::try_from_array(batches[0].column(0), 0)?,
+                ScalarValue::Int64(None)
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn ordinary_lowering_preserves_type_only_parents_and_dead_arithmetic() -> TestResult {
+    let ctx = context()?;
+    for ansi_mode in [true, false] {
+        let resolver = PlanResolver::new(
+            &ctx,
+            Arc::new(PlanConfig {
+                ansi_mode,
+                ..Default::default()
+            }),
+        );
+        for (sql, expected) in [
+            (
+                "SELECT typeof(1 DIV 0)",
+                ScalarValue::Utf8(Some("bigint".into())),
+            ),
+            (
+                "SELECT typeof(1 / 0)",
+                ScalarValue::Utf8(Some("double".into())),
+            ),
+            (
+                "SELECT typeof(1 % 0)",
+                ScalarValue::Utf8(Some("int".into())),
+            ),
+            (
+                "SELECT typeof(CAST(1 DIV 0 AS STRING))",
+                ScalarValue::Utf8(Some("string".into())),
+            ),
+            (
+                "SELECT CASE WHEN false THEN 1 DIV 0 ELSE 7 END",
+                ScalarValue::Int64(Some(7)),
+            ),
+            ("SELECT coalesce(7, 1 DIV 0)", ScalarValue::Int64(Some(7))),
+            (
+                "SELECT CAST(NULL AS BIGINT) DIV 0",
+                ScalarValue::Int64(None),
+            ),
+        ] {
+            let plan = sail_sql_analyzer::statement::from_ast_statement(
+                sail_sql_analyzer::parser::parse_one_statement(sql)?,
+            )?;
+            let plan = resolver.resolve_named_plan(plan).await?;
+            let batches = ctx.execute_logical_plan(plan.plan).await?.collect().await?;
+            assert_eq!(
+                batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                1,
+                "ansi={ansi_mode}: {sql}"
+            );
+            assert_eq!(
+                ScalarValue::try_from_array(batches[0].column(0), 0)?,
+                expected,
+                "ansi={ansi_mode}: {sql}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn floating_signed_zero_divisors_preserve_ansi_policy_and_result_types() -> TestResult {
+    let ctx = context()?;
+    for ansi_mode in [true, false] {
+        let resolver = PlanResolver::new(
+            &ctx,
+            Arc::new(PlanConfig {
+                ansi_mode,
+                ..Default::default()
+            }),
+        );
+        for data_type in ["FLOAT", "DOUBLE"] {
+            for zero in ["0.0D", "-0.0D"] {
+                for (operation, expected) in [
+                    ("/", ScalarValue::Float64(None)),
+                    ("DIV", ScalarValue::Int64(None)),
+                    (
+                        "%",
+                        if data_type == "FLOAT" {
+                            ScalarValue::Float32(None)
+                        } else {
+                            ScalarValue::Float64(None)
+                        },
+                    ),
+                ] {
+                    let sql = format!(
+                        "SELECT CAST(1 AS {data_type}) {operation} CAST({zero} AS {data_type})"
+                    );
+                    let plan = sail_sql_analyzer::statement::from_ast_statement(
+                        sail_sql_analyzer::parser::parse_one_statement(&sql)?,
+                    )?;
+                    let plan = resolver.resolve_named_plan(plan).await?;
+                    let result =
+                        async { ctx.execute_logical_plan(plan.plan).await?.collect().await }.await;
+                    if ansi_mode {
+                        let error = result
+                            .err()
+                            .ok_or("signed-zero ANSI arithmetic was accepted")?;
+                        let condition = if operation == "%" {
+                            "REMAINDER_BY_ZERO"
+                        } else {
+                            "DIVIDE_BY_ZERO"
+                        };
+                        assert!(error.to_string().contains(condition), "{sql}: {error}");
+                    } else {
+                        let batches = result?;
+                        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+                        assert_eq!(
+                            ScalarValue::try_from_array(batches[0].column(0), 0)?,
+                            expected,
+                            "{sql}"
+                        );
+                    }
+                }
+            }
         }
     }
     Ok(())

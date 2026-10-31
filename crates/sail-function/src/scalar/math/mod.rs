@@ -21,3 +21,4 @@ pub mod spark_unhex;
 pub mod spark_uniform;
 mod utils;
 pub mod xorshift;
+pub mod zero_division;

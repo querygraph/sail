@@ -14,12 +14,4 @@ impl ConstantContext {
             Self::Identifier => true,
         }
     }
-
-    /// Validate the identifier's type before evaluating constant arithmetic.
-    pub(crate) fn defer_arithmetic_evaluation(self) -> bool {
-        match self {
-            Self::Ordinary => false,
-            Self::Identifier => true,
-        }
-    }
 }
