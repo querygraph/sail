@@ -67,6 +67,8 @@ pub(super) async fn resolve_inputs(
     let required = inputs(graph, analyzed, target)?;
     let mut resolved = BTreeMap::new();
     let mut accepted = BTreeMap::new();
+    // Modes were checked at graph analysis; committed inputs are concrete here.
+    let view_streaming = BTreeMap::new();
     for name in analyzed
         .order
         .iter()
@@ -88,6 +90,7 @@ pub(super) async fn resolve_inputs(
                 graph,
                 resolved: &resolved,
                 virtual_tables: None,
+                view_streaming: &view_streaming,
                 accepted: &accepted,
                 base: command_conf,
                 source_case_sensitive: command_config.case_sensitive,

@@ -12,9 +12,11 @@ use sail_plan::resolver::PlanResolver;
 use sail_plan::resolver::plan::NamedPlan;
 
 use super::merge::{ConfMap, ViewContribution, first_pass_map, merge};
+use crate::config::INCOMPATIBLE_VIEW_CHECK;
 use crate::error::{SparkError, SparkResult, StructuredSparkError};
 use crate::pipelines::analysis::GraphScope;
 use crate::pipelines::graph::{Flow, GraphDefinition, Name};
+use crate::service::reads_streaming_source;
 use crate::session::SparkSession;
 use crate::spark::connect::OutputType;
 
@@ -23,6 +25,7 @@ pub(in crate::pipelines) struct ResolvedFlow {
     pub publication: Option<CreateViewOptions>,
     pub accepted: ConfMap,
     pub reads: BTreeSet<Name>,
+    pub streaming: bool,
 }
 pub(in crate::pipelines) struct PendingFlow {
     pub input: Name,
@@ -45,11 +48,13 @@ enum CallResult {
 struct Call {
     result: CallResult,
     reads: BTreeSet<Name>,
+    streaming: bool,
 }
 struct ResolvedCall {
     plan: NamedPlan,
     publication: Option<CreateViewOptions>,
     reads: BTreeSet<Name>,
+    streaming: bool,
 }
 impl Call {
     fn into_plan(self) -> Result<ResolvedCall, FlowResolution> {
@@ -60,6 +65,7 @@ impl Call {
                     plan,
                     publication,
                     reads: self.reads,
+                    streaming: self.streaming,
                 })
             }
             CallResult::Pending(input) => Err(FlowResolution::Pending(PendingFlow {
@@ -112,6 +118,7 @@ pub(in crate::pipelines) struct FlowContext<'a> {
     pub graph: &'a GraphDefinition,
     pub resolved: &'a BTreeMap<Name, LogicalPlan>,
     pub virtual_tables: Option<&'a BTreeMap<Name, crate::pipelines::schema::VirtualTableSchema>>,
+    pub view_streaming: &'a BTreeMap<Name, bool>,
     pub accepted: &'a BTreeMap<Name, ConfMap>,
     pub base: &'a ConfMap,
     pub source_case_sensitive: bool,
@@ -173,6 +180,7 @@ impl FlowContext<'_> {
             return Ok(Call {
                 result: CallResult::Pending(self.unavailable_input(ordered.iter())?),
                 reads,
+                streaming: false,
             });
         };
         let semantic = first_pass_map(
@@ -187,7 +195,25 @@ impl FlowContext<'_> {
         let (config, settings) = spark.flow_call_config(overlay(self.base, &semantic))?;
         let scope = GraphScope::new(self.graph, self.resolved, flow);
         let scope = match self.virtual_tables {
-            Some(tables) => scope.with_virtual_tables(self.ctx, tables, settings),
+            Some(tables) => {
+                // Spark reads this from the conf in force at the read, before the
+                // target view's own settings fuse. The merged map reaches it only
+                // on a second call, which a failed check here never starts.
+                let view_check = match conf.get(INCOMPATIBLE_VIEW_CHECK) {
+                    Some(value) => Some(value.clone()),
+                    None => match self.base.get(INCOMPATIBLE_VIEW_CHECK) {
+                        Some(value) => Some(value.clone()),
+                        None => spark.incompatible_view_check()?,
+                    },
+                };
+                scope.with_virtual_tables(
+                    self.ctx,
+                    tables,
+                    settings,
+                    self.view_streaming,
+                    view_check,
+                )
+            }
             None => scope,
         };
         let resolver = PlanResolver::new(self.ctx, config)
@@ -203,17 +229,20 @@ impl FlowContext<'_> {
                 .await
                 .map(|plan| (plan, None)),
         };
+        let streaming = scope.reads_streaming_input() || reads_streaming_source(&flow.query);
         let actual = scope.reads.into_inner()?;
         match result {
             Ok(plan) => Ok(Call {
                 result: CallResult::Resolved(Box::new(plan)),
                 reads: actual,
+                streaming,
             }),
             Err(PlanError::UnresolvedRelation(input)) => {
                 reads.extend(actual);
                 Ok(Call {
                     result: CallResult::Pending(input),
                     reads,
+                    streaming,
                 })
             }
             Err(error) => {
@@ -221,6 +250,7 @@ impl FlowContext<'_> {
                 Ok(Call {
                     result: CallResult::Failed(error.into()),
                     reads,
+                    streaming,
                 })
             }
         }
@@ -268,21 +298,27 @@ impl FlowContext<'_> {
                 ]),
             })
         })?;
-        let (plan, publication, reads) = if merged.changed {
+        let (plan, publication, reads, streaming) = if merged.changed {
             // The second call's raw configuration is the accepted union. Spark does
             // not run the merge a third time if that call binds a different input.
             let second = match self.call(flow, view, &merged.map).await?.into_plan() {
                 Ok(plan) => plan,
                 Err(status) => return Ok(status),
             };
-            (second.plan, second.publication, second.reads)
+            (
+                second.plan,
+                second.publication,
+                second.reads,
+                second.streaming,
+            )
         } else {
-            (first.plan, first.publication, first.reads)
+            (first.plan, first.publication, first.reads, first.streaming)
         };
         Ok(FlowResolution::Resolved(Box::new(ResolvedFlow {
             plan,
             publication,
             reads,
+            streaming,
             accepted: merged.map,
         })))
     }

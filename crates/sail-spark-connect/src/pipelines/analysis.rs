@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use datafusion::arrow::datatypes::SchemaRef;
@@ -13,7 +14,7 @@ use sail_plan::resolver::scope::RelationScope;
 
 use super::graph::{Flow, GraphDefinition, Name, analysis, quoted};
 use super::schema::VirtualTableSchema;
-use crate::config::EncoderSchemaSettings;
+use crate::config::{EncoderSchemaSettings, INCOMPATIBLE_VIEW_CHECK};
 use crate::error::{SparkError, SparkResult, StructuredSparkError};
 use crate::session::SparkSession;
 use crate::spark::connect::OutputType;
@@ -27,6 +28,9 @@ pub(super) struct GraphScope<'a> {
     pub reads: Mutex<BTreeSet<Name>>,
     pub flow: &'a Flow,
     virtual_tables: Option<VirtualInputs<'a>>,
+    // Whether any input of this call is streaming as analyzed, which a STREAM
+    // flag alone does not decide for a graph view.
+    streaming: AtomicBool,
 }
 
 /// Provider-free materialized inputs of one flow call. `settings` is that call's
@@ -35,6 +39,49 @@ struct VirtualInputs<'a> {
     ctx: &'a SessionContext,
     tables: &'a BTreeMap<Name, VirtualTableSchema>,
     settings: EncoderSchemaSettings,
+    views: &'a BTreeMap<Name, bool>,
+    // Raw so an invalid value fails the flow reading a view, not the whole graph.
+    view_check: Option<String>,
+}
+
+impl VirtualInputs<'_> {
+    /// Spark rejects a read whose mode differs from the view's analyzed mode.
+    fn check_view_read(&self, name: &Name, is_streaming: bool, streaming: bool) -> PlanResult<()> {
+        if is_streaming == streaming || !self.view_check_enabled()? {
+            return Ok(());
+        }
+        let identifier = quoted(name);
+        let (condition, kind, reader) = if is_streaming {
+            ("INCOMPATIBLE_BATCH_VIEW_READ", "batch", "read")
+        } else {
+            (
+                "INCOMPATIBLE_STREAMING_VIEW_READ",
+                "streaming",
+                "readStream",
+            )
+        };
+        Err(PlanError::Structured(Box::new(StructuredSparkError {
+            class: "org.apache.spark.sql.AnalysisException".into(),
+            condition: condition.into(),
+            sql_state: "42000".into(),
+            message: format!(
+                "View {identifier} is a {kind} view and must be referenced using SparkSession#{reader}. This check can be disabled by setting Spark conf {INCOMPATIBLE_VIEW_CHECK} = false."
+            ),
+            parameters: HashMap::from([("datasetIdentifier".into(), identifier)]),
+        })))
+    }
+
+    // Scala's String.toBoolean: case-insensitive, untrimmed, with its own error text.
+    fn view_check_enabled(&self) -> PlanResult<bool> {
+        match self.view_check.as_deref() {
+            None => Ok(true),
+            Some(value) if value.eq_ignore_ascii_case("true") => Ok(true),
+            Some(value) if value.eq_ignore_ascii_case("false") => Ok(false),
+            Some(value) => Err(PlanError::InvalidArgument(format!(
+                "For input string: \"{value}\""
+            ))),
+        }
+    }
 }
 
 impl<'a> GraphScope<'a> {
@@ -50,6 +97,7 @@ impl<'a> GraphScope<'a> {
             reads: Mutex::default(),
             flow,
             virtual_tables: None,
+            streaming: AtomicBool::new(false),
         }
     }
     pub fn with_virtual_tables(
@@ -57,13 +105,26 @@ impl<'a> GraphScope<'a> {
         ctx: &'a SessionContext,
         tables: &'a BTreeMap<Name, VirtualTableSchema>,
         settings: EncoderSchemaSettings,
+        views: &'a BTreeMap<Name, bool>,
+        view_check: Option<String>,
     ) -> Self {
         self.virtual_tables = Some(VirtualInputs {
             ctx,
             tables,
             settings,
+            views,
+            view_check,
         });
         self
+    }
+
+    /// Whether this call read any graph or external input as a stream.
+    pub fn reads_streaming_input(&self) -> bool {
+        self.streaming.load(Ordering::Relaxed)
+    }
+
+    fn record_streaming(&self, streaming: bool) {
+        self.streaming.fetch_or(streaming, Ordering::Relaxed);
     }
     pub fn input_name(&self, name: &[String]) -> PlanResult<Name> {
         let raw: Name = name.iter().map(|x| x.to_ascii_lowercase()).collect();
@@ -84,6 +145,7 @@ impl<'a> GraphScope<'a> {
             if let Some(inputs) = &self.virtual_tables
                 && let Some(table) = inputs.tables.get(&name)
             {
+                self.record_streaming(is_streaming);
                 let schema = if is_streaming {
                     table.load_streaming(inputs.ctx, inputs.settings)
                 } else {
@@ -95,12 +157,19 @@ impl<'a> GraphScope<'a> {
                     schema: Arc::new(DFSchema::try_from(schema)?),
                 })));
             }
+            if let Some(inputs) = &self.virtual_tables
+                && let Some(&streaming) = inputs.views.get(&name)
+            {
+                inputs.check_view_read(&name, is_streaming, streaming)?;
+                self.record_streaming(streaming);
+            }
             self.resolved
                 .get(&name)
                 .cloned()
                 .map(Some)
                 .ok_or(PlanError::UnresolvedRelation(name))
         } else {
+            self.record_streaming(is_streaming);
             Ok(None)
         }
     }
@@ -119,6 +188,15 @@ impl RelationScope for GraphScope<'_> {
     // Their expression subqueries still use this scope; the eventual target does not.
     fn resolve_late_bound(&self, _: &[String]) -> PlanResult<Option<LogicalPlan>> {
         Ok(None)
+    }
+
+    fn resolve_late_bound_read(
+        &self,
+        name: &[String],
+        is_streaming: bool,
+    ) -> PlanResult<Option<LogicalPlan>> {
+        self.record_streaming(is_streaming);
+        self.resolve_late_bound(name)
     }
 
     fn qualify_late_bound(&self, name: &[String]) -> PlanResult<Name> {
@@ -200,6 +278,8 @@ async fn analyze_queries(
     let mut virtual_tables = BTreeMap::new();
     let mut order = vec![];
     let mut flow_plans: BTreeMap<Name, LogicalPlan> = BTreeMap::new();
+    let mut flow_streaming: BTreeMap<Name, bool> = BTreeMap::new();
+    let mut view_streaming: BTreeMap<Name, bool> = BTreeMap::new();
     let mut flow_reads: BTreeMap<Name, BTreeSet<Name>> = BTreeMap::new();
     let mut failures: BTreeMap<Name, super::config::resolve::FailedFlow> = BTreeMap::new();
     let mut pending_flows = BTreeMap::new();
@@ -233,6 +313,7 @@ async fn analyze_queries(
                     graph,
                     resolved: &resolved,
                     virtual_tables: Some(&virtual_tables),
+                    view_streaming: &view_streaming,
                     accepted: &accepted_confs,
                     base: &base,
                     source_case_sensitive,
@@ -241,6 +322,7 @@ async fn analyze_queries(
                     super::config::resolve::FlowResolution::Resolved(result) => {
                         inputs.extend(result.reads.iter().cloned());
                         flow_reads.insert(flow.name.clone(), result.reads);
+                        flow_streaming.insert(flow.name.clone(), result.streaming);
                         pending_flows.remove(&flow.name);
                         accepted_confs.insert(flow.name.clone(), result.accepted);
                         if let Some(options) = result.publication {
@@ -279,6 +361,12 @@ async fn analyze_queries(
                     return Err(analysis("MULTIPLE_QUERIES_FOR_VIEW", quoted(&output.name)));
                 }
                 resolved.insert(output.name.clone(), plans.remove(0));
+                let streaming = graph
+                    .flows
+                    .iter()
+                    .filter(|flow| flow.target == output.name)
+                    .any(|flow| flow_streaming.get(&flow.name).copied().unwrap_or(false));
+                view_streaming.insert(output.name.clone(), streaming);
             } else {
                 // Construct the virtual input, not its schema. An unread output
                 // must not fail inference ahead of another unresolved query.
@@ -351,7 +439,7 @@ async fn analyze_queries(
     }
     // Spark resolves the graph before validating its semantics. In particular,
     // an unresolved source must not be hidden by flow count or streamingness.
-    graph.validate()?;
+    graph.validate(&flow_streaming)?;
     for output in &graph.outputs {
         if let Some(define_output::Details::TableDetails(details)) = &output.definition.details {
             super::properties::validate_reset(

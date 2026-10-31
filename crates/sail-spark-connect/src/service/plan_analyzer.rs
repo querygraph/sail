@@ -247,14 +247,22 @@ fn analyze_is_streaming(plan: sc::Plan) -> SparkResult<bool> {
 }
 
 pub(crate) fn is_streaming_query_plan(plan: &spec::QueryPlan) -> bool {
-    is_streaming_query_node(&plan.node, &HashMap::new())
+    is_streaming_query_node(&plan.node, &HashMap::new(), true)
+}
+
+/// Whether a plan streams from anything other than a named relation. The relation
+/// scope decides named reads, because a graph view's mode outranks the STREAM flag.
+pub(crate) fn reads_streaming_source(plan: &spec::QueryPlan) -> bool {
+    is_streaming_query_node(&plan.node, &HashMap::new(), false)
 }
 
 fn is_streaming_query_node(
     node: &spec::QueryNode,
     cte_scope: &HashMap<spec::Identifier, bool>,
+    named_reads: bool,
 ) -> bool {
-    let is_streaming = |plan: &spec::QueryPlan| is_streaming_query_node(&plan.node, cte_scope);
+    let is_streaming =
+        |plan: &spec::QueryPlan| is_streaming_query_node(&plan.node, cte_scope, named_reads);
     match node {
         spec::QueryNode::Read {
             read_type,
@@ -268,7 +276,7 @@ fn is_streaming_query_node(
             {
                 return *streaming;
             }
-            *is_streaming
+            *is_streaming && (named_reads || !matches!(read_type, spec::ReadType::NamedTable(_)))
         }
         // leaf nodes with no query plan inputs
         spec::QueryNode::LocalRelation { .. }
@@ -345,14 +353,14 @@ fn is_streaming_query_node(
             }
             let mut definitions_streaming = false;
             for (name, definition) in ctes {
-                let streaming = is_streaming_query_node(&definition.node, &scope);
+                let streaming = is_streaming_query_node(&definition.node, &scope, named_reads);
                 definitions_streaming |= streaming;
                 if !recursive {
                     scope.insert(name.clone(), streaming);
                 }
             }
             // Spark's analyzed WithCTE includes even unused definitions.
-            definitions_streaming || is_streaming_query_node(&input.node, &scope)
+            definitions_streaming || is_streaming_query_node(&input.node, &scope, named_reads)
         }
         spec::QueryNode::WithRelations { root, references } => {
             is_streaming(root) || references.iter().any(is_streaming)

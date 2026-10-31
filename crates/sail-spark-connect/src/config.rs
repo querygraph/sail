@@ -17,6 +17,7 @@ mod orc;
 
 const TYPES_FRAMEWORK_ENABLED: &str = "spark.sql.types.framework.enabled";
 const PRESERVE_CHAR_VARCHAR_TYPE_INFO: &str = "spark.sql.preserveCharVarcharTypeInfo";
+pub(crate) const INCOMPATIBLE_VIEW_CHECK: &str = "pipelines.incompatibleViewCheck.enabled";
 
 /// Settings that decide the schema a Spark row encoder derives. Spark defaults the
 /// framework key to `Utils.isTesting`, which is false outside Spark's own suites.
@@ -159,6 +160,10 @@ impl SparkRuntimeConfig {
             return self.get_with_default(fallback, default);
         }
         default
+    }
+
+    pub(crate) fn incompatible_view_check(&self) -> Option<String> {
+        self.get_option(INCOMPATIBLE_VIEW_CHECK).map(str::to_string)
     }
 
     pub(crate) fn encoder_schema_settings(&self) -> SparkResult<EncoderSchemaSettings> {

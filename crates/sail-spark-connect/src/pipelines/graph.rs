@@ -389,7 +389,9 @@ impl GraphDefinition {
     }
 
     /// Validate graph semantics only after its queries have resolved successfully.
-    pub(super) fn validate(&self) -> SparkResult<()> {
+    /// `flow_streaming` holds each flow's analyzed mode. A STREAM read of a batch
+    /// view is batch once its check is disabled, which a query cannot show.
+    pub(super) fn validate(&self, flow_streaming: &BTreeMap<Name, bool>) -> SparkResult<()> {
         let mut producers: BTreeMap<&Name, Vec<&Flow>> = BTreeMap::new();
         for flow in &self.flows {
             producers.entry(&flow.target).or_default().push(flow);
@@ -417,7 +419,9 @@ impl GraphDefinition {
                 ));
             }
             for flow in flows {
-                let streaming = crate::service::is_streaming_query_plan(&flow.query);
+                let streaming = flow_streaming.get(&flow.name).copied().ok_or_else(|| {
+                    SparkError::internal("validated flow has no analyzed streaming mode")
+                })?;
                 match output.kind {
                     sc::OutputType::Table if !streaming => {
                         return Err(analysis(

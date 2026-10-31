@@ -135,6 +135,11 @@ impl SparkSession {
         Ok((Arc::new(config), settings))
     }
 
+    /// The session's raw view read check setting, for callers holding a flow overlay.
+    pub(crate) fn incompatible_view_check(&self) -> SparkResult<Option<String>> {
+        Ok(self.state.lock()?.config.incompatible_view_check())
+    }
+
     pub(crate) fn add_pipeline(&self, graph: PipelineGraph) -> SparkResult<String> {
         let id = uuid::Uuid::new_v4().to_string();
         self.state
