@@ -135,9 +135,7 @@ fn from_ast_statement_impl(
                 Either::Right(_)
             )))
         }
-        Statement::CreatePipelineFlow { .. } => Err(SqlError::unsupported(
-            "pipeline declarations require a pipeline registration context",
-        )),
+        Statement::CreatePipelineFlow { .. } => Err(crate::pipeline::direct_flow_execution_error()),
         Statement::Query(query) => {
             let plan = from_ast_query(query)?;
             Ok(spec::Plan::Query(plan))

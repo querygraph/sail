@@ -149,3 +149,15 @@ pub(crate) fn direct_dataset_execution_error(streaming: bool) -> SqlError {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn direct_flow_execution_error() -> SqlError {
+    Box::new(sail_common::error::StructuredSparkError {
+        class: "org.apache.spark.SparkUnsupportedOperationException".into(),
+        condition: "UNSUPPORTED_FEATURE.CREATE_FLOW_QUERY_EXECUTION".into(),
+        sql_state: "0A000".into(),
+        message: "The feature is not supported: Direct execution of a CREATE FLOW statement is not supported. \
+                  To create a flow, create and execute a pipeline with a SQL file containing your statement \
+                  attached in the pipeline spec.".into(),
+        parameters: std::collections::HashMap::new(),
+    }).into()
+}
