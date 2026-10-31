@@ -7,10 +7,6 @@ use crate::pipelines::graph::Name;
 
 /// Reserved table property recording which SCD strategy the auxiliary table
 /// serves (`AutoCdcAuxiliaryTable.scdTypePropertyKey`).
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "written by the SCD1 write unit")
-)]
 pub(crate) const SCD_TYPE_PROPERTY: &str = "pipelines.autocdc.scdType";
 
 /// Reserved table property holding the auxiliary table's unquoted AutoCDC key
@@ -18,10 +14,6 @@ pub(crate) const SCD_TYPE_PROPERTY: &str = "pipelines.autocdc.scdType";
 /// (`AutoCdcAuxiliaryTable.keyColumnNamesProperty`). Written once when the
 /// table is created and immutable afterwards; a full refresh is the only way
 /// to change it.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "written by the SCD1 write unit")
-)]
 pub(crate) const KEY_COLUMN_NAMES_PROPERTY: &str = "pipelines.autocdc.keyColumnNames";
 
 /// The auxiliary table identifier derived from a target table identifier
@@ -40,7 +32,6 @@ pub(crate) fn table_name(target: &[String]) -> Name {
 /// Serialize key column names to the JSON array stored at
 /// [`KEY_COLUMN_NAMES_PROPERTY`] (`serializeKeyColumnNames`). The empty list
 /// round-trips as `[]`; callers enforce a non-empty key set upstream.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
 pub(crate) fn serialize_key_column_names(names: &[String]) -> String {
     // The JSON layer is the only encoding: identifier text is stored verbatim
     // apart from the escapes JSON itself requires, and SQL quoting never
@@ -50,10 +41,6 @@ pub(crate) fn serialize_key_column_names(names: &[String]) -> String {
 
 /// Parse a [`KEY_COLUMN_NAMES_PROPERTY`] value (`parseKeyColumnNames`).
 /// `None` unless the text is a JSON array whose elements are all strings.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the SCD1 drift validator unit")
-)]
 pub(crate) fn parse_key_column_names(raw: &str) -> Option<Vec<String>> {
     let serde_json::Value::Array(elements) = serde_json::from_str(raw).ok()? else {
         return None;
@@ -183,7 +170,6 @@ use crate::error::{SparkError, SparkResult};
 /// A key field of the auxiliary table: the name, type and nullability the
 /// flow's selected schema gives the key column.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
 pub(super) struct KeyField {
     pub name: String,
     pub data_type: spec::DataType,
@@ -204,7 +190,6 @@ impl KeyField {
 /// declared key resolved against the flow's selected schema, in declaration
 /// order. The definition-time validators have already checked the keys
 /// exist, so a miss is an internal error, not a user condition.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
 pub(super) fn expected_key_fields(
     keys: &[UnqualifiedColumnName],
     schema: &spec::Fields,
@@ -234,7 +219,6 @@ pub(super) fn expected_key_fields(
 /// type `T`, both members nullable, the field itself not nullable
 /// (`AutoCdcFlowSuite.scala:270–278`; the suites' `cdcMetadataDdl` declares
 /// it `NOT NULL`).
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
 pub(super) fn metadata_field(sequencing_type: &spec::DataType) -> spec::Field {
     let member = |name: &str| spec::Field {
         name: name.to_string(),
@@ -257,7 +241,6 @@ pub(super) fn metadata_field(sequencing_type: &spec::DataType) -> spec::Field {
 
 /// `Scd1MergeStreamingWrite.auxiliaryTableSchema` (`:661–662`): the key
 /// fields in declared order, then the CDC metadata field.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
 pub(super) fn auxiliary_schema(
     keys: &[KeyField],
     sequencing_type: &spec::DataType,
@@ -280,7 +263,6 @@ pub(super) fn auxiliary_schema(
 /// schema (the first miss in recorded order is reported), and then the
 /// recorded and expected keys must agree in count, name under the resolver
 /// and `sameType`.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
 pub(super) fn validate_no_key_drift(
     flow_name: &str,
     aux_table_name: &str,
@@ -350,7 +332,6 @@ pub(super) fn validate_no_key_drift(
 /// `requireDestinationSupportsRowLevelOps` (`FlowExecution.scala:435–455`):
 /// the `format` parameter is the declared format, else the table's provider
 /// property, else `<unknown>`.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
 pub(super) fn require_merge_support(
     table_name_quoted: &str,
     declared_format: Option<&str>,

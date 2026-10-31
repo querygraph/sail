@@ -31,6 +31,10 @@ pub(super) async fn execute(
         .iter()
         .any(|x| matches!(x.kind, OutputType::Table | OutputType::Sink))
     {
+        if super::autocdc::admitted(ctx, graph)? {
+            super::autocdc::execute_graph(ctx, graph, &analyzed, &selection).await?;
+            return Ok(());
+        }
         return Err(SparkError::unsupported("incremental pipeline execution"));
     }
     let spark = ctx.extension::<SparkSession>()?;

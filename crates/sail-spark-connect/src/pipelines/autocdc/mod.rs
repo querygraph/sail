@@ -14,20 +14,13 @@
 //! conditions in [`errors`].
 
 mod attribute;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "connected by the orchestration unit")
-)]
 mod authority;
 pub(super) mod auxiliary;
 mod ddl;
 mod dedup;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "connected by the admission unit")
-)]
 mod durable;
 mod errors;
+mod execute;
 mod lookup;
 mod merge;
 mod microbatch;
@@ -39,6 +32,7 @@ mod schema;
 mod tests;
 mod write;
 
+pub(super) use execute::{admitted, execute_graph};
 use sail_common::spec;
 use sail_sql_analyzer::expression::from_ast_object_name;
 use sail_sql_analyzer::parser::parse_object_name;

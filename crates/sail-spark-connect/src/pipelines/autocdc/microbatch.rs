@@ -6,10 +6,6 @@
 //! outside its transforms, so an invalid row can never disappear because
 //! another row with the same key wins. This is the pure component; the
 //! wiring unit supplies the resolved inputs described on [`Microbatch`].
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired by the prepared CDC input unit")
-)]
 
 use datafusion::arrow::array::AsArray;
 use datafusion::arrow::datatypes::{DataType, Int64Type};

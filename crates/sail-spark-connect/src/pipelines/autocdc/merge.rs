@@ -4,7 +4,6 @@
 //! view. Spark issues them with `Dataset.mergeInto`; Sail runs them through
 //! its MERGE resolver, which requires a target with row-level operations
 //! (the A3 merge-support check). Nothing here executes.
-#![cfg_attr(not(test), expect(dead_code, reason = "wired by the SCD1 write unit"))]
 
 use sail_common::spec;
 

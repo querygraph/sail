@@ -107,6 +107,7 @@ mod change_args;
 mod dedup;
 mod definition;
 mod durable;
+mod execute;
 mod fenced;
 mod graph;
 mod lookup;

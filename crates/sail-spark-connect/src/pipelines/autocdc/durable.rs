@@ -68,7 +68,7 @@ pub(super) struct DurableRun<'a, S> {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-pub(super) struct DurableOutcome {
+pub(in crate::pipelines) struct DurableOutcome {
     /// Batches this run completed.
     pub batches: u64,
     /// The unfinished batch it found and finished, if any.
@@ -615,6 +615,7 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
         let Some(batch) =
             next_intent(run.source, &frontier, &progress, run.max_rows_per_partition)?
         else {
+            control.release(&token).await.map_err(control_error)?;
             return Ok(outcome);
         };
         let intent = control

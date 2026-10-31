@@ -14,7 +14,6 @@ use crate::error::{SparkError, SparkResult};
 /// `quoteIfNeeded(name) + " " + dataType.sql`, plus " NOT NULL" when the field
 /// is not nullable, joined by "," (`StructType.scala:458`,
 /// `StructField.scala:294–312`).
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
 pub(super) fn key_schema_ddl(fields: &[KeyField]) -> SparkResult<String> {
     let mut parts = Vec::with_capacity(fields.len());
     for field in fields {
@@ -32,7 +31,6 @@ pub(super) fn key_schema_ddl(fields: &[KeyField]) -> SparkResult<String> {
 /// `DataType.sql` for the types Spark has an SQL rendering for. Types outside
 /// that surface cannot be AutoCDC key types, so they are an internal error
 /// rather than an approximation.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
 pub(super) fn sql_type(data_type: &spec::DataType, buf: &mut String) -> SparkResult<()> {
     use spec::DataType;
     match data_type {
@@ -149,7 +147,6 @@ pub(super) fn sql_type(data_type: &spec::DataType, buf: &mut String) -> SparkRes
 /// `:599–617`). Nullability is ignored at every depth; struct field names
 /// are compared with the resolver; Sail's string, binary, date and list
 /// representations that Spark maps to one type compare equal.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
 pub(super) fn same_type(left: &spec::DataType, right: &spec::DataType, case: Case) -> bool {
     use spec::DataType;
     let resolver = case.resolver();

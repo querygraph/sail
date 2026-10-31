@@ -6,7 +6,6 @@
 //! supersedes (`:202–248`). The caller resolves the sequencing and delete
 //! expressions against the batch schema; nothing here reads a table or
 //! writes one. The merges that follow are a separate unit.
-#![cfg_attr(not(test), expect(dead_code, reason = "wired by the SCD1 write unit"))]
 
 use std::sync::Arc;
 

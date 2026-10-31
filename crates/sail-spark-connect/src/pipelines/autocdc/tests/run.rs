@@ -31,7 +31,7 @@ use crate::spark::connect::pipeline_command::DefineOutput;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn source_schema() -> SchemaRef {
+pub(super) fn source_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, true),
         Field::new("name", DataType::Utf8, true),
@@ -39,7 +39,7 @@ fn source_schema() -> SchemaRef {
     ]))
 }
 
-fn event(id: i32, name: &str, version: i64) -> Vec<ScalarValue> {
+pub(super) fn event(id: i32, name: &str, version: i64) -> Vec<ScalarValue> {
     vec![
         ScalarValue::Int32(Some(id)),
         ScalarValue::Utf8(Some(name.into())),

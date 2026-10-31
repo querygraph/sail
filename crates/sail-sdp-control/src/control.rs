@@ -409,6 +409,15 @@ impl<S: Store> Control<S> {
         })
     }
 
+    pub async fn release(&self, token: &FenceToken) -> Result<(), Outcome> {
+        transact!(self, |tx| {
+            let guard = guard_of(&tx, &token.target).await?;
+            let next = transitions::release(&guard, token, self.clock.now())?;
+            put_guard(&tx, &next).await?;
+            Ok::<_, Fail>(())
+        })
+    }
+
     pub async fn seal_intent(
         &self,
         token: &FenceToken,

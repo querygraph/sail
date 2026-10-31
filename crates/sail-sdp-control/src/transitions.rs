@@ -187,6 +187,22 @@ pub fn acquire(
     Ok((next, acquired))
 }
 
+/// `Release`: a run that finished gives its lease back, so the next run need
+/// not wait for expiry. The next acquire still bumps the epoch, so nothing
+/// from this owner can ratify afterwards.
+pub fn release(
+    guard: &TargetGuard,
+    token: &FenceToken,
+    now: AuthorityMillis,
+) -> Result<TargetGuard, Outcome> {
+    check_fence(guard, token, now)?;
+    let mut next = guard.clone();
+    next.owner = None;
+    next.lease_deadline = None;
+    next.revision += 1;
+    Ok(next)
+}
+
 /// `Seal/resume intent`: needs ownership and an empty slot, or the exact
 /// prior intent while it is still active. A different request for the same
 /// identity is a hard mismatch; a finished intent is not sealed again. The

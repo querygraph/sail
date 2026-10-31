@@ -9,12 +9,13 @@
 //!
 //! The run record is a local JSON file with a single writer and no fencing;
 //! that boundary is decision 1 of the design checkpoint and is stated in
-//! every record. Nothing calls this from `execution::execute` (decision 2).
+//! every record. `durable.rs` is the fenced run that `execution::execute`
+//! admits; this one stays for its tests of the flow semantics.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "wired by execution::execute after the activation decisions"
+        reason = "the unfenced run exists for its flow-semantics tests"
     )
 )]
 

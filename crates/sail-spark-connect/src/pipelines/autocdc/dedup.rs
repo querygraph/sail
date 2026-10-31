@@ -16,10 +16,6 @@
 //! that order, within Spark's "undefined" contract, and null sequences are
 //! filtered before the pick. The struct is Sail's `StructFunction`, which
 //! names fields exactly, so literal-dot column names survive the round trip.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired by the prepared CDC input unit")
-)]
 
 use std::sync::Arc;
 

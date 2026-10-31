@@ -120,6 +120,10 @@ impl<S: Store> Driver<S> {
         self.run(self.at(now).acquire(target, owner, lease))
     }
 
+    fn release(&self, token: &FenceToken, now: i64) -> Result {
+        self.run(self.at(now).release(token))
+    }
+
     fn seal_intent(&self, token: &FenceToken, now: i64, intent: Intent) -> Result<Intent> {
         self.run(self.at(now).seal_intent(token, &intent))
     }
@@ -1089,6 +1093,20 @@ fn ratification_rechecks_the_auxiliary_receipt<S: Store>(f: Fixture<S>) -> Resul
     Ok(())
 }
 
+/// A released lease is free at once, and the epoch still moves, so the
+/// finished owner's token is dead.
+fn a_released_lease_is_free_and_its_token_is_fenced<S: Store>(f: Fixture<S>) -> Result {
+    let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?.token;
+    f.store.release(&w1, 1)?;
+    let w2 = f.store.acquire(&f.target, "w2", 2, LEASE)?.token;
+    assert_eq!(w2.epoch, w1.epoch + 1);
+    assert!(matches!(
+        f.store.seal_intent(&w1, 3, f.intent(0, 0)),
+        Err(Outcome::Fenced { .. })
+    ));
+    Ok(())
+}
+
 /// A short Initialization intent occupies the same slot, needs both effects
 /// (a no-op counts, explicitly), and advances neither progress nor sequence.
 fn initialization_holds_the_slot_and_advances_nothing<S: Store>(f: Fixture<S>) -> Result {
@@ -1191,4 +1209,5 @@ scenarios!(
     recovery_trace,
     initialization_holds_the_slot_and_advances_nothing,
     ratification_rechecks_the_auxiliary_receipt,
+    a_released_lease_is_free_and_its_token_is_fenced,
 );

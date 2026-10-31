@@ -512,13 +512,6 @@ def test_batch_into_streaming_table_is_still_rejected_once_everything_resolves(
     assert "BATCH_RELATION_FOR_STREAMING_TABLE" in str(error.value)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Verified on 7cf0254bc (unresolved-flow aggregation integrated): schema inference of an "
-    "unrelated output (UNABLE_TO_INFER_PIPELINE_TABLE_SCHEMA) still preempts the unresolved-flow "
-    "summary, where Spark's validateSuccessfulFlowAnalysis precedes inferredSchema "
-    "(DataflowGraph.scala:197–208). Flips with that ordering.",
-)
 @pytest.mark.parametrize("missing_first", [False, True])
 def test_an_unread_table_is_not_inferred_while_a_source_is_unresolved(
     pipeline_factory, pipeline_spark, tmp_path, missing_first
