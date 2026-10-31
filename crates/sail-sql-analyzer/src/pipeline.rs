@@ -136,6 +136,22 @@ fn from_ast_pipeline_statement_impl(
             Some(source) => from_ast_statement_with_source(statement, source),
             None => from_ast_statement(statement),
         }? {
+            spec::Plan::Command(spec::CommandPlan {
+                node: spec::CommandNode::CreateTableAsSelect { definition, .. },
+                ..
+            }) => {
+                let node = match definition.mode {
+                    spec::CreateTableMode::Create | spec::CreateTableMode::CreateIfNotExists => {
+                        "CreateTableAsSelect"
+                    }
+                    spec::CreateTableMode::CreateOrReplace | spec::CreateTableMode::Replace => {
+                        "ReplaceTableAsSelect"
+                    }
+                };
+                Err(SqlError::analysis(format!(
+                    "Unsupported plan {node} parsed from SQL query"
+                )))
+            }
             spec::Plan::Command(plan) => Ok(PipelineStatement::Command(plan.node)),
             _ => Err(SqlError::analysis(
                 "[PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR] Unsupported query statement in pipeline definitions",

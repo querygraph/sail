@@ -63,6 +63,9 @@ where
             Err(sail_sql_analyzer::error::SqlError::Structured(error)) => Err(
                 PreparationFailure::Evaluation(SparkError::Structured(error)),
             ),
+            Err(sail_sql_analyzer::error::SqlError::AnalysisError(message)) => {
+                Err(PreparationFailure::Analysis(message))
+            }
             Err(error) => Err(PreparationFailure::Analysis(error.to_string())),
         };
         let failed = result.is_err();
