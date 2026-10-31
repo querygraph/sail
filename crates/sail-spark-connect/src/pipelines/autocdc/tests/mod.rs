@@ -108,6 +108,7 @@ mod dedup;
 mod definition;
 mod graph;
 mod lookup;
+mod merge;
 mod microbatch;
 mod prepared;
 mod reconcile;

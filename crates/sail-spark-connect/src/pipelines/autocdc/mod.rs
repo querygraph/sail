@@ -19,6 +19,7 @@ mod ddl;
 mod dedup;
 mod errors;
 mod lookup;
+mod merge;
 mod microbatch;
 mod prepared;
 mod reconcile;
