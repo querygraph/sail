@@ -97,6 +97,14 @@ fn from_ast_pipeline_statement_impl(
         Statement::CreatePipelineFlow {
             name, statement, ..
         } => {
+            let name = from_ast_object_name(name)?;
+            let parts: Vec<String> = name.clone().into();
+            if let Some(error) = sail_common::error::pipeline_identifier_arity_error(&parts) {
+                return Err(error.into());
+            }
+            if parts.len() != 1 {
+                return Err(sail_common::error::multipart_flow_name_error(&parts.join(".")).into());
+            }
             let Statement::InsertInto {
                 with: None,
                 into_or_overwrite: Either::Left(_),
@@ -112,9 +120,15 @@ fn from_ast_pipeline_statement_impl(
                     "[PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR] Only INSERT INTO by name flows supported; partition specifications and target column lists are not allowed.",
                 ));
             };
+            let target = from_ast_object_name(target)?;
+            if let Some(error) = sail_common::error::pipeline_identifier_arity_error(
+                &Vec::<String>::from(target.clone()),
+            ) {
+                return Err(error.into());
+            }
             Ok(PipelineStatement::Flow {
-                name: from_ast_object_name(name)?,
-                target: from_ast_object_name(target)?,
+                name,
+                target,
                 query: from_ast_query(query)?,
             })
         }

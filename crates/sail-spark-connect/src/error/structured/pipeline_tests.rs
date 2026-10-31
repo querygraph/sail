@@ -68,3 +68,27 @@ fn legacy_pipeline_parse_error_preserves_absent_sqlstate() -> Result<(), Box<dyn
     );
     Ok(())
 }
+
+#[test]
+fn unclassified_identifier_error_omits_absent_metadata_and_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let error = sail_common::error::pipeline_identifier_arity_error(&[
+        "A".into(),
+        "b".into(),
+        "c".into(),
+        "d".into(),
+    ])
+    .ok_or("expected arity error")?;
+    let status: Status = SparkError::Structured(error).into();
+    let details = status.get_error_details();
+    let info = details.error_info().ok_or("missing ErrorInfo")?;
+    assert_eq!(info.reason, "java.lang.UnsupportedOperationException");
+    for key in ["errorClass", "sqlState", "messageParameters"] {
+        assert!(!info.metadata.contains_key(key));
+    }
+    assert_eq!(
+        status.message(),
+        "4+ part table identifier A.b.c.d is not supported."
+    );
+    Ok(())
+}

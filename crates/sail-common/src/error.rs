@@ -1,7 +1,9 @@
 mod identifier;
+mod pipeline;
 mod structured;
 
 pub use identifier::quote_sql_identifier;
+pub use pipeline::{multipart_flow_name_error, pipeline_identifier_arity_error};
 pub use structured::StructuredSparkError;
 use thiserror::Error;
 

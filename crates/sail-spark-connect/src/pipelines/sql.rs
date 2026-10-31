@@ -5,7 +5,7 @@ use sail_common::spec;
 use sail_sql_analyzer::pipeline::{PipelineStatement, from_ast_pipeline_statement_with_source};
 use sail_sql_analyzer::source::{SqlSource, StatementOrigin};
 
-use super::graph::{Flow, PipelineGraph, analysis, quoted};
+use super::graph::{Flow, PipelineGraph, quoted};
 use crate::error::{ProtoFieldExt, SparkError, SparkResult, StructuredSparkError};
 use crate::spark::connect::{OutputType, pipeline_command as pc};
 
@@ -124,8 +124,12 @@ impl PreparedSql {
         draft.definition = graph.definition.clone();
         for statement in self.statements {
             let result = match statement.result {
-                Ok(statement) => register_statement(&mut draft, statement)
-                    .map_err(|error| PreparationFailure::Analysis(error.to_string())),
+                Ok(statement) => {
+                    register_statement(&mut draft, statement).map_err(|error| match error {
+                        SparkError::Structured(_) => PreparationFailure::Evaluation(error),
+                        error => PreparationFailure::Analysis(error.to_string()),
+                    })
+                }
                 Err(error) => Err(error),
             };
             match result {
@@ -282,10 +286,9 @@ fn register_statement(graph: &mut PipelineGraph, statement: PipelineStatement) -
         } => {
             let raw_name: Vec<String> = name.into();
             if raw_name.len() != 1 {
-                return Err(analysis(
-                    "MULTIPART_FLOW_NAME_NOT_SUPPORTED",
-                    quoted(&raw_name),
-                ));
+                return Err(
+                    sail_common::error::multipart_flow_name_error(&raw_name.join(".")).into(),
+                );
             }
             let name = graph.definition.qualify(&raw_name)?;
             let target = graph

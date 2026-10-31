@@ -10,9 +10,16 @@ use crate::spark::connect::{self as sc, pipeline_command as pc};
 
 pub(super) type Name = Vec<String>;
 
+fn parse_name_parts(name: &str) -> SparkResult<Name> {
+    Ok(from_ast_object_name(parse_object_name(name)?)?.into())
+}
+
+fn normalize_name(name: Name) -> Name {
+    name.into_iter().map(|x| x.to_ascii_lowercase()).collect()
+}
+
 pub(super) fn parse_name(name: &str) -> SparkResult<Name> {
-    let name: Vec<String> = from_ast_object_name(parse_object_name(name)?)?.into();
-    Ok(name.into_iter().map(|x| x.to_ascii_lowercase()).collect())
+    Ok(normalize_name(parse_name_parts(name)?))
 }
 
 pub(super) fn quoted(name: &[String]) -> String {
@@ -197,11 +204,18 @@ impl PipelineGraph {
             .target_dataset_name
             .as_deref()
             .required("target dataset name")?;
-        let name = parse_name(raw_name)?;
-        if raw_name != raw_target && name.len() != 1 {
-            return Err(analysis("MULTIPART_FLOW_NAME_NOT_SUPPORTED", raw_name));
+        let name = parse_name_parts(raw_name)?;
+        if let Some(error) = sail_common::error::pipeline_identifier_arity_error(&name) {
+            return Err(error.into());
         }
-        let target = parse_name(raw_target)?;
+        if raw_name != raw_target && name.len() != 1 {
+            return Err(sail_common::error::multipart_flow_name_error(raw_name).into());
+        }
+        let target = parse_name_parts(raw_target)?;
+        if let Some(error) = sail_common::error::pipeline_identifier_arity_error(&target) {
+            return Err(error.into());
+        }
+        let (name, target) = (normalize_name(name), normalize_name(target));
         let private = self.definition.outputs.iter().any(|x| {
             x.name == target
                 && matches!(x.kind, sc::OutputType::TemporaryView | sc::OutputType::Sink)
