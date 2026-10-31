@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, FieldRef};
@@ -9,7 +8,6 @@ use datafusion_common::{DataFusionError, Result, ScalarValue, plan_err};
 use datafusion_expr::{
     ColumnarValue, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use sail_common_datafusion::error::StructuredSparkError;
 
 use crate::error::{invalid_arg_count_exec_err, unsupported_data_type_exec_err};
 
@@ -59,29 +57,11 @@ impl SparkAnsiStringCast {
     }
 
     fn invalid_input(&self, value: &str) -> DataFusionError {
-        let expression = format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"));
-        let source_type = "\"STRING\"";
-        let target_type = format!("\"{}\"", self.sql_target);
-        let message = format!(
-            "The value {expression} of the type {source_type} cannot be cast to {target_type} because it is malformed. Correct the value as per the syntax, or change its target type. Use `try_cast` to tolerate malformed input and return NULL instead."
-        );
-        DataFusionError::External(Box::new(StructuredSparkError {
-            class: if self.target_type == DataType::Boolean {
-                "org.apache.spark.SparkRuntimeException"
-            } else {
-                "java.lang.NumberFormatException"
-            }
-            .into(),
-            condition: "CAST_INVALID_INPUT".into(),
-            sql_state: "22018".into(),
-            message,
-            parameters: HashMap::from([
-                ("expression".into(), expression),
-                ("sourceType".into(), source_type.into()),
-                ("targetType".into(), target_type),
-                ("ansiConfig".into(), "\"spark.sql.ansi.enabled\"".into()),
-            ]),
-        }))
+        super::cast_error::invalid_string_cast(
+            value,
+            &self.sql_target,
+            self.target_type == DataType::Boolean,
+        )
     }
 
     fn failed_value(&self, input: &ColumnarValue) -> Result<Option<String>> {

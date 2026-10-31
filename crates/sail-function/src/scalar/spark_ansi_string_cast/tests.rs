@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::{Field, Schema};
 use datafusion_common::config::ConfigOptions;

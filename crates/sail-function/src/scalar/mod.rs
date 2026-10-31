@@ -1,5 +1,6 @@
 pub mod array;
 pub mod array_struct_field;
+mod cast_error;
 pub mod collection;
 pub mod csv;
 pub mod datetime;
@@ -17,6 +18,7 @@ pub mod normalize_float_keys;
 pub mod predicate;
 pub mod spark_ansi_string_cast;
 pub mod spark_cast_string_to_int32;
+pub mod spark_string_to_decimal;
 pub mod spark_struct_rename;
 pub mod spark_time_precision_cast;
 pub mod spark_to_string;
