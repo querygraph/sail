@@ -109,6 +109,7 @@ mod definition;
 mod graph;
 mod lookup;
 mod merge;
+mod merge_execution;
 mod microbatch;
 mod prepared;
 mod reconcile;
