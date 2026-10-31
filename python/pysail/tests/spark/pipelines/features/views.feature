@@ -131,6 +131,7 @@ Feature: Persistent pipeline views
   Scenario: Persistent views cannot have streaming definitions
     Given pipeline SQL file streaming.sql
       """
+      CREATE MATERIALIZED VIEW source AS SELECT 1 AS id;
       CREATE VIEW output AS SELECT * FROM STREAM(source);
       """
     When the pipeline fails with STREAMING_RELATION_FOR_PERSISTED_VIEW

@@ -117,7 +117,7 @@ pub(super) async fn analyze(
     ctx: &SessionContext,
     graph: &GraphDefinition,
 ) -> SparkResult<AnalyzedGraph> {
-    graph.validate()?;
+    graph.validate_bindings()?;
     let spark = ctx.extension::<SparkSession>()?;
     let mut resolved = BTreeMap::new();
     let mut order = vec![];
@@ -194,7 +194,10 @@ pub(super) async fn analyze(
                 })
                 .into());
             }
-            let plan = if output.kind == OutputType::TemporaryView {
+            // A dataset without a producer has no query to resolve. Carry its
+            // empty schema until graph validation reports DATASET_WITHOUT_FLOW,
+            // including for temporary views.
+            let plan = if output.kind == OutputType::TemporaryView && !plans.is_empty() {
                 if plans.len() != 1 {
                     return Err(analysis("MULTIPLE_QUERIES_FOR_VIEW", quoted(&output.name)));
                 }
@@ -224,6 +227,9 @@ pub(super) async fn analyze(
             return Err(analysis("PIPELINE_CIRCULAR_DEPENDENCY", pending));
         }
     }
+    // Spark resolves the graph before validating its semantics. In particular,
+    // an unresolved source must not be hidden by flow count or streamingness.
+    graph.validate()?;
     for output in &graph.outputs {
         if let Some(define_output::Details::TableDetails(details)) = &output.definition.details {
             super::properties::validate_reset(

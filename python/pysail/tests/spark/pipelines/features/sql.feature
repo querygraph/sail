@@ -248,6 +248,7 @@ Feature: Declarative pipeline SQL
   Scenario: SQL streaming reads cannot back materialized views
     Given pipeline SQL file streaming.sql
       """
+      CREATE MATERIALIZED VIEW source AS SELECT 1 AS id;
       CREATE MATERIALIZED VIEW output AS SELECT * FROM STREAM(source);
       """
     When the pipeline fails with STREAMING_RELATION_FOR_MATERIALIZED_VIEW

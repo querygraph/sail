@@ -308,3 +308,50 @@ async fn persisted_view_publishes_captured_columns_after_source_is_unavailable()
         .await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn resolution_errors_precede_flow_type_and_multi_query_validation() -> TestResult {
+    let ctx = sql::tests::resolution_context()?;
+    ctx.state_ref()
+        .write()
+        .config_mut()
+        .set_extension(Arc::new(DataSourceRegistry::new()));
+    for query in [
+        "SELECT * FROM missing_source",
+        "SELECT missing_column FROM range(1)",
+    ] {
+        let mut graph = definition(&format!("CREATE MATERIALIZED VIEW target AS {query}")).await?;
+        let expected = match analyze(&ctx, &graph).await {
+            Err(error) => error.to_string(),
+            Ok(_) => return Err("invalid source unexpectedly resolved".into()),
+        };
+        assert!(
+            expected.contains(if query.contains("missing_source") {
+                "missing_source"
+            } else {
+                "missing_column"
+            }),
+            "fixture did not reach query analysis: {expected}"
+        );
+        graph.outputs[0].kind = OutputType::Table;
+        let actual = match analyze(&ctx, &graph).await {
+            Err(error) => error.to_string(),
+            Ok(_) => return Err("invalid streaming-table source unexpectedly resolved".into()),
+        };
+        assert_eq!(actual, expected, "flow type masked query analysis: {query}");
+
+        graph.outputs[0].kind = OutputType::MaterializedView;
+        let mut extra = graph.flows[0].clone();
+        extra.name = vec!["extra".into()];
+        graph.flows.push(extra);
+        let actual = match analyze(&ctx, &graph).await {
+            Err(error) => error.to_string(),
+            Ok(_) => return Err("invalid multi-query source unexpectedly resolved".into()),
+        };
+        assert_eq!(
+            actual, expected,
+            "flow count masked query analysis: {query}"
+        );
+    }
+    Ok(())
+}

@@ -371,9 +371,9 @@ impl GraphDefinition {
         Ok(())
     }
 
-    pub(super) fn validate(&self) -> SparkResult<()> {
+    /// Check bindings needed to associate queries with their outputs before resolution.
+    pub(super) fn validate_bindings(&self) -> SparkResult<()> {
         let names: BTreeSet<_> = self.outputs.iter().map(|output| &output.name).collect();
-        let mut producers: BTreeMap<&Name, Vec<&Flow>> = BTreeMap::new();
         for flow in &self.flows {
             if flow.name != flow.target && names.contains(&flow.name) {
                 return Err(analysis(
@@ -384,6 +384,14 @@ impl GraphDefinition {
             if !names.contains(&flow.target) {
                 return Err(analysis("FLOW_TARGET_NOT_DEFINED", quoted(&flow.target)));
             }
+        }
+        Ok(())
+    }
+
+    /// Validate graph semantics only after its queries have resolved successfully.
+    pub(super) fn validate(&self) -> SparkResult<()> {
+        let mut producers: BTreeMap<&Name, Vec<&Flow>> = BTreeMap::new();
+        for flow in &self.flows {
             producers.entry(&flow.target).or_default().push(flow);
         }
         for output in &self.outputs {
