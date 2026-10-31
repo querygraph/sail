@@ -139,11 +139,13 @@ async fn first_semantic_failure_precedes_conflict_and_reversed_reads_change_the_
             assert_eq!(error.parameters["flowName1"], "a_insensitive");
             assert_eq!(error.parameters["flowName2"], "z_sensitive");
         } else {
-            assert!(matches!(error, SparkError::AnalysisError(_)), "{error}");
-            assert!(
-                error.to_string().contains("cannot resolve attribute"),
-                "{error}"
-            );
+            let SparkError::Structured(error) = error else {
+                return Err(format!("wrong unresolved-column error: {error}").into());
+            };
+            assert_eq!(error.condition, "UNRESOLVED_COLUMN.WITH_SUGGESTION");
+            assert_eq!(error.sql_state, "42703");
+            assert!(error.parameters["objectName"].contains("Foo"));
+            assert!(error.parameters["proposal"].contains("foo"));
         }
     }
     Ok(())

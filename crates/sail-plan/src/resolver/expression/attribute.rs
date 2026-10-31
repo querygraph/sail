@@ -181,17 +181,11 @@ impl PlanResolver<'_> {
             }
         }
         let Some(outer_schema) = state.get_outer_query_schema().cloned() else {
-            return Err(PlanError::AnalysisError(format!(
-                // Spark tests expect the error message to start with: "attribute {name:?} is missing"
-                "attribute {name:?} is missing from the schema: cannot resolve attribute"
-            )));
+            return Err(self.unresolved_attribute(&name, schema, state)?);
         };
         match self.resolve_outer_field(&name, &outer_schema, state)? {
             Some((name, expr)) => Ok(NamedExpr::new(vec![name], expr)),
-            None => Err(PlanError::AnalysisError(format!(
-                // Spark tests expect the error message to start with: "attribute {name:?} is missing"
-                "attribute {name:?} is missing from the schema: cannot resolve attribute or outer attribute"
-            ))),
+            None => Err(self.unresolved_attribute(&name, schema, state)?),
         }
     }
 

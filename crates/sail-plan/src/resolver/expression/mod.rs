@@ -21,6 +21,7 @@ mod predicate;
 mod sort;
 mod subquery;
 mod udf;
+mod unresolved;
 mod wildcard;
 mod window;
 
