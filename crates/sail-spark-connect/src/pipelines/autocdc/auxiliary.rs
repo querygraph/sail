@@ -2,7 +2,7 @@
 //! `graph/FlowExecution.scala`): its identifier, its reserved properties and
 //! the JSON form of the key column names property.
 
-use super::RESERVED_PREFIX;
+use super::schema::RESERVED_PREFIX;
 use crate::pipelines::graph::Name;
 
 /// Reserved table property recording which SCD strategy the auxiliary table

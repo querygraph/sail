@@ -99,6 +99,9 @@ pub(super) struct Flow {
     pub sql_conf: HashMap<String, String>,
     pub catalog: String,
     pub database: String,
+    /// Change arguments of an Auto CDC flow; `query` is then the streaming
+    /// read of its source.
+    pub auto_cdc: Option<super::autocdc::ChangeArgs>,
 }
 
 #[derive(Clone)]
@@ -228,11 +231,11 @@ impl PipelineGraph {
                 self.definition.qualify(&target)?,
             )
         };
-        let query = match definition.details.required("flow details")? {
+        let (query, auto_cdc) = match definition.details.required("flow details")? {
             pc::define_flow::Details::RelationFlowDetails(details) => {
                 let plan: spec::Plan = details.relation.required("flow relation")?.try_into()?;
                 match plan {
-                    spec::Plan::Query(query) => query,
+                    spec::Plan::Query(query) => (query, None),
                     spec::Plan::Command(_) => {
                         return Err(analysis(
                             "UNSUPPORTED_PIPELINE_SPARK_SQL_COMMAND",
@@ -241,7 +244,11 @@ impl PipelineGraph {
                     }
                 }
             }
-            _ => return Err(SparkError::unsupported("pipeline Auto CDC flow")),
+            pc::define_flow::Details::AutoCdcFlowDetails(details) => {
+                let auto_cdc = super::autocdc::definition(details)?;
+                (auto_cdc.query(), Some(auto_cdc.change_args))
+            }
+            _ => return Err(SparkError::unsupported("pipeline flow details")),
         };
         let mut sql_conf = self.definition.sql_conf.clone();
         sql_conf.extend(definition.sql_conf);
@@ -252,6 +259,7 @@ impl PipelineGraph {
             sql_conf,
             catalog: self.definition.catalog.clone(),
             database: self.definition.database.clone(),
+            auto_cdc,
         });
         Ok(name)
     }
@@ -394,6 +402,8 @@ impl GraphDefinition {
         for flow in &self.flows {
             producers.entry(&flow.target).or_default().push(flow);
         }
+        // `validateMultiQueryTables`, with its Auto CDC multiflow clause first.
+        super::autocdc::validate_multiple_flows_globally(self)?;
         for output in &self.outputs {
             let Some(flows) = producers.get(&output.name) else {
                 let name = quoted(&output.name);
@@ -445,6 +455,8 @@ impl GraphDefinition {
                 }
             }
         }
+        // `validateFlowStreamingness`, with its temporary-view clause.
+        super::autocdc::validate_temporary_views(self)?;
         Ok(())
     }
 }

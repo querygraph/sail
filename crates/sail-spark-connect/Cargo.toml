@@ -8,7 +8,9 @@ rust-version = { workspace = true }
 workspace = true
 
 [dependencies]
+grust-columns = { path = "../../vendor/grust-columns" }
 grust-topology = { path = "../../vendor/grust-topology" }
+sail-function = { path = "../sail-function" }
 sail-cache = { path = "../sail-cache" }
 sail-catalog = { path = "../sail-catalog" }
 sail-common = { path = "../sail-common" }
@@ -48,7 +50,6 @@ pyo3 = { workspace = true }
 
 [dev-dependencies]
 sail-catalog-memory = { path = "../sail-catalog-memory" }
-sail-function = { path = "../sail-function" }
 sail-telemetry = { path = "../sail-telemetry" }
 
 [build-dependencies]

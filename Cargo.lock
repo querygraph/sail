@@ -7902,6 +7902,7 @@ dependencies = [
  "datafusion",
  "fastrace",
  "futures",
+ "grust-columns",
  "grust-topology",
  "lazy_static",
  "log",
