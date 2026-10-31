@@ -7,12 +7,15 @@ use thiserror::Error;
 
 pub type SqlResult<T> = Result<T, SqlError>;
 
+mod parser;
+pub use parser::{ParserDiagnostics, ParserFailure, ParserFailureReason};
+
 #[derive(Debug, Error)]
 pub enum SqlError {
     #[error(transparent)]
     Structured(#[from] Box<StructuredSparkError>),
     #[error("error in SQL parser: {0}")]
-    SqlParserError(String),
+    SqlParserError(Box<ParserDiagnostics>),
     #[error("missing argument: {0}")]
     MissingArgument(String),
     #[error("invalid argument: {0}")]
@@ -53,13 +56,7 @@ impl SqlError {
         T: fmt::Display,
         S: Into<TokenSpan> + Clone,
     {
-        SqlError::SqlParserError(
-            errors
-                .into_iter()
-                .map(|e| format!("{}", ParserErrorDisplay(&e)))
-                .collect::<Vec<_>>()
-                .join("; "),
-        )
+        SqlError::SqlParserError(Box::new(ParserDiagnostics::from_errors(errors)))
     }
 }
 
