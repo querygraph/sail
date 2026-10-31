@@ -59,7 +59,10 @@ struct Enrolled {
     auxiliary_dir: PathBuf,
 }
 
-fn table_dir(ctx: &SessionContext, name: &Name) -> Result<PathBuf, Box<dyn std::error::Error>> {
+pub(super) fn table_dir(
+    ctx: &SessionContext,
+    name: &Name,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     fn find(dir: &Path, leaf: &str) -> Option<PathBuf> {
         for entry in std::fs::read_dir(dir).ok()?.flatten() {
             let path = entry.path();
@@ -89,14 +92,14 @@ fn table_dir(ctx: &SessionContext, name: &Name) -> Result<PathBuf, Box<dyn std::
     find(Path::new(&warehouse), leaf).ok_or_else(|| format!("no table dir for {leaf}").into())
 }
 
-fn table_url(dir: &Path) -> Result<String, Box<dyn std::error::Error>> {
+pub(super) fn table_url(dir: &Path) -> Result<String, Box<dyn std::error::Error>> {
     Ok(url::Url::from_directory_path(dir)
         .map_err(|()| "not absolute")?
         .to_string())
 }
 
 /// The newest published version.
-fn delta_version(dir: &Path) -> Result<u64, Box<dyn std::error::Error>> {
+pub(super) fn delta_version(dir: &Path) -> Result<u64, Box<dyn std::error::Error>> {
     let mut latest = 0;
     for entry in std::fs::read_dir(dir.join("_delta_log"))? {
         let name = entry?.file_name().to_string_lossy().into_owned();

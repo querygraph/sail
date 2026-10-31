@@ -13,6 +13,8 @@
 
 use std::sync::Arc;
 
+use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datasource::{MemTable, provider_as_source};
 use datafusion::logical_expr::{Expr, LogicalPlan, LogicalPlanBuilder};
 use datafusion::prelude::{SessionContext, col};
@@ -79,6 +81,12 @@ pub(super) async fn ensure_auxiliary_table(
             quoted(write.destination)
         )));
     };
+    // The auxiliary table is committed the same way as its destination.
+    let enrolled_properties: Vec<(String, String)> = properties
+        .iter()
+        .filter(|(key, _)| key == IN_COMMIT_TIMESTAMPS_PROPERTY)
+        .cloned()
+        .collect();
     let provider = properties
         .iter()
         .find(|(key, _)| key == "provider")
@@ -168,7 +176,7 @@ pub(super) async fn ensure_auxiliary_table(
                 cluster_by: vec![],
                 mode: spec::CreateTableMode::Create,
                 options: vec![],
-                properties: vec![
+                properties: [
                     (
                         SCD_TYPE_PROPERTY.to_string(),
                         write.args.scd_type.label().to_string(),
@@ -177,7 +185,10 @@ pub(super) async fn ensure_auxiliary_table(
                         KEY_COLUMN_NAMES_PROPERTY.to_string(),
                         auxiliary::serialize_key_column_names(&key_names),
                     ),
-                ],
+                ]
+                .into_iter()
+                .chain(enrolled_properties)
+                .collect(),
             };
             run_command(
                 ctx,
@@ -253,7 +264,7 @@ async fn with_evaluated_columns(
 }
 
 /// Read a catalog table as a logical plan with user-facing column names.
-async fn read_table(
+pub(super) async fn read_table(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
     name: &Name,
@@ -280,27 +291,27 @@ async fn read_table(
 /// later reader sees exactly these rows. The sealed batches are the
 /// prepared artifact the control-store design binds receipts to; archiving
 /// them durably is the sealed-input unit.
-async fn seal(ctx: &SessionContext, plan: LogicalPlan) -> SparkResult<LogicalPlan> {
-    let schema = Arc::new(plan.schema().as_arrow().clone());
-    let batches = ctx.execute_logical_plan(plan).await?.collect().await?;
-    let table = MemTable::try_new(schema, vec![batches])?;
-    Ok(
-        LogicalPlanBuilder::scan(RECONCILED_VIEW, provider_as_source(Arc::new(table)), None)?
-            .build()?,
-    )
+/// Ratified staging needs a timestamp inside each commit.
+pub(super) const IN_COMMIT_TIMESTAMPS_PROPERTY: &str = "delta.enableInCommitTimestamps";
+
+/// The reconciled rows of one microbatch, sealed once.
+pub(super) struct PreparedBatch {
+    pub schema: SchemaRef,
+    pub batches: Vec<RecordBatch>,
+    pub columns: Vec<String>,
 }
 
 /// `Scd1ForeachBatchHandler.execute`: validate the original rows, reconcile
 /// against the auxiliary table, publish the reconciled rows as a temporary
 /// view, merge onto the auxiliary table, then merge onto the destination.
-pub(super) async fn handle_microbatch(
+pub(super) async fn prepare_microbatch(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
     write: &Scd1Write<'_>,
     auxiliary_table: &Name,
     batch: LogicalPlan,
     batch_id: i64,
-) -> SparkResult<()> {
+) -> SparkResult<PreparedBatch> {
     let mut evaluated = vec![(SEQUENCING_COLUMN.to_string(), write.args.sequencing.clone())];
     if let Some(delete) = &write.args.delete_condition {
         evaluated.push((DELETE_COLUMN.to_string(), delete.clone()));
@@ -393,7 +404,28 @@ pub(super) async fn handle_microbatch(
     // Seal the reconciled rows once: both merges and every retry consume the
     // same winners (CDC-CONTROL-STORE-DESIGN.md, two-table protocol). A lazy
     // plan re-executed per merge could keep a different tied `max_by` row.
-    let sealed = seal(ctx, reconciled).await?;
+    let schema = Arc::new(reconciled.schema().as_arrow().clone());
+    let batches = ctx
+        .execute_logical_plan(reconciled)
+        .await?
+        .collect()
+        .await?;
+    Ok(PreparedBatch {
+        schema,
+        batches,
+        columns,
+    })
+}
+
+/// Publish the sealed rows as the view both merges read.
+pub(super) async fn publish_prepared(
+    ctx: &SessionContext,
+    prepared: &PreparedBatch,
+) -> SparkResult<()> {
+    let table = MemTable::try_new(prepared.schema.clone(), vec![prepared.batches.clone()])?;
+    let sealed =
+        LogicalPlanBuilder::scan(RECONCILED_VIEW, provider_as_source(Arc::new(table)), None)?
+            .build()?;
     ctx.extension::<CatalogManager>()?
         .create_temporary_view(
             RECONCILED_VIEW,
@@ -409,28 +441,50 @@ pub(super) async fn handle_microbatch(
         )
         .await
         .map_err(PlanError::from)?;
-    run_command(
-        ctx,
-        config.clone(),
-        spec::CommandNode::MergeInto(merge::auxiliary_merge(
-            auxiliary_table,
-            RECONCILED_VIEW,
-            &write.args.keys,
-        )),
-        None,
-    )
-    .await?;
-    run_command(
-        ctx,
-        config,
-        spec::CommandNode::MergeInto(merge::target_merge(
-            write.destination,
-            RECONCILED_VIEW,
-            &write.args.keys,
-            &columns,
-            write.case,
-        )),
-        None,
-    )
-    .await
+    Ok(())
+}
+
+pub(super) async fn merge_auxiliary(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    write: &Scd1Write<'_>,
+    auxiliary_table: &Name,
+    fenced_write: Option<spec::FencedWrite>,
+) -> SparkResult<()> {
+    let mut merge = merge::auxiliary_merge(auxiliary_table, RECONCILED_VIEW, &write.args.keys);
+    merge.fenced_write = fenced_write;
+    run_command(ctx, config, spec::CommandNode::MergeInto(merge), None).await
+}
+
+pub(super) async fn merge_destination(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    write: &Scd1Write<'_>,
+    prepared: &PreparedBatch,
+    fenced_write: Option<spec::FencedWrite>,
+) -> SparkResult<()> {
+    let mut merge = merge::target_merge(
+        write.destination,
+        RECONCILED_VIEW,
+        &write.args.keys,
+        &prepared.columns,
+        write.case,
+    );
+    merge.fenced_write = fenced_write;
+    run_command(ctx, config, spec::CommandNode::MergeInto(merge), None).await
+}
+
+pub(super) async fn handle_microbatch(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    write: &Scd1Write<'_>,
+    auxiliary_table: &Name,
+    batch: LogicalPlan,
+    batch_id: i64,
+) -> SparkResult<()> {
+    let prepared =
+        prepare_microbatch(ctx, config.clone(), write, auxiliary_table, batch, batch_id).await?;
+    publish_prepared(ctx, &prepared).await?;
+    merge_auxiliary(ctx, config.clone(), write, auxiliary_table, None).await?;
+    merge_destination(ctx, config, write, &prepared, None).await
 }

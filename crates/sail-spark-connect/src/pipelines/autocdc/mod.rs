@@ -22,6 +22,11 @@ mod authority;
 pub(super) mod auxiliary;
 mod ddl;
 mod dedup;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "connected by the admission unit")
+)]
+mod durable;
 mod errors;
 mod lookup;
 mod merge;

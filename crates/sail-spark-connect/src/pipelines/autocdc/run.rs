@@ -153,7 +153,10 @@ fn descriptor_digest(source: &dyn BoundedSource) -> SparkResult<String> {
 
 /// The flow's schema for the auxiliary contract: the source fields, then
 /// the metadata column (`AutoCdcMergeFlow.schema` without a selection).
-fn flow_schema(source: &dyn BoundedSource, write: &Scd1Write<'_>) -> SparkResult<spec::Fields> {
+pub(super) fn flow_schema(
+    source: &dyn BoundedSource,
+    write: &Scd1Write<'_>,
+) -> SparkResult<spec::Fields> {
     let mut fields = Vec::new();
     for field in source.schema().fields() {
         let data_type: spec::DataType =

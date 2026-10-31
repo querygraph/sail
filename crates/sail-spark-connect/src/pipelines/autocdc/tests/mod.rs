@@ -106,6 +106,7 @@ mod auxiliary;
 mod change_args;
 mod dedup;
 mod definition;
+mod durable;
 mod fenced;
 mod graph;
 mod lookup;

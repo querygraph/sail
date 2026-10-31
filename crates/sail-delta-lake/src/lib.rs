@@ -20,6 +20,7 @@ mod ddl;
 pub mod deletion_vector;
 mod delta_log;
 pub mod error;
+pub mod fenced;
 mod inspection;
 pub mod lake_source;
 pub mod logical;

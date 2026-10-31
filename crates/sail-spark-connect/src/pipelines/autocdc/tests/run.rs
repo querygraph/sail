@@ -47,11 +47,11 @@ fn event(id: i32, name: &str, version: i64) -> Vec<ScalarValue> {
     ]
 }
 
-fn source_name() -> Name {
+pub(super) fn source_name() -> Name {
     vec!["test_catalog".into(), "test_db".into(), "events".into()]
 }
 
-fn flow_name() -> Name {
+pub(super) fn flow_name() -> Name {
     vec![
         "test_catalog".into(),
         "test_db".into(),
@@ -59,7 +59,7 @@ fn flow_name() -> Name {
     ]
 }
 
-fn graph() -> GraphDefinition {
+pub(super) fn graph() -> GraphDefinition {
     let output = |name: Name| Output {
         name,
         kind: OutputType::Table,
@@ -76,7 +76,7 @@ fn graph() -> GraphDefinition {
     }
 }
 
-fn flow() -> Flow {
+pub(super) fn flow() -> Flow {
     Flow {
         name: flow_name(),
         target: target(),
@@ -96,7 +96,7 @@ fn flow() -> Flow {
     }
 }
 
-fn warehouse(
+pub(super) fn warehouse(
     ctx: &datafusion::prelude::SessionContext,
 ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     Ok(std::path::PathBuf::from(

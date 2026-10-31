@@ -21,6 +21,7 @@ sail-python-udf = { path = "../sail-python-udf" }
 sail-sql-analyzer = { path = "../sail-sql-analyzer" }
 sail-execution = { path = "../sail-execution" }
 sail-session = { path = "../sail-session" }
+sail-delta-lake = { path = "../sail-delta-lake" }
 sail-sdp-control = { path = "../sail-sdp-control" }
 
 thiserror = { workspace = true }
@@ -33,6 +34,7 @@ prost-types = { workspace = true }
 pbjson = { workspace = true }
 pbjson-types = { workspace = true }
 uuid = { workspace = true }
+url = { workspace = true }
 async-trait = { workspace = true }
 datafusion = { workspace = true }
 arrow-schema = { workspace = true }
@@ -51,9 +53,9 @@ fastrace = { workspace = true }
 pyo3 = { workspace = true }
 
 [dev-dependencies]
-url = { workspace = true }
+sail-sdp-control = { path = "../sail-sdp-control", features = ["turso"] }
+tempfile = { workspace = true }
 sail-physical-optimizer = { path = "../sail-physical-optimizer" }
-sail-delta-lake = { path = "../sail-delta-lake" }
 sail-catalog-memory = { path = "../sail-catalog-memory" }
 sail-telemetry = { path = "../sail-telemetry" }
 
