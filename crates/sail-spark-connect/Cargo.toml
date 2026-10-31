@@ -48,6 +48,7 @@ pyo3 = { workspace = true }
 
 [dev-dependencies]
 sail-catalog-memory = { path = "../sail-catalog-memory" }
+sail-function = { path = "../sail-function" }
 sail-telemetry = { path = "../sail-telemetry" }
 
 [build-dependencies]

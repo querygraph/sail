@@ -12,7 +12,11 @@ use crate::spark::config::{
 };
 use crate::spark::connect;
 
+mod boolean;
 mod orc;
+
+#[cfg(test)]
+mod decimal_tests;
 pub(crate) use orc::affects_orc_config;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd)]
@@ -150,6 +154,9 @@ impl SparkRuntimeConfig {
         // TODO: Investigate how spark.wap.branch and spark.wap.id should reach
         // Iceberg write planning for validation at the format boundary.
         self.validate_removed_key(key.as_str(), value.as_str())?;
+        if key == SparkConfigKey::SPARK_SQL_LEGACY_ALLOW_NEGATIVE_SCALE_OF_DECIMAL {
+            boolean::parse_config_bool(&key, &value)?;
+        }
         if key == SparkConfigKey::SPARK_SQL_ORC_MERGE_SCHEMA {
             orc::parse_merge_schema(&value)?;
         }
@@ -327,6 +334,19 @@ impl TryFrom<&SparkRuntimeConfig> for PlanConfig {
             .transpose()?
         {
             output.ansi_mode = value;
+        }
+
+        if let Some(value) = config
+            .get_option(SparkConfigKey::SPARK_SQL_LEGACY_ALLOW_NEGATIVE_SCALE_OF_DECIMAL)
+            .map(|value| {
+                boolean::parse_config_bool(
+                    SparkConfigKey::SPARK_SQL_LEGACY_ALLOW_NEGATIVE_SCALE_OF_DECIMAL,
+                    value,
+                )
+            })
+            .transpose()?
+        {
+            output.legacy_allow_negative_scale_of_decimal = value;
         }
 
         if let Some(value) = config

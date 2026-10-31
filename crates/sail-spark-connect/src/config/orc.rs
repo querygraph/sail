@@ -1,7 +1,6 @@
 use sail_data_source::formats::orc::{
     OrcListingSessionDefaults, OrcReadSessionModes, OrcWriteCompression, OrcWriteSessionDefaults,
 };
-use sail_data_source::options::parsers::parse_spark_bool;
 
 use super::SparkRuntimeConfig;
 use crate::error::{SparkError, SparkResult};
@@ -24,16 +23,14 @@ pub(crate) fn affects_orc_config(key: &str) -> bool {
 pub(super) fn parse_merge_schema(value: &str) -> SparkResult<bool> {
     // SQLConf applies Java String.trim (only characters <= U+0020) before
     // Scala's strict boolean parser. Operation options do not trim.
-    parse_spark_bool(
-        SparkConfigKey::SPARK_SQL_ORC_MERGE_SCHEMA,
-        value.trim_matches(|character| character <= '\u{20}'),
+    super::boolean::parse_sql_bool(SparkConfigKey::SPARK_SQL_ORC_MERGE_SCHEMA, value).map_err(
+        |_| {
+            SparkError::invalid(format!(
+                "{} must be a boolean: {value}",
+                SparkConfigKey::SPARK_SQL_ORC_MERGE_SCHEMA
+            ))
+        },
     )
-    .map_err(|_| {
-        SparkError::invalid(format!(
-            "{} must be a boolean: {value}",
-            SparkConfigKey::SPARK_SQL_ORC_MERGE_SCHEMA
-        ))
-    })
 }
 
 impl SparkRuntimeConfig {
