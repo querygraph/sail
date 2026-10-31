@@ -70,7 +70,6 @@ Feature: when output schema
   @function(nullability)
   Rule: Output schema
 
-    @sail-bug
     Scenario: a non-null literal input to when yields the schema Spark declares
       When query
         """
@@ -81,3 +80,33 @@ Feature: when output schema
         root
          |-- result: decimal(11,1) (nullable = false)
         """
+
+
+    Scenario Outline: CASE ELSE schema preserves nullable branches under ANSI <ansi>
+      Given config spark.sql.ansi.enabled = <ansi>
+      When query
+        """
+        SELECT id, CASE WHEN flag THEN 1 ELSE 2 END AS with_else,
+               CASE WHEN flag THEN 1 END AS without_else,
+               CASE WHEN flag THEN CAST(NULL AS INT) ELSE 2 END AS nullable_branch
+        FROM VALUES (0, TRUE), (1, FALSE), (2, CAST(NULL AS BOOLEAN)) AS t(id, flag)
+        ORDER BY id
+        """
+      Then query result ordered
+        | id | with_else | without_else | nullable_branch |
+        | 0  | 1         | 1            | NULL            |
+        | 1  | 2         | NULL         | 2               |
+        | 2  | 2         | NULL         | 2               |
+      And query schema
+        """
+        root
+         |-- id: integer (nullable = false)
+         |-- with_else: integer (nullable = false)
+         |-- without_else: integer (nullable = true)
+         |-- nullable_branch: integer (nullable = true)
+        """
+
+      Examples:
+        | ansi  |
+        | true  |
+        | false |

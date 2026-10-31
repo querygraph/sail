@@ -231,3 +231,36 @@ fn conditional_coercion_does_not_evaluate_branch_values() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn case_else_preserves_static_nullability_and_branch_values() -> TestResult {
+    for (arguments, nullable, expected) in [
+        (
+            vec![lit(true), lit(1_i32), lit(2_i32)],
+            false,
+            ScalarValue::Int32(Some(1)),
+        ),
+        (vec![lit(false), lit(1_i32)], true, ScalarValue::Int32(None)),
+        (
+            vec![lit(true), lit(ScalarValue::Int32(None)), lit(2_i32)],
+            true,
+            ScalarValue::Int32(None),
+        ),
+        (
+            vec![lit(false), lit(1_i32), lit(ScalarValue::Int32(None))],
+            true,
+            ScalarValue::Int32(None),
+        ),
+        (
+            vec![lit(false), lit(1_i32), lit(false), lit(2_i64), lit(3_i32)],
+            false,
+            ScalarValue::Int64(Some(3)),
+        ),
+    ] {
+        let lowered = lower_with(case, arguments)?;
+        assert_eq!(lowered.nullable(&DFSchema::empty())?, nullable);
+        assert_eq!(lowered.get_type(&DFSchema::empty())?, expected.data_type());
+        assert_eq!(LiteralEvaluator::new().evaluate(&lowered)?, expected);
+    }
+    Ok(())
+}

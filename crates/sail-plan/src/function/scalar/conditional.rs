@@ -25,6 +25,7 @@ fn case(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
     } = input;
     let mut conditions = Vec::new();
     let mut branch_values = Vec::new();
+    let mut has_else = false;
     let mut iter = arguments.into_iter();
     while let Some(condition) = iter.next() {
         match iter.next() {
@@ -33,13 +34,19 @@ fn case(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
                 branch_values.push(result);
             }
             _ => {
-                conditions.push(lit(true));
+                has_else = true;
                 branch_values.push(condition);
                 break;
             }
         }
     }
-    let branch_values = coerce_string_temporal_values(branch_values, &function_context)?;
+    // Normalize all values together, including ELSE, before separating it.
+    let mut branch_values = coerce_string_temporal_values(branch_values, &function_context)?;
+    let else_expr = if has_else {
+        branch_values.pop().map(Box::new)
+    } else {
+        None
+    };
     let when_then_expr = conditions
         .into_iter()
         .zip(branch_values)
@@ -49,7 +56,7 @@ fn case(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
         expr::Case {
             expr: None, // Expr::Case in from_ast_expression incorporates into when_then_expr
             when_then_expr,
-            else_expr: None,
+            else_expr,
         },
         &function_context,
     )
