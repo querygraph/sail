@@ -9356,3 +9356,7 @@ mod orc_tests;
 #[cfg(test)]
 #[path = "codec/zero_division_tests.rs"]
 mod zero_division_tests;
+
+#[cfg(test)]
+#[path = "codec/div_mod_lazy_tests.rs"]
+mod div_mod_lazy_tests;

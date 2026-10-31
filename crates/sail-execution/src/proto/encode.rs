@@ -24,6 +24,7 @@ use sail_function::scalar::datetime::convert_tz::ConvertTzLazy;
 use sail_function::scalar::map::spark_map_filter::SparkMapFilter;
 use sail_function::scalar::map::spark_transform_keys::SparkTransformKeys;
 use sail_function::scalar::map::spark_transform_values::SparkTransformValues;
+use sail_function::scalar::math::div_mod_lazy::SparkDivModLazy;
 use sail_function::scalar::string::spark_regexp_instr::SparkRegexpInstr;
 use sail_physical_plan::data_source::RemoteDataSourceExec;
 
@@ -197,6 +198,10 @@ pub(super) fn try_encode_higher_order_udf(
             classic: convert_tz.classic(),
             null_short_circuit: convert_tz.null_short_circuit(),
             ..Default::default()
+        })
+    } else if let Some(div_mod) = udf_inner.downcast_ref::<SparkDivModLazy>() {
+        HigherOrderUdfKind::DivModLazy(r#gen::SparkDivModLazyUdf {
+            ansi_mode: div_mod.ansi_mode(),
         })
     } else if let Some(regexp_instr) = udf_inner.downcast_ref::<SparkRegexpInstr>() {
         HigherOrderUdfKind::RegexpInstr(r#gen::SparkRegexpInstrUdf {

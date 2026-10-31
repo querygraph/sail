@@ -27,6 +27,7 @@ use sail_function::scalar::datetime::convert_tz::{ConvertTz, ConvertTzLazy};
 use sail_function::scalar::map::spark_map_filter::SparkMapFilter;
 use sail_function::scalar::map::spark_transform_keys::SparkTransformKeys;
 use sail_function::scalar::map::spark_transform_values::SparkTransformValues;
+use sail_function::scalar::math::div_mod_lazy::SparkDivModLazy;
 use sail_function::scalar::string::spark_regexp_instr::SparkRegexpInstr;
 
 use crate::plan::r#gen;
@@ -183,6 +184,9 @@ pub(super) fn try_decode_higher_order_udf(
         .cloned()
         .ok_or_else(|| plan_datafusion_err!("missing higher-order function UDF"))?;
     Ok(match udf_kind {
+        HigherOrderUdfKind::DivModLazy(r#gen::SparkDivModLazyUdf { ansi_mode }) => Arc::new(
+            HigherOrderUDF::new_from_impl(SparkDivModLazy::new(ansi_mode)),
+        ),
         HigherOrderUdfKind::MapFilter(r#gen::SparkMapFilterUdf {}) => {
             Arc::new(HigherOrderUDF::new_from_impl(SparkMapFilter::new()))
         }

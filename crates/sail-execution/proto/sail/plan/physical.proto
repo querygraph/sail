@@ -192,7 +192,12 @@ message HigherOrderUdf {
     SparkRegexpInstrUdf regexp_instr = 10;
     SparkTransformValuesUdf transform_values = 11;
     SparkTransformKeysUdf transform_keys = 12;
+    SparkDivModLazyUdf div_mod_lazy = 13;
   }
+}
+
+message SparkDivModLazyUdf {
+  bool ansi_mode = 1;
 }
 
 message SparkArrayAggregateUdf {
