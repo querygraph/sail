@@ -229,7 +229,7 @@ async fn ordinary_streaming_refresh_merges_schema_without_truncating_rows() -> T
 }
 
 #[tokio::test]
-async fn unsupported_full_reset_and_public_execution_reject_before_catalog_effects() -> TestResult {
+async fn public_execution_rejects_incremental_outputs_before_catalog_effects() -> TestResult {
     let ctx = context()?;
     let graph = graph("CREATE MATERIALIZED VIEW batch AS SELECT 1 AS x; CREATE STREAMING TABLE streaming AS SELECT 2 AS x").await?;
     let schemas = metadata_schemas(&ctx, &graph).await?;
@@ -250,15 +250,6 @@ async fn unsupported_full_reset_and_public_execution_reject_before_catalog_effec
             .await
             .is_err()
     );
-
-    let selection = Selection::new(
-        &graph,
-        &pc::StartRun {
-            full_refresh_all: Some(true),
-            ..Default::default()
-        },
-    )?;
-    assert!(tables(&ctx, &graph, &schemas, &selection).await.is_err());
     for table in ["batch", "streaming"] {
         assert!(
             ctx.extension::<CatalogManager>()?
@@ -267,6 +258,108 @@ async fn unsupported_full_reset_and_public_execution_reject_before_catalog_effec
                 .is_err()
         );
     }
+
+    // Metadata materialization under full refresh is DatasetManager's own
+    // behaviour for absent targets: both tables are created empty, and the
+    // auxiliary drop is a no-op.
+    let selection = Selection::new(
+        &graph,
+        &pc::StartRun {
+            full_refresh_all: Some(true),
+            ..Default::default()
+        },
+    )?;
+    tables(&ctx, &graph, &schemas, &selection).await?;
+    for table in ["batch", "streaming"] {
+        assert_eq!(row_count(&ctx, table).await?, 0);
+    }
+    finish(&ctx).await?;
+    Ok(())
+}
+
+// DatasetManager.scala:301–328 and AutoCdcScd1FullRefreshSuite: a full
+// refresh truncates the target, takes the output schema without merging, and
+// drops only that target's AutoCDC auxiliary table; `pipelines.reset.allowed`
+// = false downgrades the request to an ordinary refresh.
+#[tokio::test]
+async fn full_refresh_truncates_resets_schema_and_drops_only_its_auxiliary_state() -> TestResult {
+    let ctx = context()?;
+    let seed = graph(
+        "CREATE MATERIALIZED VIEW target (id INT, retained INT) AS SELECT 7 AS id, 8 AS retained; \
+         CREATE MATERIALIZED VIEW __spark_autocdc_aux_state_target AS SELECT 1 AS k; \
+         CREATE MATERIALIZED VIEW __spark_autocdc_aux_state_other AS SELECT 2 AS k",
+    )
+    .await?;
+    let analyzed = analysis::analyze(&ctx, &seed).await?;
+    execution::execute(
+        &ctx,
+        &seed,
+        analyzed,
+        Selection::new(&seed, &pc::StartRun::default())?,
+    )
+    .await?;
+    assert_eq!(row_count(&ctx, "target").await?, 1);
+    assert_eq!(
+        row_count(&ctx, "__spark_autocdc_aux_state_target").await?,
+        1
+    );
+    assert_eq!(row_count(&ctx, "__spark_autocdc_aux_state_other").await?, 1);
+
+    let full_refresh_all = pc::StartRun {
+        full_refresh_all: Some(true),
+        ..Default::default()
+    };
+
+    // reset.allowed = false: refreshed, not reset. Rows and auxiliary state
+    // survive and the schema is merged as for any incremental refresh.
+    let reset_disabled = graph("CREATE STREAMING TABLE target (id INT, added STRING) TBLPROPERTIES ('pipelines.reset.allowed'='false') AS SELECT 9 AS id, 'x' AS added").await?;
+    let schemas = metadata_schemas(&ctx, &reset_disabled).await?;
+    let selection = Selection::new(&reset_disabled, &full_refresh_all)?;
+    assert!(selection.reset.contains(&reset_disabled.outputs[0].name));
+    tables(&ctx, &reset_disabled, &schemas, &selection).await?;
+    assert_eq!(row_count(&ctx, "target").await?, 1);
+    assert_eq!(
+        catalog_columns(&ctx, "target")
+            .await?
+            .iter()
+            .map(|c| &*c.name)
+            .collect::<Vec<_>>(),
+        vec!["id", "retained", "added"]
+    );
+    assert_eq!(
+        row_count(&ctx, "__spark_autocdc_aux_state_target").await?,
+        1
+    );
+
+    // Full refresh: truncated, schema taken as declared (retained dropped),
+    // the target's auxiliary table dropped, the other target's kept.
+    let next = graph(
+        "CREATE STREAMING TABLE target (id INT, added STRING) AS SELECT 9 AS id, 'x' AS added",
+    )
+    .await?;
+    let schemas = metadata_schemas(&ctx, &next).await?;
+    let selection = Selection::new(&next, &full_refresh_all)?;
+    tables(&ctx, &next, &schemas, &selection).await?;
+    assert_eq!(row_count(&ctx, "target").await?, 0);
+    assert_eq!(
+        catalog_columns(&ctx, "target")
+            .await?
+            .iter()
+            .map(|c| &*c.name)
+            .collect::<Vec<_>>(),
+        vec!["id", "added"]
+    );
+    assert!(
+        ctx.extension::<CatalogManager>()?
+            .get_table_or_view(&["__spark_autocdc_aux_state_target"])
+            .await
+            .is_err()
+    );
+    assert_eq!(row_count(&ctx, "__spark_autocdc_aux_state_other").await?, 1);
+
+    // A second full refresh with no auxiliary table present is a no-op drop.
+    tables(&ctx, &next, &schemas, &selection).await?;
+    assert_eq!(row_count(&ctx, "target").await?, 0);
     finish(&ctx).await?;
     Ok(())
 }

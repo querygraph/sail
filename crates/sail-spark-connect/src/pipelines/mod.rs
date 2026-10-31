@@ -1,4 +1,5 @@
 mod analysis;
+mod autocdc;
 mod config;
 mod execution;
 mod graph;

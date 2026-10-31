@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::prelude::SessionContext;
@@ -9,6 +10,7 @@ use sail_common::spec;
 use sail_common_datafusion::catalog::{PartitionTransform, TableKind};
 use sail_common_datafusion::datasource::DataSourceRegistry;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
+use sail_plan::config::PlanConfig;
 use sail_plan::error::PlanError;
 
 use super::analysis::AnalyzedGraph;
@@ -29,29 +31,6 @@ pub(super) async fn tables(
     schemas: &BTreeMap<Name, SchemaRef>,
     selection: &Selection,
 ) -> SparkResult<()> {
-    // Metadata-only callers may materialize streaming targets, but full reset
-    // also deletes AutoCDC state in Spark. Keep that effect unavailable until
-    // its ownership path is qualified, including when the target is absent.
-    for output in &graph.outputs {
-        if output.kind == OutputType::Table && selection.reset.contains(&output.name) {
-            let properties = match &output.definition.details {
-                Some(pc::define_output::Details::TableDetails(details)) => {
-                    super::properties::canonicalize(
-                        details.table_properties.clone().into_iter().collect(),
-                    )?
-                }
-                _ => Default::default(),
-            };
-            if !properties
-                .get("pipelines.reset.allowed")
-                .is_some_and(|value| value.eq_ignore_ascii_case("false"))
-            {
-                return Err(SparkError::unsupported(
-                    "streaming table metadata full refresh",
-                ));
-            }
-        }
-    }
     let manager = ctx.extension::<CatalogManager>()?;
     let config = ctx
         .extension::<SparkSession>()?
@@ -71,6 +50,22 @@ pub(super) async fn tables(
         };
         let mut properties =
             super::properties::canonicalize(details.table_properties.into_iter().collect())?;
+        // DatasetManager.constructFullRefreshSet (:397–430): a table selected
+        // for full refresh whose `pipelines.reset.allowed` is false is
+        // refreshed instead.
+        let full_refresh = selection.reset.contains(&output.name)
+            && if properties
+                .get("pipelines.reset.allowed")
+                .is_some_and(|value| value.eq_ignore_ascii_case("false"))
+            {
+                log::info!(
+                    "Skipping full refresh on {} because pipelines.reset.allowed was set to false.",
+                    quoted(&output.name)
+                );
+                false
+            } else {
+                true
+            };
         for (key, value) in [
             ("comment", output.definition.comment.as_ref()),
             ("provider", details.format.as_ref()),
@@ -131,9 +126,10 @@ pub(super) async fn tables(
                     &details.partition_cols,
                 ));
             }
-            if output.kind == OutputType::Table {
-                columns = super::schema::streaming_columns(output, schema, &old_columns)?;
-            } else {
+            // DatasetManager.materializeTable (:301–318): wipe the rows on a
+            // full refresh or for a batch target, then drop the AutoCDC
+            // auxiliary state of a fully refreshed target.
+            if full_refresh || output.kind != OutputType::Table {
                 run_command(
                     ctx,
                     config.clone(),
@@ -143,6 +139,14 @@ pub(super) async fn tables(
                     None,
                 )
                 .await?;
+            }
+            if full_refresh {
+                drop_auxiliary_state(ctx, config.clone(), &output.name).await?;
+            }
+            // :324–328: only an incremental streaming refresh merges the
+            // existing schema; a full refresh takes the output schema as is.
+            if output.kind == OutputType::Table && !full_refresh {
+                columns = super::schema::streaming_columns(output, schema, &old_columns)?;
             }
             let mut changes = vec![];
             for column in &columns {
@@ -226,6 +230,11 @@ pub(super) async fn tables(
                 .await?;
             }
         } else {
+            // Spark issues the auxiliary drop for every fully refreshed
+            // target, whether or not the target itself exists yet.
+            if full_refresh {
+                drop_auxiliary_state(ctx, config.clone(), &output.name).await?;
+            }
             let format = properties
                 .get("provider")
                 .cloned()
@@ -303,6 +312,30 @@ pub(super) async fn views(
         .await?;
     }
     Ok(())
+}
+
+/// `DROP TABLE IF EXISTS` on the AutoCDC auxiliary table of a fully refreshed
+/// target (`DatasetManager.scala:306–318`). Spark drops rather than truncates
+/// because the auxiliary table is an internal state store outside the
+/// dataflow graph: a full refresh recreates it against the new target schema
+/// instead of carrying the previous generation's layout forward. The drop is
+/// unconditional and a no-op where no auxiliary table exists.
+async fn drop_auxiliary_state(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    target: &Name,
+) -> SparkResult<()> {
+    run_command(
+        ctx,
+        config,
+        spec::CommandNode::DropTable {
+            table: super::autocdc::auxiliary::table_name(target).into(),
+            if_exists: true,
+            purge: false,
+        },
+        None,
+    )
+    .await
 }
 
 #[cfg(test)]
