@@ -598,6 +598,28 @@ pub struct MergeInto {
     pub on_condition: ExprWithSource,
     pub clauses: Vec<MergeClause>,
     pub with_schema_evolution: bool,
+    /// The fenced effect this merge belongs to, if an authority owns the
+    /// target. Ordinary merges carry none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fenced_write: Option<FencedWrite>,
+}
+
+/// One fenced effect: the identity and token the commit presents to the
+/// authority. It is checked against current authority state at ratification
+/// and is never trusted on its own.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FencedWrite {
+    pub authority: String,
+    pub target: String,
+    pub generation: u64,
+    pub epoch: u64,
+    pub owner: String,
+    pub intent: String,
+    pub step: String,
+    pub request_id: String,
+    pub request_digest: String,
+    pub prepared_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

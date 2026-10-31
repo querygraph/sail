@@ -28,15 +28,19 @@ use datafusion::physical_plan::{
     PlanProperties, SendableRecordBatchStream,
 };
 use datafusion_common::tree_node::TreeNodeRecursion;
-use datafusion_common::{DataFusionError, Result, ScalarValue, internal_err};
+use datafusion_common::{
+    DataFusionError, Result, ScalarValue, internal_err, not_impl_err, plan_err,
+};
 use datafusion_physical_expr::{Distribution, EquivalenceProperties, PhysicalExpr};
 use futures::stream::{self, StreamExt};
 use log::warn;
 use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, PutOptions};
 use sail_catalog::manager::CatalogManager;
+use sail_common::spec::FencedWrite;
 use sail_common_datafusion::catalog::{CommitAuthority, LakehouseExecutionContext};
 use sail_common_datafusion::datasource::PhysicalSinkMode;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
+use sail_common_datafusion::fenced_commit::{FencedCommits, FencedEffect, Ratification};
 use url::Url;
 
 use crate::catalog::coordinator::{DeltaCatalogCommitCoordinator, DeltaCatalogManagedTable};
@@ -63,6 +67,24 @@ use crate::transaction::{
 const METRIC_NUM_COMMIT_RETRIES: &str = "num_commit_retries";
 const METRIC_CHECKPOINT_CREATED: &str = "checkpoint_created";
 const METRIC_LOG_FILES_CLEANED: &str = "log_files_cleaned";
+
+/// The session's commit authority for this commit. A fenced write without an
+/// authority and an unfenced write to an enrolled table are both refused, so
+/// no choice of operation removes the fence.
+async fn fenced_authority(
+    context: &Arc<TaskContext>,
+    table_url: &Url,
+    fenced_write: Option<&FencedWrite>,
+) -> Result<Option<Arc<FencedCommits>>> {
+    let authority = context.extension::<FencedCommits>().ok();
+    match (&authority, fenced_write) {
+        (None, Some(_)) => not_impl_err!("a fenced Delta commit needs a commit authority"),
+        (Some(authority), None) if authority.0.is_enrolled(table_url.as_str()).await? => {
+            plan_err!("table {table_url} is enrolled and refuses a write without a fence")
+        }
+        _ => Ok(authority),
+    }
+}
 
 fn commit_count_batch(schema: SchemaRef, row_count: u64) -> Result<RecordBatch> {
     let row_count = i64::try_from(row_count)
@@ -95,6 +117,8 @@ pub struct DeltaCommitExec {
     user_metadata: Option<String>,
     commit_context: DeltaCommitContext,
     lakehouse_table: Option<LakehouseExecutionContext>,
+    /// The fenced effect this commit belongs to, if an authority owns the table.
+    fenced_write: Option<FencedWrite>,
     metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
 }
@@ -128,9 +152,35 @@ impl DeltaCommitExec {
             user_metadata,
             commit_context,
             lakehouse_table,
+            fenced_write: None,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
         }
+    }
+
+    pub fn with_fenced_write(mut self, fenced_write: Option<FencedWrite>) -> Self {
+        self.fenced_write = fenced_write;
+        self
+    }
+
+    /// This commit with `fenced_write` attached.
+    pub fn fenced(&self, fenced_write: FencedWrite) -> Self {
+        Self::new(
+            Arc::clone(&self.input),
+            self.table_url.clone(),
+            self.partition_columns.clone(),
+            self.table_exists,
+            self.sink_schema.clone(),
+            self.sink_mode.clone(),
+            self.user_metadata.clone(),
+            self.commit_context.clone(),
+            self.lakehouse_table.clone(),
+        )
+        .with_fenced_write(Some(fenced_write))
+    }
+
+    pub fn fenced_write(&self) -> Option<&FencedWrite> {
+        self.fenced_write.as_ref()
     }
 
     fn compute_properties(schema: SchemaRef) -> Arc<PlanProperties> {
@@ -544,17 +594,20 @@ impl ExecutionPlan for DeltaCommitExec {
             return internal_err!("DeltaCommitExec requires exactly one child");
         }
 
-        Ok(Arc::new(Self::new(
-            children[0].clone(),
-            self.table_url.clone(),
-            self.partition_columns.clone(),
-            self.table_exists,
-            self.sink_schema.clone(),
-            self.sink_mode.clone(),
-            self.user_metadata.clone(),
-            self.commit_context.clone(),
-            self.lakehouse_table.clone(),
-        )))
+        Ok(Arc::new(
+            Self::new(
+                children[0].clone(),
+                self.table_url.clone(),
+                self.partition_columns.clone(),
+                self.table_exists,
+                self.sink_schema.clone(),
+                self.sink_mode.clone(),
+                self.user_metadata.clone(),
+                self.commit_context.clone(),
+                self.lakehouse_table.clone(),
+            )
+            .with_fenced_write(self.fenced_write.clone()),
+        ))
     }
 
     fn execute(
@@ -590,8 +643,10 @@ impl ExecutionPlan for DeltaCommitExec {
         let lakehouse_table = self.lakehouse_table.clone();
         let catalog_table = self.catalog_table().map(<[String]>::to_vec);
         let schema = self.schema();
+        let fenced_write = self.fenced_write.clone();
         let future = async move {
             let _elapsed_compute_timer = elapsed_compute.timer();
+            let authority = fenced_authority(&context, &table_url, fenced_write.as_ref()).await?;
             let storage_config = StorageConfig;
             let object_store = get_object_store_from_context(&context, &table_url)?;
 
@@ -676,7 +731,7 @@ impl ExecutionPlan for DeltaCommitExec {
                 kinds
             );
 
-            if !has_commit_payload_actions(&final_actions) {
+            if !has_commit_payload_actions(&final_actions) && fenced_write.is_none() {
                 return commit_count_batch(schema, 0);
             }
 
@@ -781,6 +836,25 @@ impl ExecutionPlan for DeltaCommitExec {
             .await
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
             let log_store = table.log_store();
+
+            if !has_commit_payload_actions(&final_actions) {
+                if let (Some(fence), Some(authority)) = (&fenced_write, &authority) {
+                    let head = Self::load_reference_snapshot(
+                        &context,
+                        lakehouse_table.as_ref(),
+                        &table_url,
+                        &log_store,
+                        None,
+                        false,
+                        false,
+                    )
+                    .await?
+                    .version();
+                    let effect = FencedEffect::Noop { checked_head: head };
+                    authority.0.ratify(fence, &effect).await?;
+                }
+                return commit_count_batch(schema, 0);
+            }
 
             if !table_exists
                 && is_create_bootstrap_only_commit(&final_actions)
@@ -918,7 +992,53 @@ impl ExecutionPlan for DeltaCommitExec {
             let use_catalog_managed_commit =
                 catalog_managed_table.is_some() && commit_uses_catalog_managed_protocol;
 
-            let finalized_commit = if let Some(table) = catalog_managed_table
+            let finalized_commit = if let (Some(fence), Some(authority)) =
+                (&fenced_write, &authority)
+            {
+                if catalog_managed_table.is_some() || !table_exists {
+                    return not_impl_err!(
+                        "a fenced Delta commit needs an existing filesystem-managed table"
+                    );
+                }
+                let Some(version) = reference.as_ref().map(|snapshot| snapshot.version()) else {
+                    return internal_err!("a fenced Delta commit needs a reference snapshot");
+                };
+                operation_metrics.finalize_for(&operation);
+                let staged = CommitBuilder::from(
+                    CommitProperties::default()
+                        .with_operation_metrics(operation_metrics)
+                        .with_user_metadata(user_metadata),
+                )
+                .with_actions(final_actions)
+                .build(reference.clone(), log_store.clone(), operation)
+                .into_staged_commit_future_with_catalog_latest_version(version)
+                .await
+                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                let effect = FencedEffect::Data {
+                    version: staged.version,
+                    action_digest: format!("{}:{}", staged.file_name, staged.file_size),
+                    staged_path: staged.staged_path.to_string(),
+                };
+                match authority.0.ratify(fence, &effect).await? {
+                    Ratification::Ratified => {
+                        Self::publish_staged_commit(&log_store, &staged).await?;
+                    }
+                    Ratification::Replayed => {
+                        warn!(
+                            "Delta commit attempt for version {} replayed an earlier ratification; its staged entry stays unpublished",
+                            staged.version
+                        );
+                    }
+                }
+                FinalizedCommit {
+                    snapshot: None,
+                    metrics: CommitFinalMetrics {
+                        num_retries: staged.metrics.num_retries,
+                        new_checkpoint_created: false,
+                        num_log_files_cleaned_up: 0,
+                    },
+                }
+            } else if let Some(table) = catalog_managed_table
                 .as_ref()
                 .filter(|_| use_catalog_managed_commit)
             {

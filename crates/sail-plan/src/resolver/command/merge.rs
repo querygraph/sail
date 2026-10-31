@@ -52,6 +52,7 @@ impl PlanResolver<'_> {
             on_condition,
             clauses,
             with_schema_evolution,
+            fenced_write,
         } = merge;
 
         validate_merge_clause_order(&clauses)?;
@@ -202,6 +203,7 @@ impl PlanResolver<'_> {
             generated_column_exprs,
             default_column_exprs,
             check_constraint_exprs,
+            fenced_write,
         };
 
         let registry = self.ctx.extension::<DataSourceRegistry>()?;

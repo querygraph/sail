@@ -375,6 +375,7 @@ fn add_flow(
         sql_conf: graph.definition.sql_conf.clone(),
         catalog: graph.definition.catalog.clone(),
         database: graph.definition.database.clone(),
+        auto_cdc: None,
     });
 }
 

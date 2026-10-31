@@ -111,6 +111,7 @@ async fn row_factory(scoped: bool, kind: Kind) -> TestResult {
                 action: spec::MergeMatchedAction::Delete,
             })],
             with_schema_evolution: false,
+            fenced_write: None,
         }),
     };
     let resolver = if scoped {

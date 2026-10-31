@@ -1063,6 +1063,7 @@ fn from_ast_statement_impl(
                 on_condition,
                 clauses,
                 with_schema_evolution: with_schema_evolution.is_some(),
+                fenced_write: None,
             });
             Ok(spec::Plan::Command(spec::CommandPlan::new(node)))
         }

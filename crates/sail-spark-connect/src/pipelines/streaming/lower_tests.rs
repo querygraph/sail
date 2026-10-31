@@ -84,6 +84,7 @@ fn flow(query: spec::QueryPlan, sql_conf: &[(&str, &str)]) -> Flow {
             .collect(),
         catalog: "c".into(),
         database: "d".into(),
+        auto_cdc: None,
     }
 }
 

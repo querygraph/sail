@@ -14,6 +14,7 @@ use crate::lake_source::{DeltaLakeSource, split_delta_write_options_and_table_pr
 use crate::logical::table_source::DeltaTableSource;
 use crate::options::r#gen::DeltaWriteOptions;
 use crate::physical_plan::DeletionVectorRowOperationMode;
+use crate::physical_plan::commit_exec::DeltaCommitExec;
 use crate::physical_plan::planner::{
     DeltaPlannerConfig, PlannerContext, RowLevelWriteInfo, plan_delete, plan_delete_mor,
     plan_merge, plan_merge_mor, plan_update, plan_update_mor,
@@ -23,6 +24,22 @@ use crate::table::DeltaSnapshot;
 
 /// Creates a Delta physical execution plan for a unified `RowLevelWriteNode`.
 pub async fn create_row_level_write_physical_plan(
+    ctx: &dyn Session,
+    node: &RowLevelWriteNode,
+    physical_inputs: &[Arc<dyn ExecutionPlan>],
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let plan = plan_row_level_write(ctx, node, physical_inputs).await?;
+    let Some(fenced_write) = node.merge_options().and_then(|o| o.fenced_write.clone()) else {
+        return Ok(plan);
+    };
+    // Refuse rather than lose the fence if a planner stops ending in a commit.
+    let Some(commit) = plan.downcast_ref::<DeltaCommitExec>() else {
+        return internal_err!("a fenced merge must plan to a DeltaCommitExec");
+    };
+    Ok(Arc::new(commit.fenced(fenced_write)))
+}
+
+async fn plan_row_level_write(
     ctx: &dyn Session,
     node: &RowLevelWriteNode,
     physical_inputs: &[Arc<dyn ExecutionPlan>],

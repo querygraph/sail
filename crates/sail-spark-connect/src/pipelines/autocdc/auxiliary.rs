@@ -2,7 +2,7 @@
 //! `graph/FlowExecution.scala`): its identifier, its reserved properties and
 //! the JSON form of the key column names property.
 
-use super::RESERVED_PREFIX;
+use super::schema::RESERVED_PREFIX;
 use crate::pipelines::graph::Name;
 
 /// Reserved table property recording which SCD strategy the auxiliary table
@@ -165,4 +165,203 @@ mod tests {
             vec!["__spark_autocdc_aux_state_t_a"]
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Auxiliary state contract: schema derivation, key drift, merge support
+// (`AutoCdcMergeWriteBase` and `Scd1MergeStreamingWrite` in
+// `graph/FlowExecution.scala:385–690`). Pure functions over what the catalog
+// reports; the SCD1 write unit calls them before creating the table.
+// ---------------------------------------------------------------------------
+
+use sail_common::spec;
+
+use super::schema::{Case, DELETE_SEQUENCE_FIELD, METADATA_COLUMN, UPSERT_SEQUENCE_FIELD};
+use super::{UnqualifiedColumnName, ddl, errors};
+use crate::error::{SparkError, SparkResult};
+
+/// A key field of the auxiliary table: the name, type and nullability the
+/// flow's selected schema gives the key column.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
+pub(super) struct KeyField {
+    pub name: String,
+    pub data_type: spec::DataType,
+    pub nullable: bool,
+}
+
+impl KeyField {
+    pub fn from_field(field: &spec::Field) -> Self {
+        Self {
+            name: field.name.clone(),
+            data_type: field.data_type.clone(),
+            nullable: field.nullable,
+        }
+    }
+}
+
+/// `expectedAuxiliaryKeyFields` (`FlowExecution.scala:450–465`): every
+/// declared key resolved against the flow's selected schema, in declaration
+/// order. The definition-time validators have already checked the keys
+/// exist, so a miss is an internal error, not a user condition.
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
+pub(super) fn expected_key_fields(
+    keys: &[UnqualifiedColumnName],
+    schema: &spec::Fields,
+    case: Case,
+    flow_name: &str,
+    target_quoted: &str,
+) -> SparkResult<Vec<KeyField>> {
+    let resolver = case.resolver();
+    keys.iter()
+        .map(|key| {
+            schema
+                .iter()
+                .find(|field| resolver(&field.name, key.name()))
+                .map(|field| KeyField::from_field(field))
+                .ok_or_else(|| {
+                    SparkError::internal(format!(
+                        "AutoCDC key column '{}' is missing from the auxiliary table schema for flow {flow_name} writing to target {target_quoted}.",
+                        key.name()
+                    ))
+                })
+        })
+        .collect()
+}
+
+/// The CDC metadata field (`Scd1BatchProcessor.cdcMetadataColSchema`):
+/// `struct<deleteSequence: T, upsertSequence: T>` for the resolved sequencing
+/// type `T`, both members nullable, the field itself not nullable
+/// (`AutoCdcFlowSuite.scala:270–278`; the suites' `cdcMetadataDdl` declares
+/// it `NOT NULL`).
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
+pub(super) fn metadata_field(sequencing_type: &spec::DataType) -> spec::Field {
+    let member = |name: &str| spec::Field {
+        name: name.to_string(),
+        data_type: sequencing_type.clone(),
+        nullable: true,
+        metadata: vec![],
+    };
+    spec::Field {
+        name: METADATA_COLUMN.to_string(),
+        data_type: spec::DataType::Struct {
+            fields: spec::Fields::from(vec![
+                member(DELETE_SEQUENCE_FIELD),
+                member(UPSERT_SEQUENCE_FIELD),
+            ]),
+        },
+        nullable: false,
+        metadata: vec![],
+    }
+}
+
+/// `Scd1MergeStreamingWrite.auxiliaryTableSchema` (`:661–662`): the key
+/// fields in declared order, then the CDC metadata field.
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
+pub(super) fn auxiliary_schema(
+    keys: &[KeyField],
+    sequencing_type: &spec::DataType,
+) -> Vec<spec::Field> {
+    keys.iter()
+        .map(|key| spec::Field {
+            name: key.name.clone(),
+            data_type: key.data_type.clone(),
+            nullable: key.nullable,
+            metadata: vec![],
+        })
+        .chain(std::iter::once(metadata_field(sequencing_type)))
+        .collect()
+}
+
+/// `validateNoAutoCdcKeyDrift` (`FlowExecution.scala:478–560`), for an
+/// auxiliary table the caller found to exist: the recorded key names come
+/// from the `pipelines.autocdc.keyColumnNames` property (missing, then
+/// malformed, are their own conditions), each must resolve in the existing
+/// schema (the first miss in recorded order is reported), and then the
+/// recorded and expected keys must agree in count, name under the resolver
+/// and `sameType`.
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
+pub(super) fn validate_no_key_drift(
+    flow_name: &str,
+    aux_table_name: &str,
+    expected: &[KeyField],
+    existing_columns: &[spec::Field],
+    existing_properties: &[(String, String)],
+    case: Case,
+) -> SparkResult<()> {
+    let resolver = case.resolver();
+    let raw = existing_properties
+        .iter()
+        .find(|(key, _)| key == KEY_COLUMN_NAMES_PROPERTY)
+        .map(|(_, value)| value.as_str())
+        .ok_or_else(|| {
+            errors::auxiliary_table_property_missing(
+                flow_name,
+                aux_table_name,
+                KEY_COLUMN_NAMES_PROPERTY,
+            )
+        })?;
+    let recorded_names = parse_key_column_names(raw).ok_or_else(|| {
+        errors::auxiliary_table_property_malformed(
+            flow_name,
+            aux_table_name,
+            KEY_COLUMN_NAMES_PROPERTY,
+            raw,
+        )
+    })?;
+    let recorded = recorded_names
+        .iter()
+        .map(|name| {
+            existing_columns
+                .iter()
+                .find(|field| resolver(&field.name, name))
+                .map(KeyField::from_field)
+                .ok_or_else(|| {
+                    errors::auxiliary_table_key_column_missing(
+                        flow_name,
+                        aux_table_name,
+                        name,
+                        KEY_COLUMN_NAMES_PROPERTY,
+                    )
+                })
+        })
+        .collect::<SparkResult<Vec<_>>>()?;
+    let drifted = recorded.len() != expected.len()
+        || expected.iter().any(|expected| {
+            match recorded
+                .iter()
+                .find(|recorded| resolver(&recorded.name, &expected.name))
+            {
+                None => true,
+                Some(recorded) => !ddl::same_type(&recorded.data_type, &expected.data_type, case),
+            }
+        });
+    if drifted {
+        return Err(errors::key_schema_drift(
+            flow_name,
+            aux_table_name,
+            &ddl::key_schema_ddl(expected)?,
+            &ddl::key_schema_ddl(&recorded)?,
+        ));
+    }
+    Ok(())
+}
+
+/// `requireDestinationSupportsRowLevelOps` (`FlowExecution.scala:435–455`):
+/// the `format` parameter is the declared format, else the table's provider
+/// property, else `<unknown>`.
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
+pub(super) fn require_merge_support(
+    table_name_quoted: &str,
+    declared_format: Option<&str>,
+    provider_property: Option<&str>,
+    supports_row_level_operations: bool,
+) -> SparkResult<()> {
+    if supports_row_level_operations {
+        return Ok(());
+    }
+    Err(errors::target_does_not_support_merge(
+        table_name_quoted,
+        declared_format.or(provider_property).unwrap_or("<unknown>"),
+    ))
 }

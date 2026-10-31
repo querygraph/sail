@@ -2078,6 +2078,7 @@ impl TryFrom<MergeIntoTableCommand> for spec::CommandNode {
             },
             clauses,
             with_schema_evolution,
+            fenced_write: None,
         }))
     }
 }

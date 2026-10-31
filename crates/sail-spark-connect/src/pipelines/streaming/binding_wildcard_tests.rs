@@ -65,6 +65,7 @@ fn classify(plan: &spec::QueryPlan) -> Result<ReadSet, BindingError> {
         sql_conf: HashMap::new(),
         catalog: "c".into(),
         database: "d".into(),
+        auto_cdc: None,
     };
     validate_reads(&SessionContext::new(), &graph, &flow, plan, &[], &[], &[])
 }

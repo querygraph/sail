@@ -349,6 +349,8 @@ pub struct MergeIntoOptions {
     pub default_column_exprs: Vec<(String, Expr)>,
     /// Delta CHECK constraint expressions for the target table.
     pub check_constraint_exprs: Vec<DeltaCheckConstraintExpr>,
+    /// The fenced effect this merge belongs to, if an authority owns the target.
+    pub fenced_write: Option<sail_common::spec::FencedWrite>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, PartialOrd)]

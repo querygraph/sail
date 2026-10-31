@@ -359,6 +359,9 @@ use crate::proto::encode::{
 #[cfg(test)]
 use crate::proto::encode::{try_encode_physical_expr, try_encode_physical_plan};
 
+#[cfg(test)]
+#[path = "codec/fenced_commit_tests.rs"]
+mod fenced_commit_tests;
 mod file_scan_identity;
 mod orc;
 
@@ -1143,6 +1146,7 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 user_metadata,
                 commit_context,
                 lakehouse_table_json,
+                fenced_write_json,
             }) => {
                 let input =
                     try_decode_physical_plan_with_converter(ctx, self, proto_converter, &input)?;
@@ -1163,17 +1167,24 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 };
 
                 let lakehouse_table = self.try_decode_lakehouse_table(&lakehouse_table_json)?;
-                Ok(Arc::new(DeltaCommitExec::new(
-                    input,
-                    table_url,
-                    partition_columns,
-                    table_exists,
-                    Arc::new(sink_schema),
-                    sink_mode,
-                    user_metadata,
-                    commit_context,
-                    lakehouse_table,
-                )))
+                let fenced_write = fenced_write_json
+                    .as_deref()
+                    .map(|json| self.try_decode_json(json, "fenced write"))
+                    .transpose()?;
+                Ok(Arc::new(
+                    DeltaCommitExec::new(
+                        input,
+                        table_url,
+                        partition_columns,
+                        table_exists,
+                        Arc::new(sink_schema),
+                        sink_mode,
+                        user_metadata,
+                        commit_context,
+                        lakehouse_table,
+                    )
+                    .with_fenced_write(fenced_write),
+                ))
             }
             NodeKind::DeltaScanByAdds(r#gen::DeltaScanByAddsExecNode {
                 input,
@@ -2778,6 +2789,10 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 ),
                 lakehouse_table_json: self
                     .try_encode_lakehouse_table(delta_commit_exec.lakehouse_table())?,
+                fenced_write_json: delta_commit_exec
+                    .fenced_write()
+                    .map(|fenced| self.try_encode_json(fenced, "fenced write"))
+                    .transpose()?,
             })
         } else if let Some(delta_scan_by_adds_exec) = node.downcast_ref::<DeltaScanByAddsExec>() {
             let input = try_encode_physical_plan_with_converter(

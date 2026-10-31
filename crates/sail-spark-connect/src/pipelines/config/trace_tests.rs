@@ -46,6 +46,7 @@ fn trace(sql: &str, sensitive: bool) -> Result<Vec<Name>, Box<dyn std::error::Er
         sql_conf: HashMap::new(),
         catalog: "c".into(),
         database: "d".into(),
+        auto_cdc: None,
     };
     Ok(ordered_inputs(
         &graph(),
@@ -168,6 +169,7 @@ fn late_targets_do_not_bind_graph_names_and_reference_forms_remain_explicit() ->
         sql_conf: HashMap::new(),
         catalog: "c".into(),
         database: "d".into(),
+        auto_cdc: None,
     };
     assert!(ordered_inputs(&graph, &flow, &query, false, |_| false)?.is_empty());
     assert_eq!(

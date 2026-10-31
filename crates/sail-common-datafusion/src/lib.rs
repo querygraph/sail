@@ -6,6 +6,7 @@ pub mod datasource;
 pub mod display;
 pub mod error;
 pub mod extension;
+pub mod fenced_commit;
 pub mod formatter;
 pub mod input_file;
 mod java_float;

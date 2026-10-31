@@ -58,6 +58,7 @@ fn flow(query: spec::QueryPlan) -> Flow {
         sql_conf: HashMap::new(),
         catalog: "c".into(),
         database: "d".into(),
+        auto_cdc: None,
     }
 }
 
