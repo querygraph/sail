@@ -112,5 +112,6 @@ mod merge;
 mod microbatch;
 mod prepared;
 mod reconcile;
+mod run;
 mod schema;
 mod write;

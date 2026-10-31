@@ -44,7 +44,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// The pipelines test context with the production session's analyzer,
 /// optimizer and physical optimizer rules, which the Delta merge path needs
 /// (it plans an explicit repartition that only Sail's physical rules remove).
-fn context() -> Result<(SessionContext, Arc<PlanConfig>), Box<dyn std::error::Error>> {
+pub(super) fn context() -> Result<(SessionContext, Arc<PlanConfig>), Box<dyn std::error::Error>> {
     let ctx = catalog_preparation_tests::context()?;
     let state = SessionStateBuilder::new_from_existing(ctx.state())
         .with_analyzer_rules(sail_session::optimizer::default_analyzer_rules())
@@ -84,7 +84,7 @@ fn context() -> Result<(SessionContext, Arc<PlanConfig>), Box<dyn std::error::Er
     Ok((ctx, config))
 }
 
-async fn finish(ctx: &SessionContext) -> TestResult {
+pub(super) async fn finish(ctx: &SessionContext) -> TestResult {
     ctx.extension::<JobService>()?.runner().stop().await?;
     let config = ctx.extension::<SparkSession>()?.plan_config()?;
     let warehouse = std::path::Path::new(&config.default_warehouse_directory);
@@ -95,7 +95,7 @@ async fn finish(ctx: &SessionContext) -> TestResult {
 }
 
 /// `$cdcMetadataDdl`: the metadata column of a BIGINT sequencing type.
-fn metadata_column() -> spec::TableColumnDefinition {
+pub(super) fn metadata_column() -> spec::TableColumnDefinition {
     spec::TableColumnDefinition {
         name: METADATA_COLUMN.into(),
         data_type: spec::DataType::Struct {
@@ -122,7 +122,11 @@ fn metadata_column() -> spec::TableColumnDefinition {
     }
 }
 
-fn column(name: &str, data_type: spec::DataType, nullable: bool) -> spec::TableColumnDefinition {
+pub(super) fn column(
+    name: &str,
+    data_type: spec::DataType,
+    nullable: bool,
+) -> spec::TableColumnDefinition {
     spec::TableColumnDefinition {
         name: name.into(),
         data_type,
@@ -135,7 +139,7 @@ fn column(name: &str, data_type: spec::DataType, nullable: bool) -> spec::TableC
 }
 
 /// `CREATE TABLE target (...) USING <format>` in the warehouse.
-async fn create_target(
+pub(super) async fn create_target(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
     name: &Name,
@@ -171,7 +175,7 @@ async fn create_target(
     .await
 }
 
-fn scan(columns: Vec<(&str, ArrayRef)>) -> SparkResult<LogicalPlan> {
+pub(super) fn scan(columns: Vec<(&str, ArrayRef)>) -> SparkResult<LogicalPlan> {
     let fields: Vec<Field> = columns
         .iter()
         .map(|(name, array)| Field::new(*name, array.data_type().clone(), true))
@@ -185,7 +189,7 @@ fn scan(columns: Vec<(&str, ArrayRef)>) -> SparkResult<LogicalPlan> {
 
 /// The flow's schema as the analysis gives it: the batch fields plus the
 /// metadata column.
-fn flow_schema(batch: &LogicalPlan) -> SparkResult<spec::Fields> {
+pub(super) fn flow_schema(batch: &LogicalPlan) -> SparkResult<spec::Fields> {
     let mut fields = Vec::new();
     for field in batch.schema().fields() {
         let data_type: spec::DataType =
@@ -207,7 +211,7 @@ fn flow_schema(batch: &LogicalPlan) -> SparkResult<spec::Fields> {
     Ok(spec::Fields::from(fields))
 }
 
-fn attribute(name: &str) -> spec::Expr {
+pub(super) fn attribute(name: &str) -> spec::Expr {
     spec::Expr::UnresolvedAttribute {
         name: spec::ObjectName::bare(name),
         plan_id: None,
@@ -215,7 +219,7 @@ fn attribute(name: &str) -> spec::Expr {
     }
 }
 
-fn eq_true(name: &str) -> spec::Expr {
+pub(super) fn eq_true(name: &str) -> spec::Expr {
     spec::Expr::UnresolvedFunction(spec::UnresolvedFunction {
         function_name: spec::ObjectName::bare("="),
         arguments: vec![
@@ -233,7 +237,7 @@ fn eq_true(name: &str) -> spec::Expr {
 }
 
 /// Every row of a table rendered (nulls as `NULL`), sorted.
-async fn rows(
+pub(super) async fn rows(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
     name: &Name,
@@ -277,25 +281,25 @@ async fn rows(
     Ok(out)
 }
 
-fn row(values: &[&str]) -> Vec<String> {
+pub(super) fn row(values: &[&str]) -> Vec<String> {
     values.iter().map(|v| (*v).to_string()).collect()
 }
 
-fn meta(delete: &str, upsert: &str) -> String {
+pub(super) fn meta(delete: &str, upsert: &str) -> String {
     format!("{{deleteSequence: {delete}, upsertSequence: {upsert}}}")
 }
 
-fn key(name: &str) -> SparkResult<UnqualifiedColumnName> {
+pub(super) fn key(name: &str) -> SparkResult<UnqualifiedColumnName> {
     UnqualifiedColumnName::parse(name)
 }
 
-fn target() -> Name {
+pub(super) fn target() -> Name {
     vec!["test_catalog".into(), "test_db".into(), "target".into()]
 }
 
 // SinglePipelineSuite:43–72: an upsert event lands a new row in an empty target.
 #[tokio::test]
-async fn an_upsert_event_lands_a_new_row_in_an_empty_target() -> TestResult {
+pub(super) async fn an_upsert_event_lands_a_new_row_in_an_empty_target() -> TestResult {
     let (ctx, config) = context()?;
     let target = target();
     create_target(
@@ -365,7 +369,7 @@ async fn an_upsert_event_lands_a_new_row_in_an_empty_target() -> TestResult {
 // SinglePipelineSuite:74–117: upsert, delete and re-upsert of one key in one
 // run, with the delete flag excluded from the target.
 #[tokio::test]
-async fn consecutive_upsert_delete_and_reupsert_in_one_run() -> TestResult {
+pub(super) async fn consecutive_upsert_delete_and_reupsert_in_one_run() -> TestResult {
     let (ctx, config) = context()?;
     let target = target();
     create_target(
@@ -418,7 +422,7 @@ async fn consecutive_upsert_delete_and_reupsert_in_one_run() -> TestResult {
     Ok(())
 }
 
-fn target_columns() -> Vec<spec::TableColumnDefinition> {
+pub(super) fn target_columns() -> Vec<spec::TableColumnDefinition> {
     vec![
         column("id", spec::DataType::Int32, false),
         column("name", spec::DataType::Utf8, true),
@@ -427,7 +431,7 @@ fn target_columns() -> Vec<spec::TableColumnDefinition> {
     ]
 }
 
-fn batch(rows: &[(i32, &str, i64)]) -> SparkResult<LogicalPlan> {
+pub(super) fn batch(rows: &[(i32, &str, i64)]) -> SparkResult<LogicalPlan> {
     scan(vec![
         (
             "id",
@@ -450,7 +454,7 @@ fn batch(rows: &[(i32, &str, i64)]) -> SparkResult<LogicalPlan> {
     ])
 }
 
-fn flagged(rows: &[(i32, &str, i64, bool)]) -> SparkResult<LogicalPlan> {
+pub(super) fn flagged(rows: &[(i32, &str, i64, bool)]) -> SparkResult<LogicalPlan> {
     scan(vec![
         (
             "id",
@@ -480,7 +484,7 @@ fn flagged(rows: &[(i32, &str, i64, bool)]) -> SparkResult<LogicalPlan> {
 }
 
 /// One pipeline run: ensure the auxiliary table, then one microbatch.
-async fn run(
+pub(super) async fn run(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
     write: &Scd1Write<'_>,
@@ -494,7 +498,7 @@ async fn run(
 
 // DurabilitySuite:42–81: a higher-sequence event in a later run upserts the row.
 #[tokio::test]
-async fn a_higher_sequence_event_in_a_later_run_upserts_the_row() -> TestResult {
+pub(super) async fn a_higher_sequence_event_in_a_later_run_upserts_the_row() -> TestResult {
     let (ctx, config) = context()?;
     let target = target();
     create_target(&ctx, config.clone(), &target, "delta", target_columns()).await?;
@@ -539,7 +543,7 @@ async fn a_higher_sequence_event_in_a_later_run_upserts_the_row() -> TestResult 
 
 // DurabilitySuite:83–120: an event below a prior run's applied delete is suppressed.
 #[tokio::test]
-async fn an_event_below_a_prior_runs_delete_is_suppressed() -> TestResult {
+pub(super) async fn an_event_below_a_prior_runs_delete_is_suppressed() -> TestResult {
     let (ctx, config) = context()?;
     let target = target();
     create_target(&ctx, config.clone(), &target, "delta", target_columns()).await?;
@@ -587,7 +591,7 @@ async fn an_event_below_a_prior_runs_delete_is_suppressed() -> TestResult {
 
 // DurabilitySuite:184–214: a dropped auxiliary table is recreated transparently.
 #[tokio::test]
-async fn a_dropped_auxiliary_table_is_recreated() -> TestResult {
+pub(super) async fn a_dropped_auxiliary_table_is_recreated() -> TestResult {
     let (ctx, config) = context()?;
     let target = target();
     create_target(
@@ -675,7 +679,7 @@ async fn a_dropped_auxiliary_table_is_recreated() -> TestResult {
 // SinglePipelineSuite:168–216 through the write path: a parquet destination
 // is rejected before any auxiliary state is created.
 #[tokio::test]
-async fn a_parquet_destination_is_rejected_before_auxiliary_creation() -> TestResult {
+pub(super) async fn a_parquet_destination_is_rejected_before_auxiliary_creation() -> TestResult {
     let (ctx, config) = context()?;
     let target = vec![
         "test_catalog".into(),
