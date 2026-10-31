@@ -332,3 +332,28 @@ async fn structured_catalog_errors_preserve_registration_boundary()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn typed_temp_view_parse_failure_discards_the_draft_without_wrapping() -> SparkResult<()> {
+    let mut graph = graph();
+    let prepared = prepare(
+        command("CREATE MATERIALIZED VIEW before AS SELECT 1; CREATE TEMPORARY VIEW some_database.tv AS SELECT 1; CREATE MATERIALIZED VIEW after AS SELECT 2"),
+        |_| async { Ok("unused".into()) },
+    ).await?;
+    let error = prepared
+        .commit(&mut graph)
+        .err()
+        .ok_or_else(|| SparkError::internal("expected parse failure"))?;
+    let SparkError::Structured(error) = error else {
+        return Err(SparkError::internal("parse failure was wrapped"));
+    };
+    assert_eq!(
+        error.class,
+        "org.apache.spark.sql.catalyst.parser.ParseException"
+    );
+    assert_eq!(error.condition, "INVALID_TEMP_OBJ_QUALIFIER");
+    assert_eq!(error.sql_state, "42602");
+    assert!(graph.definition.outputs.is_empty());
+    assert!(graph.definition.flows.is_empty());
+    Ok(())
+}

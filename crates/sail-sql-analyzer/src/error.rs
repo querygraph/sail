@@ -1,7 +1,7 @@
 use std::fmt;
 
 use chumsky::error::{Rich, RichReason};
-use sail_common::error::CommonError;
+use sail_common::error::{CommonError, StructuredSparkError};
 use sail_sql_parser::span::TokenSpan;
 use thiserror::Error;
 
@@ -9,6 +9,8 @@ pub type SqlResult<T> = Result<T, SqlError>;
 
 #[derive(Debug, Error)]
 pub enum SqlError {
+    #[error(transparent)]
+    Structured(#[from] Box<StructuredSparkError>),
     #[error("error in SQL parser: {0}")]
     SqlParserError(String),
     #[error("missing argument: {0}")]

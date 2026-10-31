@@ -164,3 +164,39 @@ fn catalog_diagnostics_preserve_invalid_names_and_other_missing_object_kinds() -
     }
     Ok(())
 }
+
+#[test]
+fn sql_parse_errors_survive_direct_and_plan_connect_conversion() -> TestResult {
+    for via_plan in [false, true] {
+        let error = sail_sql_analyzer::statement::from_ast_statement(
+            sail_sql_analyzer::parser::parse_one_statement(
+                "CREATE TEMPORARY VIEW some_database.tv AS SELECT 1",
+            )?,
+        )
+        .err()
+        .ok_or("expected parse error")?;
+        let error = if via_plan {
+            SparkError::from(sail_plan::error::PlanError::from(error))
+        } else {
+            SparkError::from(error)
+        };
+        let status: Status = error.into();
+        let details = status.get_error_details();
+        let info = details.error_info().ok_or("missing parse metadata")?;
+        assert_eq!(
+            info.reason,
+            "org.apache.spark.sql.catalyst.parser.ParseException"
+        );
+        assert_eq!(info.metadata["errorClass"], "INVALID_TEMP_OBJ_QUALIFIER");
+        assert_eq!(info.metadata["sqlState"], "42602");
+        assert_eq!(
+            serde_json::from_str::<HashMap<String, String>>(&info.metadata["messageParameters"])?,
+            HashMap::from([
+                ("objectType".into(), "VIEW".into()),
+                ("objectName".into(), "`tv`".into()),
+                ("qualifier".into(), "`some_database`".into()),
+            ])
+        );
+    }
+    Ok(())
+}

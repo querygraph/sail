@@ -59,6 +59,10 @@ where
     for (statement, span) in source.parse_statements_with_spans()? {
         let result = match from_ast_pipeline_statement_with_source(statement, &source) {
             Ok(statement) => resolve_statement(statement, &mut resolve_catalog).await,
+            // Typed parser/normalization errors retain their original Spark class.
+            Err(sail_sql_analyzer::error::SqlError::Structured(error)) => Err(
+                PreparationFailure::Evaluation(SparkError::Structured(error)),
+            ),
             Err(error) => Err(PreparationFailure::Analysis(error.to_string())),
         };
         let failed = result.is_err();

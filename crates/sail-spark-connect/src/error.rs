@@ -93,6 +93,7 @@ impl From<CommonError> for SparkError {
 impl From<SqlError> for SparkError {
     fn from(error: SqlError) -> Self {
         match error {
+            SqlError::Structured(error) => SparkError::Structured(error),
             SqlError::MissingArgument(message) => SparkError::MissingArgument(message),
             SqlError::InvalidArgument(message) => SparkError::InvalidArgument(message),
             SqlError::NotSupported(message) => SparkError::NotSupported(message),

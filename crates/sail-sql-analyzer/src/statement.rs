@@ -1,3 +1,5 @@
+mod temporary_view;
+
 use std::iter::once;
 
 use either::Either;
@@ -570,7 +572,7 @@ fn from_ast_statement_impl(
                     let query = from_ast_query(query)?;
                     if let Some(temporary) = temporary {
                         spec::CommandNode::CreateTemporaryView {
-                            view: temporary_view_name(name)?,
+                            view: temporary_view::normalize_query_name(name)?,
                             is_global: temporary.global.is_some(),
                             definition: spec::TemporaryViewDefinition {
                                 input: Box::new(query),

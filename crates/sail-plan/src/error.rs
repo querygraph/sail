@@ -124,6 +124,7 @@ impl From<CatalogError> for PlanError {
 impl From<SqlError> for PlanError {
     fn from(value: SqlError) -> Self {
         match value {
+            SqlError::Structured(error) => PlanError::Structured(error),
             SqlError::SqlParserError(message) => PlanError::InvalidArgument(message),
             SqlError::MissingArgument(message) => PlanError::MissingArgument(message),
             SqlError::InvalidArgument(message) => PlanError::InvalidArgument(message),
