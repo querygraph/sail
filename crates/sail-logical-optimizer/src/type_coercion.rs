@@ -1486,7 +1486,10 @@ fn coerce_scalar_function_argument(
     Expr::Literal(value, metadata).cast_to(data_type, schema)
 }
 
-fn coerce_case_expression(
+/// Coerce CASE predicates and branch values with the same policy as the analyzer.
+/// Resolvers that expose an expression's type before analysis can use this to
+/// materialize the common branch type without evaluating its values.
+pub fn coerce_case_expression(
     case: Case,
     schema: &DFSchema,
     session_time_zone: Option<&str>,

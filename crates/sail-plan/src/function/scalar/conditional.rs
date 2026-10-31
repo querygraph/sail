@@ -10,6 +10,7 @@ use sail_function::scalar::datetime::spark_timestamp::SparkTimestamp;
 use sail_function::scalar::datetime::timestamp_cast::cast_timestamp_ntz_to_ltz;
 use sail_function::scalar::spark_cast_string_to_int32::SparkCastStringToInt32;
 use sail_function::scalar::spark_to_string::SparkToUtf8;
+use sail_logical_optimizer::type_coercion::coerce_case_expression;
 
 use crate::error::{PlanError, PlanResult};
 use crate::function::common::{FunctionContextInput, ScalarFunction, ScalarFunctionInput};
@@ -88,9 +89,14 @@ fn nvl2(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
     let is_timestamp = |data_type: &DataType| matches!(data_type, DataType::Timestamp(_, Some(_)));
     let date_timestamp_mix = (is_date_type(&then_type) && is_timestamp(&else_type))
         || (is_timestamp(&then_type) && is_date_type(&else_type));
-    // TODO: Use `if` for all types once it returns the common type of its branches.
     if !date_timestamp_mix && !is_timestamp_ntz_mix(&[then_type.clone(), else_type.clone()]) {
-        return Ok(expr_fn::nvl2(value, then_value, else_value));
+        // The tested value is not part of branch type coercion. Lower before
+        // optimization, as Spark's RuntimeReplaceable Nvl2 does, so constant
+        // evaluation also sees the same conditional as IF.
+        return nvl2_if_expr(ScalarFunctionInput {
+            arguments: vec![value.is_not_null(), then_value, else_value],
+            function_context,
+        });
     }
     // Spark casts a DATE to TIMESTAMP at the start of its day in the session time zone, whatever
     // zone labels the other value.
@@ -109,10 +115,25 @@ fn nvl2(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
     };
     let then_value = session_date(then_value, &then_type);
     let else_value = session_date(else_value, &else_type);
-    if_expr(ScalarFunctionInput {
+    nvl2_if_expr(ScalarFunctionInput {
         arguments: vec![value.is_not_null(), then_value, else_value],
         function_context,
     })
+}
+
+// NVL2's result type is inspected during resolution, before the analyzer runs.
+// Resolve branch coercion now using the analyzer's shared CASE policy.
+fn nvl2_if_expr(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
+    let schema = input.function_context.schema;
+    let timezone = input.function_context.plan_config.session_timezone_label();
+    let expr::Expr::Case(case) = if_expr(input)? else {
+        return Err(PlanError::internal("IF must lower to CASE"));
+    };
+    Ok(expr::Expr::Case(coerce_case_expression(
+        case,
+        schema,
+        Some(&timezone),
+    )?))
 }
 
 /// Spark's `nullif` returns its first argument's type, comparing the arguments in their common type.
@@ -356,3 +377,6 @@ fn zeroifnull(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
     };
     Ok(expr_fn::coalesce(vec![arg, zero]))
 }
+
+#[cfg(test)]
+mod tests;
