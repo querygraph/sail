@@ -1,6 +1,8 @@
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::execution::TaskContext;
+use datafusion::execution::cache::TableScopedPath;
 use sail_common_datafusion::array::serde::ArrowSerializer;
 use sail_common_datafusion::catalog::{FunctionStatus, LakehouseOperation, TableKind};
 use sail_common_datafusion::datasource::{DataSourceRegistry, is_lakehouse_format};
@@ -877,6 +879,7 @@ impl CatalogCommand {
                             dir.display()
                         )));
                     }
+                    let listing_dir = dir.clone();
                     tokio::task::spawn_blocking(move || -> CatalogResult<()> {
                         // Like Spark, recreate the directory if it is gone.
                         if !dir.exists() {
@@ -922,6 +925,23 @@ impl CatalogCommand {
                     .map_err(|e| {
                         CatalogError::External(format!("TRUNCATE TABLE task failed: {e}"))
                     })??;
+                    // Spark's `TruncateTableCommand` refreshes the table after the
+                    // data is gone. Sail serves directory listings from the runtime's
+                    // list-files cache, so drop this directory's entry; otherwise a
+                    // later scan in the same session still lists the deleted files.
+                    if let Some(cache) = ctx.runtime_env().cache_manager.get_list_files_cache() {
+                        let url = ListingTableUrl::parse(listing_dir.to_string_lossy().as_ref())
+                            .map_err(|e| {
+                                CatalogError::External(format!(
+                                    "failed to resolve the truncated table directory {}: {e}",
+                                    listing_dir.display()
+                                ))
+                            })?;
+                        cache.remove(&TableScopedPath {
+                            table: None,
+                            path: url.prefix().clone(),
+                        });
+                    }
                 }
                 display.bools().to_record_batch(vec![true])?
             }
