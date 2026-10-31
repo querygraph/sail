@@ -12,6 +12,7 @@ use sail_function::error::generic_exec_err;
 use sail_function::scalar::datetime::negate_duration::NegateDuration;
 use sail_function::scalar::datetime::spark_interval::SparkDayTimeIntervalToCalendarInterval;
 use sail_function::scalar::datetime::spark_timestamp::SparkTimestamp;
+use sail_function::scalar::math::divisor::SafeNumericDivisor;
 use sail_function::scalar::math::rand_poisson::RandPoisson;
 use sail_function::scalar::math::randn::Randn;
 use sail_function::scalar::math::random::Random;
@@ -270,13 +271,8 @@ fn spark_multiply(input: ScalarFunctionInput) -> PlanResult<Expr> {
     })
 }
 
-/// Returns a guarded divisor expression that handles division by zero at runtime.
-///
-/// In non-ANSI mode: returns `nullif(divisor, 0)` — evaluates to NULL when divisor is zero.
-/// In ANSI mode: returns a CASE with a typed arithmetic error branch when the divisor is zero.
-///
-/// This wraps the divisor itself (not the entire division expression) to avoid
-/// duplicating complex divisor expressions (e.g., window functions) in the plan.
+/// Check numeric divisors once in a typed unary function. Non-numeric inputs
+/// retain the existing comparison/cast coercion path; intervals keep their kernel.
 fn make_safe_divisor(
     divisor: Expr,
     divisor_type: &DataType,
@@ -288,39 +284,19 @@ fn make_safe_divisor(
         return divisor;
     }
 
-    let float_zeros = match divisor_type {
-        DataType::Float16 => Some((
-            ScalarValue::Float16(Some(half::f16::from_f32(0.0))),
-            ScalarValue::Float16(Some(half::f16::from_f32(-0.0))),
-        )),
-        DataType::Float32 => Some((
-            ScalarValue::Float32(Some(0.0)),
-            ScalarValue::Float32(Some(-0.0)),
-        )),
-        DataType::Float64 => Some((
-            ScalarValue::Float64(Some(0.0)),
-            ScalarValue::Float64(Some(-0.0)),
-        )),
-        _ => None,
-    };
+    if divisor_type.is_numeric() || matches!(divisor_type, DataType::Null) {
+        return ScalarUDF::from(SafeNumericDivisor::new(kind, ansi_mode)).call(vec![divisor]);
+    }
+
+    // Preserve existing implicit comparison/cast coercion for non-numeric inputs.
     if ansi_mode {
-        // DataFusion's total-order float equality distinguishes signed zero.
-        // Widening for the predicate preserves the original divisor/result type.
-        let zero_check = if float_zeros.is_some() {
-            expr_fn::abs(cast(divisor.clone(), DataType::Float64)).eq(lit(0.0_f64))
-        } else {
-            divisor.clone().eq(lit(0))
-        };
+        let zero_check = divisor.clone().eq(lit(0));
         let raise = ScalarUDF::from(SparkZeroDivisionError::new(kind)).call(vec![]);
         Expr::Case(expr::Case {
             expr: None,
             when_then_expr: vec![(Box::new(zero_check), Box::new(raise))],
             else_expr: Some(Box::new(divisor)),
         })
-    } else if let Some((zero, negative_zero)) = float_zeros {
-        // Each NULLIF evaluates its first argument once; the operand occurs once
-        // in the expression tree, including for volatile divisors.
-        expr_fn::nullif(expr_fn::nullif(divisor, lit(zero)), lit(negative_zero))
     } else {
         expr_fn::nullif(divisor, lit(0))
     }

@@ -1,3 +1,4 @@
+pub mod divisor;
 pub mod java_random;
 pub mod rand_poisson;
 pub mod randn;
@@ -22,3 +23,6 @@ pub mod spark_uniform;
 mod utils;
 pub mod xorshift;
 pub mod zero_division;
+
+#[cfg(test)]
+mod divisor_tests;

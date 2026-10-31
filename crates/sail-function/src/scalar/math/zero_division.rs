@@ -57,12 +57,18 @@ impl ScalarUDFImpl for SparkZeroDivisionError {
                 args.args.len(),
             ));
         }
-        let (condition, operation, fallback) = match self.kind {
+        Err(self.kind.error())
+    }
+}
+
+impl ZeroDivisionKind {
+    pub(crate) fn error(self) -> DataFusionError {
+        let (condition, operation, fallback) = match self {
             ZeroDivisionKind::Divide => ("DIVIDE_BY_ZERO", "Division", "try_divide"),
             ZeroDivisionKind::Remainder => ("REMAINDER_BY_ZERO", "Remainder", "try_mod"),
         };
         let config = "\"spark.sql.ansi.enabled\"";
-        Err(DataFusionError::External(Box::new(StructuredSparkError {
+        DataFusionError::External(Box::new(StructuredSparkError {
             class: "org.apache.spark.SparkArithmeticException".into(),
             condition: condition.into(),
             sql_state: "22012".into(),
@@ -70,6 +76,6 @@ impl ScalarUDFImpl for SparkZeroDivisionError {
                 "{operation} by zero. Use `{fallback}` to tolerate divisor being 0 and return NULL instead. If necessary set {config} to \"false\" to bypass this error."
             ),
             parameters: HashMap::from([("config".into(), config.into())]),
-        })))
+        }))
     }
 }

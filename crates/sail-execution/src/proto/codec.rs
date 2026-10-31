@@ -205,6 +205,7 @@ use sail_function::scalar::json::{JsonObjectKeys, SparkFromJson, SparkSchemaOfJs
 use sail_function::scalar::map::map_entries::SparkMapEntries;
 use sail_function::scalar::map::map_from::{SparkMapFromArrays, SparkMapFromEntries};
 use sail_function::scalar::map::str_to_map::StrToMap;
+use sail_function::scalar::math::divisor::SafeNumericDivisor;
 use sail_function::scalar::math::rand_poisson::RandPoisson;
 use sail_function::scalar::math::randn::Randn;
 use sail_function::scalar::math::random::Random;
@@ -3948,6 +3949,19 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             "spark_remainder_by_zero" => Ok(Arc::new(ScalarUDF::from(
                 SparkZeroDivisionError::new(ZeroDivisionKind::Remainder),
             ))),
+            "spark_divisor_ansi_divide" => Ok(Arc::new(ScalarUDF::from(SafeNumericDivisor::new(
+                ZeroDivisionKind::Divide,
+                true,
+            )))),
+            "spark_divisor_ansi_remainder" => Ok(Arc::new(ScalarUDF::from(
+                SafeNumericDivisor::new(ZeroDivisionKind::Remainder, true),
+            ))),
+            "spark_divisor_legacy_divide" => Ok(Arc::new(ScalarUDF::from(
+                SafeNumericDivisor::new(ZeroDivisionKind::Divide, false),
+            ))),
+            "spark_divisor_legacy_remainder" => Ok(Arc::new(ScalarUDF::from(
+                SafeNumericDivisor::new(ZeroDivisionKind::Remainder, false),
+            ))),
             "random_poisson" => Ok(Arc::new(ScalarUDF::from(RandPoisson::new()))),
             "randn" => Ok(Arc::new(ScalarUDF::from(Randn::new()))),
             "spark_cast_to_variant" => Ok(Arc::new(ScalarUDF::from(SparkCastToVariant::new()))),
@@ -4178,6 +4192,7 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             || node_inner.is::<ParseUrl>()
             || node_inner.is::<RaiseError>()
             || node_inner.is::<SparkZeroDivisionError>()
+            || node_inner.is::<SafeNumericDivisor>()
             || node_inner.is::<Randn>()
             || node_inner.is::<Random>()
             || node_inner.is::<RandPoisson>()
