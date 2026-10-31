@@ -419,9 +419,10 @@ def test_auto_cdc_multiflow_is_reported_before_materialized_view_multiflow(
 
 @pytest.mark.xfail(
     strict=True,
-    reason="Sail validates streamingness and the Auto CDC multiflow clause before resolution; "
-    "Spark resolves first (PipelineExecution.scala:113, DataflowGraph.scala:197–208). "
-    "Flips when analysis runs the DataflowGraph.validate set after resolution.",
+    reason="The unresolved source now wins (analysis resolves before the semantic validator), "
+    "but Sail reports it raw ([TABLE_OR_VIEW_NOT_FOUND] ...) where Spark wraps resolution "
+    "failures in UnresolvedPipelineException: 'Failed to resolve flows in the pipeline. ... "
+    "Flows with errors: <flow names>' (PipelinesErrors.scala:171–181). Flips with that wrapper.",
 )
 def test_unresolved_source_is_reported_before_the_temporary_view_rule(pipeline_factory, tmp_path):
     """Spark's `validateSuccessfulFlowAnalysis` precedes the streamingness phase: a CDC flow reading a
@@ -447,9 +448,10 @@ def _missing_source_flow(pipeline_spark, name, target):
 
 @pytest.mark.xfail(
     strict=True,
-    reason="Sail validates streamingness and the Auto CDC multiflow clause before resolution; "
-    "Spark resolves first (PipelineExecution.scala:113, DataflowGraph.scala:197–208). "
-    "Flips when analysis runs the DataflowGraph.validate set after resolution.",
+    reason="The unresolved source now wins (analysis resolves before the semantic validator), "
+    "but Sail reports it raw ([TABLE_OR_VIEW_NOT_FOUND] ...) where Spark wraps resolution "
+    "failures in UnresolvedPipelineException: 'Failed to resolve flows in the pipeline. ... "
+    "Flows with errors: <flow names>' (PipelinesErrors.scala:171–181). Flips with that wrapper.",
 )
 @pytest.mark.parametrize("missing_first", [False, True])
 def test_auto_cdc_multiflow_does_not_preempt_a_missing_source(
@@ -484,9 +486,10 @@ def test_auto_cdc_multiflow_does_not_preempt_a_missing_source(
 
 @pytest.mark.xfail(
     strict=True,
-    reason="Sail validates streamingness and the Auto CDC multiflow clause before resolution; "
-    "Spark resolves first (PipelineExecution.scala:113, DataflowGraph.scala:197–208). "
-    "Flips when analysis runs the DataflowGraph.validate set after resolution.",
+    reason="The unresolved source now wins (analysis resolves before the semantic validator), "
+    "but Sail reports it raw ([TABLE_OR_VIEW_NOT_FOUND] ...) where Spark wraps resolution "
+    "failures in UnresolvedPipelineException: 'Failed to resolve flows in the pipeline. ... "
+    "Flows with errors: <flow names>' (PipelinesErrors.scala:171–181). Flips with that wrapper.",
 )
 @pytest.mark.parametrize("missing_first", [False, True])
 def test_streamingness_error_does_not_preempt_a_missing_source(
@@ -532,9 +535,10 @@ def test_batch_into_streaming_table_is_still_rejected_once_everything_resolves(
 
 @pytest.mark.xfail(
     strict=True,
-    reason="Sail validates streamingness and the Auto CDC multiflow clause before resolution; "
-    "Spark resolves first (PipelineExecution.scala:113, DataflowGraph.scala:197–208). "
-    "Flips when analysis runs the DataflowGraph.validate set after resolution.",
+    reason="The unresolved source now wins (analysis resolves before the semantic validator), "
+    "but Sail reports it raw ([TABLE_OR_VIEW_NOT_FOUND] ...) where Spark wraps resolution "
+    "failures in UnresolvedPipelineException: 'Failed to resolve flows in the pipeline. ... "
+    "Flows with errors: <flow names>' (PipelinesErrors.scala:171–181). Flips with that wrapper.",
 )
 @pytest.mark.parametrize("missing_first", [False, True])
 def test_an_unread_table_is_not_inferred_while_a_source_is_unresolved(
