@@ -318,3 +318,130 @@ fn non_foldable_annotation_prevents_builder_invocation() -> TestResult {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn wrapped_catalog_type_only_arguments_use_analyzer_identifier_policy() -> TestResult {
+    let context = context()?;
+    for ansi_mode in [true, false] {
+        let resolver = PlanResolver::new(
+            &context,
+            Arc::new(PlanConfig {
+                ansi_mode,
+                ..Default::default()
+            }),
+        );
+        for (sql, expected) in [
+            ("IDENTIFIER(typeof(current_catalog()))", "string"),
+            ("IDENTIFIER(typeof(rand(0)))", "double"),
+            ("IDENTIFIER(typeof(1 DIV 0))", "bigint"),
+            ("IDENTIFIER(typeof(raise_error('unused')))", "void"),
+            ("IDENTIFIER(typeof(assert_true(true)))", "void"),
+            ("IDENTIFIER('`test.cat`')", "test.cat"),
+        ] {
+            assert_eq!(
+                resolver.resolve_catalog_name(expression(sql)?).await?,
+                expected,
+                "ansi={ansi_mode} {sql}"
+            );
+        }
+        for (sql, condition) in [
+            ("IDENTIFIER(current_catalog())", "NOT_CONSTANT"),
+            ("IDENTIFIER(rand(0))", "NOT_CONSTANT"),
+            ("IDENTIFIER(1 DIV 0)", "WRONG_TYPE"),
+            ("IDENTIFIER('test.cat')", "MULTI_PART_NAME"),
+            ("typeof(current_catalog())", "NOT_CONSTANT"),
+            ("typeof(rand(0))", "NOT_CONSTANT"),
+        ] {
+            let error = resolver
+                .resolve_catalog_name(expression(sql)?)
+                .await
+                .err()
+                .ok_or_else(|| PlanError::internal(format!("expected rejection: {sql}")))?;
+            assert!(
+                error.to_string().contains(condition),
+                "ansi={ansi_mode} {sql}: {error}"
+            );
+        }
+    }
+    let catalog = context.extension::<CatalogManager>()?;
+    assert_eq!(catalog.default_catalog()?.as_ref(), "catalog");
+    assert_eq!(Vec::<String>::from(catalog.default_database()?), vec!["db"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn wrapped_catalog_type_only_udf_never_invokes_the_function() -> TestResult {
+    let context = context()?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    context
+        .extension::<CatalogManager>()?
+        .register_function(create_udf(
+            "catalog_type_canary",
+            vec![],
+            DataType::Utf8,
+            Volatility::Immutable,
+            Arc::new(move |_| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
+                    "catalog".into(),
+                ))))
+            }),
+        ))?;
+    let resolver = PlanResolver::new(&context, Arc::new(PlanConfig::default()));
+    assert_eq!(
+        resolver
+            .resolve_catalog_name(expression("IDENTIFIER(typeof(catalog_type_canary()))")?)
+            .await?,
+        "string"
+    );
+    let error = resolver
+        .resolve_catalog_name(expression("IDENTIFIER(catalog_type_canary())")?)
+        .await
+        .err()
+        .ok_or_else(|| PlanError::internal("registered function was accepted"))?;
+    assert!(error.to_string().contains("NOT_CONSTANT"), "{error}");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn wrapped_catalog_identifier_preserves_scalar_missing_column_precedence() -> TestResult {
+    let context = context()?;
+    let resolver = PlanResolver::new(&context, Arc::new(PlanConfig::default()));
+    for sql in [
+        "missing",
+        "concat(current_catalog(), missing)",
+        "typeof(missing)",
+    ] {
+        let error = resolver
+            .resolve_catalog_name(expression(&format!("IDENTIFIER({sql})"))?)
+            .await
+            .err()
+            .ok_or_else(|| PlanError::internal("missing column was accepted"))?;
+        let PlanError::Structured(details) = error else {
+            return Err(PlanError::internal(format!(
+                "expected structured column error: {sql}: {error}"
+            ))
+            .into());
+        };
+        assert_eq!(
+            details.condition, "UNRESOLVED_COLUMN.WITHOUT_SUGGESTION",
+            "{sql}"
+        );
+        assert_eq!(
+            details.parameters.get("objectName").map(String::as_str),
+            Some("`missing`")
+        );
+        let table_error = resolver
+            .resolve_table_identifier_expr(expression(sql)?, &mut PlanResolverState::new())
+            .await
+            .err()
+            .ok_or_else(|| PlanError::internal("table missing column was accepted"))?;
+        assert!(
+            table_error.to_string().contains("NOT_CONSTANT"),
+            "{sql}: {table_error}"
+        );
+    }
+    Ok(())
+}

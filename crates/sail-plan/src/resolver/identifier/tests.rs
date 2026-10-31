@@ -86,7 +86,7 @@ async fn table_validation_precedes_subquery_analysis_type_evaluation_and_folding
             "{sql}: {error}"
         );
         assert!(!state.config().require_foldable);
-        assert!(!state.config().table_identifier);
+        assert!(!state.config().analyzer_identifier);
         assert!(state.config().arrow_allow_large_var_types);
     }
     assert_eq!(

@@ -91,7 +91,7 @@ impl PlanResolver<'_> {
                 "[NOT_A_CONSTANT_STRING.NOT_CONSTANT] user-defined or higher-order function is not foldable",
             ));
         }
-        if state.config().table_identifier
+        if state.config().analyzer_identifier
             && canonical_function_name == "typeof"
             && catalog_manager
                 .get_function(&canonical_function_name)?

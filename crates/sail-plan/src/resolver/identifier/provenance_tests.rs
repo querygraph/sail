@@ -144,7 +144,7 @@ async fn identifier_constant_context_restores_parameters_and_state_after_errors(
             ConstantContext::Ordinary
         );
         assert!(!params.state().config().require_foldable);
-        assert!(!params.state().config().table_identifier);
+        assert!(!params.state().config().analyzer_identifier);
         assert!(params.state().config().arrow_allow_large_var_types);
         assert!(params.state().get_param_value("col").is_some());
     }

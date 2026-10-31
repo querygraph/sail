@@ -25,7 +25,7 @@ impl PlanResolver<'_> {
         let mut scope = state.enter_config_scope();
         scope.state().config_mut().require_foldable = true;
         scope.state().config_mut().constant_context = ConstantContext::Identifier;
-        scope.state().config_mut().table_identifier = true;
+        scope.state().config_mut().analyzer_identifier = true;
         let resolved = self
             .resolve_expression(expression, &Arc::new(DFSchema::empty()), scope.state())
             .await

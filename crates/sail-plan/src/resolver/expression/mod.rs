@@ -108,7 +108,7 @@ impl PlanResolver<'_> {
     ) -> PlanResult<NamedExpr> {
         use spec::Expr;
 
-        if state.config().table_identifier
+        if state.config().analyzer_identifier
             && matches!(
                 &expr,
                 Expr::InSubquery { .. }
