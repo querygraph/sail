@@ -114,7 +114,7 @@ pub(super) fn metadata_column() -> spec::TableColumnDefinition {
                 },
             ]),
         },
-        nullable: true,
+        nullable: false,
         comment: None,
         default: None,
         generated_always_as: None,

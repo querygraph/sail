@@ -231,7 +231,9 @@ pub(super) fn expected_key_fields(
 
 /// The CDC metadata field (`Scd1BatchProcessor.cdcMetadataColSchema`):
 /// `struct<deleteSequence: T, upsertSequence: T>` for the resolved sequencing
-/// type `T`, both members nullable.
+/// type `T`, both members nullable, the field itself not nullable
+/// (`AutoCdcFlowSuite.scala:270–278`; the suites' `cdcMetadataDdl` declares
+/// it `NOT NULL`).
 #[cfg_attr(not(test), expect(dead_code, reason = "used by the SCD1 write unit"))]
 pub(super) fn metadata_field(sequencing_type: &spec::DataType) -> spec::Field {
     let member = |name: &str| spec::Field {
@@ -248,7 +250,7 @@ pub(super) fn metadata_field(sequencing_type: &spec::DataType) -> spec::Field {
                 member(UPSERT_SEQUENCE_FIELD),
             ]),
         },
-        nullable: true,
+        nullable: false,
         metadata: vec![],
     }
 }

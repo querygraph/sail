@@ -341,6 +341,8 @@ fn auxiliary_schema_places_declared_keys_first_then_metadata() -> TestResult {
         vec!["region", "id", "__spark_autocdc_metadata"]
     );
     assert!(!aux[0].nullable && !aux[1].nullable);
+    // AutoCdcFlowSuite:270: the metadata field is not nullable, its members are.
+    assert!(!aux[2].nullable);
     let spec::DataType::Struct { fields } = &aux[2].data_type else {
         return Err("metadata column must be a struct".into());
     };
