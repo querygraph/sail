@@ -295,6 +295,7 @@ pub enum Statement {
         into: Into,
         table: Option<Table>,
         name: ObjectName,
+        by_name: Option<(By, Name)>,
         replace: Replace,
         #[parser(function = |(_, _, e, _), o| compose(e, o))]
         r#where: WhereClause,

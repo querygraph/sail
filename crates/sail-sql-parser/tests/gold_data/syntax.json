@@ -8513,6 +8513,14 @@
               }
             },
             {
+              "name": "Option(Tuple(Keyword(By), Keyword(Name)))",
+              "node": {
+                "optional": {
+                  "nonTerminal": "Tuple(Keyword(By), Keyword(Name))"
+                }
+              }
+            },
+            {
               "name": "Option(Tuple(Keyword(By), Keyword(Target)))",
               "node": {
                 "optional": {
@@ -11002,6 +11010,9 @@
                       },
                       {
                         "nonTerminal": "ObjectName"
+                      },
+                      {
+                        "nonTerminal": "Option(Tuple(Keyword(By), Keyword(Name)))"
                       },
                       {
                         "nonTerminal": "Keyword(Replace)"

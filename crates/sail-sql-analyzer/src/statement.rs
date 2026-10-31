@@ -1,5 +1,8 @@
 mod temporary_view;
 
+#[cfg(test)]
+mod insert_replace_tests;
+
 use std::iter::once;
 
 use either::Either;
@@ -826,6 +829,7 @@ fn from_ast_statement_impl(
             into: _,
             table: _,
             name,
+            by_name,
             replace: _,
             r#where,
             query,
@@ -840,6 +844,7 @@ fn from_ast_statement_impl(
                 input: Box::new(query),
                 table: from_ast_object_name(name)?,
                 mode: spec::InsertMode::Replace {
+                    by_name: by_name.is_some(),
                     condition: Box::new(spec::ExprWithSource {
                         expr: from_ast_expression(condition)?,
                         source: Some(source),

@@ -105,9 +105,13 @@ impl PlanResolver<'_> {
                 Self::insert_write_mode(overwrite),
                 WriteColumnMatch::ByColumns { columns },
             ),
-            InsertMode::Replace { condition } => (
+            InsertMode::Replace { condition, by_name } => (
                 WriteMode::TruncateIf { condition },
-                WriteColumnMatch::ByPosition,
+                if by_name {
+                    WriteColumnMatch::ByName
+                } else {
+                    WriteColumnMatch::ByPosition
+                },
             ),
         };
 

@@ -1173,6 +1173,8 @@ pub enum InsertMode {
     },
     Replace {
         condition: Box<ExprWithSource>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        by_name: bool,
     },
 }
 
@@ -1483,6 +1485,9 @@ pub struct ExprWithSource {
     /// if the expression is not created from SQL.
     pub source: Option<String>,
 }
+
+#[cfg(test)]
+mod insert_tests;
 
 #[cfg(test)]
 mod tests {

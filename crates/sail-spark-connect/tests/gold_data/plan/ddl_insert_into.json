@@ -885,7 +885,95 @@
     {
       "input": "INSERT INTO testcat.ns1.ns2.tbl BY NAME REPLACE WHERE a > 5 SELECT * FROM source",
       "output": {
-        "failure": "[PARSE_SYNTAX_ERROR] Syntax error at or near 'REPLACE'."
+        "success": {
+          "command": {
+            "insertInto": {
+              "input": {
+                "project": {
+                  "input": {
+                    "read": {
+                      "namedTable": {
+                        "name": [
+                          "source"
+                        ],
+                        "temporal": null,
+                        "sample": null,
+                        "options": []
+                      },
+                      "isStreaming": false
+                    },
+                    "planId": null
+                  },
+                  "expressions": [
+                    {
+                      "unresolvedStar": {
+                        "target": null,
+                        "planId": null,
+                        "wildcardOptions": {
+                          "ilikePattern": null,
+                          "excludeColumns": null,
+                          "exceptColumns": null,
+                          "replaceColumns": null,
+                          "renameColumns": null
+                        }
+                      }
+                    }
+                  ]
+                },
+                "planId": null
+              },
+              "table": [
+                "testcat",
+                "ns1",
+                "ns2",
+                "tbl"
+              ],
+              "mode": {
+                "replace": {
+                  "condition": {
+                    "expr": {
+                      "unresolvedFunction": {
+                        "functionName": [
+                          ">"
+                        ],
+                        "arguments": [
+                          {
+                            "unresolvedAttribute": {
+                              "name": [
+                                "a"
+                              ],
+                              "planId": null,
+                              "isMetadataColumn": false
+                            }
+                          },
+                          {
+                            "literal": {
+                              "int32": {
+                                "value": 5
+                              }
+                            }
+                          }
+                        ],
+                        "namedArguments": [],
+                        "isDistinct": false,
+                        "isUserDefinedFunction": false,
+                        "isInternal": null,
+                        "ignoreNulls": null,
+                        "filter": null,
+                        "orderBy": null
+                      }
+                    },
+                    "source": "a > 5 "
+                  },
+                  "byName": true
+                }
+              },
+              "partition": [],
+              "ifNotExists": false
+            },
+            "planId": null
+          }
+        }
       }
     },
     {
