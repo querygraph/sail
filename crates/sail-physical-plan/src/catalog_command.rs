@@ -9,8 +9,9 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use datafusion_common::{DataFusionError, Result, exec_err, internal_err};
 use sail_catalog::command::CatalogCommand;
-use sail_catalog::error::CatalogError;
+use sail_catalog::error::{CatalogError, CatalogObject};
 use sail_catalog::manager::CatalogManager;
+use sail_common_datafusion::error::catalog_not_found_error;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 
 /// A physical plan node that executes a [`CatalogCommand`].
@@ -103,6 +104,7 @@ impl ExecutionPlan for CatalogCommandExec {
             );
         }
         let command = self.command.clone();
+        let is_set_current_catalog = matches!(&command, CatalogCommand::SetCurrentCatalog { .. });
         let schema = self.schema.clone();
         let stream = futures::stream::once(async move {
             let manager = context.extension::<CatalogManager>()?;
@@ -110,6 +112,11 @@ impl ExecutionPlan for CatalogCommandExec {
                 .execute(context.as_ref(), manager.as_ref())
                 .await
                 .map_err(|e| match e {
+                    CatalogError::NotFound(CatalogObject::Catalog, name)
+                        if is_set_current_catalog =>
+                    {
+                        catalog_not_found_error(&name)
+                    }
                     CatalogError::CommitStateUnknown(_) => DataFusionError::External(Box::new(e)),
                     _ => datafusion_common::exec_datafusion_err!("{e}"),
                 })?;

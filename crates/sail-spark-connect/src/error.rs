@@ -351,7 +351,13 @@ impl From<SparkThrowable> for Status {
 
 fn spark_status(class: &str, message: &str, mut metadata: HashMap<String, String>) -> Status {
     // We do not add the "stackTrace" field since the Java stack trace is not available.
-    metadata.insert("classes".into(), format!("[\"{class}\"]"));
+    let classes = match class {
+        "org.apache.spark.sql.connector.catalog.CatalogNotFoundException" => format!(
+            "[\"{class}\",\"org.apache.spark.SparkException\",\"java.lang.Exception\",\"java.lang.Throwable\",\"java.lang.Object\"]"
+        ),
+        _ => format!("[\"{class}\"]"),
+    };
+    metadata.insert("classes".into(), classes);
 
     let mut details = ErrorDetails::new();
     details.set_error_info(class, "org.apache.spark", metadata);

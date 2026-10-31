@@ -1,3 +1,4 @@
+mod catalog;
 mod identifier;
 mod structured;
 
@@ -5,6 +6,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Formatter;
 
+pub use catalog::catalog_not_found_error;
 use datafusion::arrow::error::ArrowError;
 use datafusion_common::DataFusionError;
 pub use identifier::quote_sql_identifier;

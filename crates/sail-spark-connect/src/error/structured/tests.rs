@@ -72,3 +72,95 @@ fn stored_throwable_exposes_native_message_class_and_metadata() -> TestResult {
     assert_eq!(throwable.class_name(), error.class);
     assert_status(throwable.into())
 }
+
+#[test]
+fn missing_catalog_execution_errors_keep_spark_metadata() -> TestResult {
+    use sail_common_datafusion::error::catalog_not_found_error;
+
+    for (name, quoted) in [
+        ("missing_catalog", "`missing_catalog`"),
+        ("a.b", "`a`.`b`"),
+        ("a\"b", "`a\"b`"),
+        ("雪", "`雪`"),
+        ("", "``"),
+    ] {
+        let errors = [
+            SparkError::DataFusionError(catalog_not_found_error(name)),
+            SparkError::DataFusionError(DataFusionError::Shared(std::sync::Arc::new(
+                DataFusionError::Context(
+                    "catalog command".into(),
+                    Box::new(catalog_not_found_error(name)),
+                ),
+            ))),
+        ];
+        for error in errors {
+            let status: Status = error.into();
+            let details = status.get_error_details();
+            let info = details.error_info().ok_or("missing error info")?;
+            assert_eq!(
+                info.reason,
+                "org.apache.spark.sql.connector.catalog.CatalogNotFoundException"
+            );
+            assert_eq!(info.metadata["errorClass"], "CATALOG_NOT_FOUND");
+            assert_eq!(info.metadata["sqlState"], "42P08");
+            assert_eq!(
+                serde_json::from_str::<Vec<String>>(&info.metadata["classes"])?,
+                vec![
+                    "org.apache.spark.sql.connector.catalog.CatalogNotFoundException",
+                    "org.apache.spark.SparkException",
+                    "java.lang.Exception",
+                    "java.lang.Throwable",
+                    "java.lang.Object",
+                ]
+            );
+            let config = format!("\"spark.sql.catalog.{name}\"");
+            assert_eq!(
+                serde_json::from_str::<HashMap<String, String>>(
+                    &info.metadata["messageParameters"]
+                )?,
+                HashMap::from([
+                    ("catalogName".into(), quoted.into()),
+                    ("config".into(), config.clone()),
+                ])
+            );
+            assert_eq!(
+                status.message(),
+                format!(
+                    "[CATALOG_NOT_FOUND] The catalog {quoted} not found. Consider to set the SQL config {config} to a catalog plugin."
+                )
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn catalog_diagnostics_preserve_invalid_names_and_other_missing_object_kinds() -> TestResult {
+    use sail_catalog::error::{CatalogError, CatalogObject};
+    use sail_plan::error::PlanError;
+
+    let invalid = SparkError::DataFusionError(
+        sail_common_datafusion::error::catalog_not_found_error("a`b"),
+    );
+    let status: Status = invalid.into();
+    let details = status.get_error_details();
+    let info = details.error_info().ok_or("missing invalid-name details")?;
+    assert_eq!(info.reason, "org.apache.spark.sql.AnalysisException");
+    assert_eq!(info.metadata["errorClass"], "INVALID_ATTRIBUTE_NAME_SYNTAX");
+    assert_eq!(info.metadata["sqlState"], "42601");
+    assert_eq!(
+        serde_json::from_str::<HashMap<String, String>>(&info.metadata["messageParameters"])?,
+        HashMap::from([("name".into(), "a`b".into())])
+    );
+    for object in [
+        CatalogObject::Catalog,
+        CatalogObject::Table,
+        CatalogObject::View,
+        CatalogObject::Database,
+    ] {
+        let error = PlanError::from(CatalogError::NotFound(object, "input".into()));
+        assert!(matches!(error, PlanError::AnalysisError(_)), "{error}");
+        assert!(!error.to_string().contains("CATALOG_NOT_FOUND"));
+    }
+    Ok(())
+}
