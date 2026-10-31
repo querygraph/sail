@@ -45,11 +45,14 @@ fn case(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
         .zip(branch_values)
         .map(|(condition, value)| (Box::new(condition), Box::new(value)))
         .collect();
-    Ok(expr::Expr::Case(expr::Case {
-        expr: None, // Expr::Case in from_ast_expression incorporates into when_then_expr
-        when_then_expr,
-        else_expr: None,
-    }))
+    coerce_conditional_case(
+        expr::Case {
+            expr: None, // Expr::Case in from_ast_expression incorporates into when_then_expr
+            when_then_expr,
+            else_expr: None,
+        },
+        &function_context,
+    )
 }
 
 fn if_expr(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
@@ -60,11 +63,14 @@ fn if_expr(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
     let (when_expr, then_expr, else_expr) = arguments.three()?;
     let (then_expr, else_expr) =
         coerce_string_temporal_values(vec![then_expr, else_expr], &function_context)?.two()?;
-    Ok(expr::Expr::Case(expr::Case {
-        expr: None,
-        when_then_expr: vec![(Box::new(when_expr), Box::new(then_expr))],
-        else_expr: Some(Box::new(else_expr)),
-    }))
+    coerce_conditional_case(
+        expr::Case {
+            expr: None,
+            when_then_expr: vec![(Box::new(when_expr), Box::new(then_expr))],
+            else_expr: Some(Box::new(else_expr)),
+        },
+        &function_context,
+    )
 }
 
 fn coalesce(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
@@ -93,7 +99,7 @@ fn nvl2(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
         // The tested value is not part of branch type coercion. Lower before
         // optimization, as Spark's RuntimeReplaceable Nvl2 does, so constant
         // evaluation also sees the same conditional as IF.
-        return nvl2_if_expr(ScalarFunctionInput {
+        return if_expr(ScalarFunctionInput {
             arguments: vec![value.is_not_null(), then_value, else_value],
             function_context,
         });
@@ -115,23 +121,22 @@ fn nvl2(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
     };
     let then_value = session_date(then_value, &then_type);
     let else_value = session_date(else_value, &else_type);
-    nvl2_if_expr(ScalarFunctionInput {
+    if_expr(ScalarFunctionInput {
         arguments: vec![value.is_not_null(), then_value, else_value],
         function_context,
     })
 }
 
-// NVL2's result type is inspected during resolution, before the analyzer runs.
-// Resolve branch coercion now using the analyzer's shared CASE policy.
-fn nvl2_if_expr(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
-    let schema = input.function_context.schema;
-    let timezone = input.function_context.plan_config.session_timezone_label();
-    let expr::Expr::Case(case) = if_expr(input)? else {
-        return Err(PlanError::internal("IF must lower to CASE"));
-    };
+// Conditional types are inspected during resolution, before the analyzer runs.
+// Use its shared CASE policy without evaluating branch values.
+fn coerce_conditional_case(
+    case: expr::Case,
+    function_context: &FunctionContextInput<'_>,
+) -> PlanResult<expr::Expr> {
+    let timezone = function_context.plan_config.session_timezone_label();
     Ok(expr::Expr::Case(coerce_case_expression(
         case,
-        schema,
+        function_context.schema,
         Some(&timezone),
     )?))
 }
