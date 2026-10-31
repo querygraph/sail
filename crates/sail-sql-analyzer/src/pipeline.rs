@@ -46,6 +46,22 @@ fn from_ast_pipeline_statement_impl(
     source: Option<&SqlSource<'_>>,
 ) -> SqlResult<PipelineStatement> {
     crate::validation::validate_insert_modes(&statement)?;
+    // These are parsed SQL plans, not pipeline declarations. Reject before
+    // lowering their query or interpreting a normal INSERT as a Flow operation.
+    let unsupported = match &statement {
+        Statement::InsertInto { with: Some(_), .. }
+        | Statement::InsertIntoAndReplace { with: Some(_), .. }
+        | Statement::InsertOverwriteDirectory { with: Some(_), .. } => Some("UnresolvedWith"),
+        Statement::InsertInto { .. } => Some("InsertIntoStatement"),
+        Statement::InsertIntoAndReplace { .. } => Some("OverwriteByExpression"),
+        Statement::InsertOverwriteDirectory { .. } => Some("InsertIntoDir"),
+        _ => None,
+    };
+    if let Some(node) = unsupported {
+        return Err(SqlError::analysis(format!(
+            "Unsupported plan {node} parsed from SQL query"
+        )));
+    }
     match statement {
         Statement::CreatePipelineDataset(dataset) => {
             validate_dataset(&dataset)?;
