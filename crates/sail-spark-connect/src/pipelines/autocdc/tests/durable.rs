@@ -494,10 +494,10 @@ async fn a_reset_rebuilds_the_tables_from_the_origin_under_a_new_generation() ->
     assert_heads_match_the_logs(&case, &control).await?;
     let guard = control.guard(&target_key()).await?.ok_or("no guard")?;
     assert_eq!((guard.generation, guard.checkpoint_index), (1, 1));
-    assert_eq!(
-        (&guard.sink, &guard.auxiliary),
-        (&before.sink, &before.auxiliary)
-    );
+    // The target is replaced in place; the auxiliary table is dropped, as
+    // `DatasetManager` does, which is how a flow's keys change.
+    assert_eq!(guard.sink, before.sink);
+    assert_ne!(guard.auxiliary, before.auxiliary);
     // Batch numbers restart, so the new generation archives beside the old one.
     let root = case.checkpoint.parent().ok_or("no parent")?;
     assert!(root.join("0").join("prepared").join("2.arrow").exists());

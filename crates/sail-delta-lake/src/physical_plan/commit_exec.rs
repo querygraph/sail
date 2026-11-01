@@ -646,6 +646,10 @@ impl ExecutionPlan for DeltaCommitExec {
         let fenced_write = self.fenced_write.clone();
         let future = async move {
             let _elapsed_compute_timer = elapsed_compute.timer();
+            let fenced_write = fenced_write.or_else(|| {
+                let commits = context.extension::<FencedCommits>().ok()?;
+                commits.0.ambient_fence()
+            });
             let authority = fenced_authority(&context, &table_url, fenced_write.as_ref()).await?;
             let storage_config = StorageConfig;
             let object_store = get_object_store_from_context(&context, &table_url)?;

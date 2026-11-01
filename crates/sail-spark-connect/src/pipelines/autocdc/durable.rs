@@ -28,7 +28,7 @@ use sail_sdp_control::digest::digest;
 use sail_sdp_control::identity::{
     EffectStep, FenceToken, FlowKey, IntentId, SinkIdentity, TargetKey,
 };
-use sail_sdp_control::records::{FlowCheckpoint, Intent, IntentKind, ReceiptKind};
+use sail_sdp_control::records::{FlowCheckpoint, Intent, IntentKind, ReceiptKind, TargetState};
 use sail_sdp_control::store::Store;
 use sail_sdp_control::transitions::{Outcome, ResetIdentities};
 use serde_json::{Value, json};
@@ -38,9 +38,9 @@ use url::Url;
 use super::authority::{ControlCommits, effect_step_name};
 use super::run::{FlowRun, flow_schema};
 use super::write::{
-    IN_COMMIT_TIMESTAMPS_PROPERTY, PreparedBatch, enable_commit_timestamps, ensure_auxiliary_table,
-    evolve_fenced, flow_output_schema, merge_auxiliary, merge_destination, noop_fenced,
-    prepare_microbatch, publish_prepared, read_table, truncate_fenced,
+    IN_COMMIT_TIMESTAMPS_PROPERTY, PreparedBatch, drop_table, enable_commit_timestamps,
+    ensure_auxiliary_table, evolve_fenced, flow_output_schema, merge_auxiliary, merge_destination,
+    noop_fenced, prepare_microbatch, publish_prepared, read_table, replace_with_view,
 };
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
@@ -228,9 +228,35 @@ fn version(head: i64) -> SparkResult<u64> {
     u64::try_from(head).map_err(|_| SparkError::internal("negative Delta version"))
 }
 
+/// Give the auxiliary table its first commit, if it has none. That table may
+/// already be bound, from before it was dropped, and a first commit has no
+/// head to fence.
+async fn birth_auxiliary<S: Store + 'static>(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    durable: &DurableRun<'_, S>,
+    name: &Name,
+    url: &Url,
+) -> SparkResult<()> {
+    if table_state(&ctx.task_ctx(), url).await?.is_some() {
+        return Ok(());
+    }
+    let write = durable.run.write;
+    let empty = empty_batch(ctx, config.clone(), write.destination).await?;
+    publish_prepared(ctx, &empty).await?;
+    let commits = ControlCommits::for_birth(durable.control.clone(), url.as_str());
+    ctx.state_ref()
+        .write()
+        .config_mut()
+        .set_extension(Arc::new(FencedCommits(Arc::new(commits))));
+    let born = merge_auxiliary(ctx, config, write, name, None).await;
+    durable.install(ctx);
+    born
+}
+
 /// Bind the destination and auxiliary tables once. A recreated table has a
 /// new identity, which enrollment refuses rather than adopts.
-async fn enroll<S: Store>(
+async fn enroll<S: Store + 'static>(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
     durable: &DurableRun<'_, S>,
@@ -245,16 +271,14 @@ async fn enroll<S: Store>(
     );
     let task = ctx.task_ctx();
     let write = durable.run.write;
+    let control = &durable.control;
+    let guard = control.guard(&target).await.map_err(control_error)?;
     if table_state(&task, &sink_url).await?.is_none() {
         let empty = empty_batch(ctx, config.clone(), destination_name).await?;
         publish_prepared(ctx, &empty).await?;
         merge_destination(ctx, config.clone(), write, &empty, None).await?;
     }
-    if table_state(&task, &auxiliary_url).await?.is_none() {
-        let empty = empty_batch(ctx, config.clone(), destination_name).await?;
-        publish_prepared(ctx, &empty).await?;
-        merge_auxiliary(ctx, config, write, &auxiliary_name, None).await?;
-    }
+    birth_auxiliary(ctx, config, durable, &auxiliary_name, &auxiliary_url).await?;
     let born = async |url: &Url| {
         table_state(&task, url)
             .await?
@@ -263,17 +287,40 @@ async fn enroll<S: Store>(
     let (sink_id, sink_head) = born(&sink_url).await?;
     let (auxiliary_id, auxiliary_head) = born(&auxiliary_url).await?;
     let (sink, auxiliary) = (SinkIdentity(sink_id), SinkIdentity(auxiliary_id));
-    let control = &durable.control;
-    control
-        .enroll(
-            &target,
-            sink_url.as_str(),
-            &sink,
-            &auxiliary,
-            (version(sink_head)?, version(auxiliary_head)?),
-        )
-        .await
-        .map_err(control_error)?;
+    let (sink, auxiliary) = match &guard {
+        // A begun reset rebinds what it replaces when it finishes.
+        Some(guard) if guard.state == TargetState::Resetting => {
+            (guard.sink.clone(), guard.auxiliary.clone())
+        }
+        Some(guard)
+            if guard.physical_key == sink_url.as_str()
+                && guard.sink == sink
+                && guard.auxiliary != auxiliary =>
+        {
+            let acquired = control
+                .acquire(&target, durable.owner, durable.lease_ms)
+                .await
+                .map_err(control_error)?;
+            control
+                .rebind_auxiliary(&acquired.token, &auxiliary, version(auxiliary_head)?)
+                .await
+                .map_err(control_error)?;
+            (sink, auxiliary)
+        }
+        _ => {
+            control
+                .enroll(
+                    &target,
+                    sink_url.as_str(),
+                    &sink,
+                    &auxiliary,
+                    (version(sink_head)?, version(auxiliary_head)?),
+                )
+                .await
+                .map_err(control_error)?;
+            (sink, auxiliary)
+        }
+    };
     control
         .bind_physical(&target, auxiliary_url.as_str())
         .await
@@ -464,9 +511,9 @@ async fn publish_receipts<S: Store>(
     ctx: &SessionContext,
     control: &Control<S>,
     intent: &IntentId,
-    tables: [(&EffectTable, EffectStep); 2],
+    tables: &[(&EffectTable, EffectStep)],
 ) -> SparkResult<()> {
-    for (table, step) in tables {
+    for (table, step) in tables.iter().copied() {
         let receipt = control.receipt(intent, step).await.map_err(control_error)?;
         let Some(ReceiptKind::Data { ratified_version }) = receipt.map(|receipt| receipt.kind)
         else {
@@ -495,13 +542,21 @@ async fn publish_receipts<S: Store>(
     Ok(())
 }
 
-impl<S: Store> DurableRun<'_, S> {
+impl<S: Store + 'static> DurableRun<'_, S> {
     /// Make this authority the session's commit authority.
     fn install(&self, ctx: &SessionContext)
     where
         S: 'static,
     {
-        let commits = ControlCommits::new(self.control.clone());
+        self.install_with(ctx, None);
+    }
+
+    /// `ambient` fences the commits that follow, whose plans carry no fence.
+    fn install_with(&self, ctx: &SessionContext, ambient: Option<spec::FencedWrite>)
+    where
+        S: 'static,
+    {
+        let commits = ControlCommits::new(self.control.clone(), ambient);
         ctx.state_ref()
             .write()
             .config_mut()
@@ -644,7 +699,7 @@ impl<S: Store> DurableRun<'_, S> {
             .await?;
         }
         self.reached(Stage::TargetDone, sequence)?;
-        publish_receipts(ctx, control, &intent.id, batch_tables(enrolled)).await?;
+        publish_receipts(ctx, control, &intent.id, &batch_tables(enrolled)).await?;
         let request = RequestId {
             id: format!("{}#complete", intent.id.0),
             digest: intent.request_digest.clone(),
@@ -760,7 +815,7 @@ impl<S: Store> DurableRun<'_, S> {
             (&enrolled.auxiliary, EffectStep::InitializeAuxiliary),
             (&enrolled.destination, EffectStep::InitializeTarget),
         ];
-        publish_receipts(ctx, control, &intent.id, tables).await?;
+        publish_receipts(ctx, control, &intent.id, &tables).await?;
         control
             .complete_initialization(token, &intent.id)
             .await
@@ -780,35 +835,91 @@ impl<S: Store> DurableRun<'_, S> {
     ) -> SparkResult<u64> {
         let control = &self.control;
         let destination = self.run.write.destination;
-        let empty = empty_batch(ctx, config.clone(), destination).await?;
-        publish_prepared(ctx, &empty).await?;
+        let write = self.run.write;
+        let output = flow_output_schema(
+            ctx,
+            config.clone(),
+            write.args,
+            write.case,
+            &self.run.source.schema(),
+        )
+        .await?;
         let digest = digest("reset-prepared", &intent.id.0).map_err(encoding_error)?;
-        let effects = [
-            (EffectStep::ResetTarget, destination),
-            (EffectStep::ResetAuxiliary, &enrolled.auxiliary_name),
-        ];
-        for (step, table) in effects {
-            let done = control
-                .receipt(&intent.id, step)
-                .await
-                .map_err(control_error)?
-                .is_some();
-            if !done {
-                let fenced = fence(token, intent, step, &digest)?;
-                truncate_fenced(ctx, config.clone(), table, fenced).await?;
-            }
-            if step == EffectStep::ResetTarget {
-                self.reached(Stage::ResetTargetDone, 0)?;
-            }
+        let auxiliary_url = enrolled.auxiliary.url.clone();
+        let task = ctx.task_ctx();
+        let auxiliary_replaced = table_state(&task, &auxiliary_url)
+            .await?
+            .is_none_or(|(id, _)| SinkIdentity(id) != enrolled.auxiliary.sink);
+        let target_done = control
+            .receipt(&intent.id, EffectStep::ResetTarget)
+            .await
+            .map_err(control_error)?
+            .is_some();
+        if !target_done {
+            let columns = output.fields().iter().map(|x| x.name().clone()).collect();
+            let empty = PreparedBatch {
+                schema: output.clone(),
+                batches: vec![],
+                columns,
+            };
+            publish_prepared(ctx, &empty).await?;
+            let fenced = fence(token, intent, EffectStep::ResetTarget, &digest)?;
+            self.install_with(ctx, Some(fenced));
+            let replaced = replace_with_view(ctx, config.clone(), destination).await;
+            self.install(ctx);
+            replaced?;
         }
-        let tables = [
-            (&enrolled.auxiliary, EffectStep::ResetAuxiliary),
-            (&enrolled.destination, EffectStep::ResetTarget),
-        ];
-        publish_receipts(ctx, control, &intent.id, tables).await?;
+        self.reached(Stage::ResetTargetDone, 0)?;
+        let auxiliary_done = control
+            .receipt(&intent.id, EffectStep::ResetAuxiliary)
+            .await
+            .map_err(control_error)?
+            .is_some();
+        if !auxiliary_done {
+            let fenced = fence(token, intent, EffectStep::ResetAuxiliary, &digest)?;
+            noop_fenced(ctx, config.clone(), &enrolled.auxiliary_name, fenced).await?;
+        }
+        publish_receipts(
+            ctx,
+            control,
+            &intent.id,
+            &[(&enrolled.destination, EffectStep::ResetTarget)],
+        )
+        .await?;
+        // `DatasetManager` drops the auxiliary state rather than truncating
+        // it: this is how a flow's keys change.
+        if !auxiliary_replaced {
+            drop_table(ctx, config.clone(), &enrolled.auxiliary_name).await?;
+        }
+        ensure_auxiliary_table(
+            ctx,
+            config.clone(),
+            write,
+            &flow_schema(self.run.source, write)?,
+            false,
+        )
+        .await?;
+        // A table's location is unique to it, so the new one has its own.
+        let auxiliary_url = table_url(ctx, &enrolled.auxiliary_name).await?;
+        birth_auxiliary(
+            ctx,
+            config.clone(),
+            self,
+            &enrolled.auxiliary_name,
+            &auxiliary_url,
+        )
+        .await?;
+        control
+            .bind_physical(&enrolled.target, auxiliary_url.as_str())
+            .await
+            .map_err(control_error)?;
+        let (auxiliary, auxiliary_head) = table_state(&task, &auxiliary_url)
+            .await?
+            .ok_or_else(|| SparkError::internal("recreated auxiliary table has no commit"))?;
         let identities = ResetIdentities {
             sink: enrolled.destination.sink.clone(),
-            auxiliary: enrolled.auxiliary.sink.clone(),
+            auxiliary: SinkIdentity(auxiliary),
+            auxiliary_head: version(auxiliary_head)?,
         };
         let guard = control
             .finalize_reset(token, &identities)
@@ -876,7 +987,14 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
     if let Some(flow_source) = run.flow_source {
         flow_source.refresh(ctx).await?;
     }
-    if lacks_commit_timestamps(ctx, run.write.destination).await? {
+    let target = TargetKey(run.write.destination.join("."));
+    let guard = control.guard(&target).await.map_err(control_error)?;
+    let resetting = durable.reset
+        || guard
+            .as_ref()
+            .is_some_and(|guard| guard.state == TargetState::Resetting);
+    // An enrolled table already has them, and DDL cannot carry a fence.
+    if guard.is_none() && lacks_commit_timestamps(ctx, run.write.destination).await? {
         enable_commit_timestamps(ctx, config.clone(), run.write.destination).await?;
     }
     let auxiliary_name = ensure_auxiliary_table(
@@ -884,9 +1002,10 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
         config.clone(),
         run.write,
         &flow_schema(run.source, run.write)?,
+        resetting,
     )
     .await?;
-    let enrolled = enroll(ctx, config.clone(), durable, auxiliary_name).await?;
+    let mut enrolled = enroll(ctx, config.clone(), durable, auxiliary_name.clone()).await?;
     durable.install(ctx);
     let mut outcome = DurableOutcome::default();
     let acquired = control
@@ -916,10 +1035,11 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
                     .await?;
                 outcome.reset = Some(generation);
                 reset = false;
+                enrolled = enroll(ctx, config.clone(), durable, auxiliary_name.clone()).await?;
             }
             IntentKind::Batch if reset => {
                 released_on_error(durable, &enrolled, check_reset_origin(run.source)).await?;
-                publish_receipts(ctx, control, id, batch_tables(&enrolled)).await?;
+                publish_receipts(ctx, control, id, &batch_tables(&enrolled)).await?;
             }
             IntentKind::Batch => {
                 durable
@@ -949,6 +1069,7 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
             .finish_reset(ctx, config.clone(), &token, &enrolled, &intent)
             .await?;
         outcome.reset = Some(generation);
+        enrolled = enroll(ctx, config.clone(), durable, auxiliary_name).await?;
     }
     if let Some((_, added)) = durable.evolved_schema(ctx, config.clone()).await? {
         let token = control

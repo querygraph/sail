@@ -589,6 +589,30 @@ pub fn begin_reset(
 pub struct ResetIdentities {
     pub sink: SinkIdentity,
     pub auxiliary: SinkIdentity,
+    /// The head of the auxiliary table, which is new after a reset.
+    pub auxiliary_head: u64,
+}
+
+/// The auxiliary table was dropped and created again. Spark recreates it
+/// rather than failing, and its state is a cache the target outranks, so the
+/// new identity is bound. No batch may be open against the old one.
+pub fn rebind_auxiliary(
+    guard: &TargetGuard,
+    token: &FenceToken,
+    now: AuthorityMillis,
+    auxiliary: SinkIdentity,
+) -> Result<TargetGuard, Outcome> {
+    check_fence(guard, token, now)?;
+    if let Some(active) = &guard.active_intent {
+        return Err(conflict(format!(
+            "target slot holds unfinished intent {}",
+            active.0
+        )));
+    }
+    let mut next = guard.clone();
+    next.auxiliary = auxiliary;
+    next.revision += 1;
+    Ok(next)
 }
 
 /// `FinalizeReset`: only after both reset effects are confirmed under the

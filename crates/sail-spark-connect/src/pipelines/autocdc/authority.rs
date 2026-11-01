@@ -20,11 +20,27 @@ const NOOP_DIGEST: &str = "noop";
 
 pub(super) struct ControlCommits<S> {
     control: Arc<Control<S>>,
+    ambient: Option<FencedWrite>,
+    /// A table whose log does not exist yet, so its first commit has no head
+    /// for a fence to check.
+    birth: Option<String>,
 }
 
 impl<S> ControlCommits<S> {
-    pub(super) fn new(control: Arc<Control<S>>) -> Self {
-        Self { control }
+    pub(super) fn new(control: Arc<Control<S>>, ambient: Option<FencedWrite>) -> Self {
+        Self {
+            control,
+            ambient,
+            birth: None,
+        }
+    }
+
+    pub(super) fn for_birth(control: Arc<Control<S>>, table_url: &str) -> Self {
+        Self {
+            control,
+            ambient: None,
+            birth: Some(table_url.to_string()),
+        }
     }
 }
 
@@ -62,7 +78,14 @@ impl<S> FencedCommitAuthority for ControlCommits<S>
 where
     S: Store + 'static,
 {
+    fn ambient_fence(&self) -> Option<FencedWrite> {
+        self.ambient.clone()
+    }
+
     async fn is_enrolled(&self, table_url: &str) -> Result<bool> {
+        if self.birth.as_deref() == Some(table_url) {
+            return Ok(false);
+        }
         let target = self.control.enrolled_target(table_url).await;
         Ok(target.map_err(external)?.is_some())
     }

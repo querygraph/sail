@@ -27,7 +27,9 @@ def space(pipeline_spark):
     pipeline_spark.sql("DROP TABLE IF EXISTS target")
 
 
-def run(spark, factory, url, schema, *, keys="id", sequence="seq", name="target", columns=None, flow=None):
+def run(
+    spark, factory, url, schema, *, keys="id", sequence="seq", name="target", columns=None, flow=None, **options
+):
     keys = [keys] if isinstance(keys, str) else list(keys)
     _, registry, start = factory()
     with graph_element_registration_context(registry):
@@ -53,7 +55,7 @@ def run(spark, factory, url, schema, *, keys="id", sequence="seq", name="target"
             name=flow,
             column_list=columns,
         )
-    start()
+    start(**options)
 
 
 def rows(spark, *columns, table="target"):
@@ -415,3 +417,41 @@ def test_a_flow_streams_from_a_table_the_same_pipeline_writes(space, pipeline_fa
     start()
     assert rows(space, "id", "name") == [(1, "alicia")]
     space.sql("DROP TABLE IF EXISTS bronze")
+
+
+def test_a_full_refresh_changes_the_keys_and_the_types(space, pipeline_factory, broker):  # noqa: F811
+    broker.send({"id": 1, "name": "alice", "seq": 1})
+    run(space, pipeline_factory, broker.url, "id INT, name STRING, seq BIGINT")
+    broker.send({"id": 2, "name": "bob", "seq": 2})
+    schema = "id BIGINT, name STRING, seq BIGINT"
+    with pytest.raises(FAILURE, match="CANNOT_MERGE_INCOMPATIBLE_DATA_TYPE"):
+        run(space, pipeline_factory, broker.url, schema)
+    run(space, pipeline_factory, broker.url, schema, keys="name", full_refresh_all=True)
+    assert rows(space, "id", "name") == [(1, "alice"), (2, "bob")]
+    assert space.table("target").schema["id"].dataType.simpleString() == "bigint"
+    broker.send({"id": 9, "name": "bob", "seq": 3})
+    run(space, pipeline_factory, broker.url, schema, keys="name")
+    assert rows(space, "id", "name") == [(1, "alice"), (9, "bob")]
+
+
+def test_a_dropped_auxiliary_table_is_recreated(space, pipeline_factory, broker):  # noqa: F811
+    broker.send({"id": 1, "name": "alice", "seq": 1})
+    run(space, pipeline_factory, broker.url, BASE)
+    space.sql("DROP TABLE __spark_autocdc_aux_state_target")
+    broker.send({"id": 1, "name": "alicia", "seq": 2})
+    run(space, pipeline_factory, broker.url, BASE)
+    assert rows(space, "id", "name") == [(1, "alicia")]
+    assert space.catalog.tableExists("__spark_autocdc_aux_state_target")
+
+
+def test_a_full_refresh_creates_a_target_that_does_not_exist(space, pipeline_factory, broker):  # noqa: F811
+    broker.send({"id": 1, "name": "alice", "seq": 1})
+    run(space, pipeline_factory, broker.url, BASE, full_refresh_all=True)
+    assert rows(space, "id", "name") == [(1, "alice")]
+
+
+def test_an_alter_of_an_enrolled_table_is_refused(space, pipeline_factory, broker):  # noqa: F811
+    broker.send({"id": 1, "name": "alice", "seq": 1})
+    run(space, pipeline_factory, broker.url, BASE)
+    with pytest.raises(FAILURE, match="enrolled"):
+        space.sql("ALTER TABLE target SET TBLPROPERTIES ('owner' = 'me')").collect()

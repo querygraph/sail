@@ -40,6 +40,12 @@ pub trait FencedCommitAuthority: Debug + Send + Sync {
     async fn is_enrolled(&self, table_url: &str) -> Result<bool>;
 
     async fn ratify(&self, fence: &FencedWrite, effect: &FencedEffect) -> Result<Ratification>;
+
+    /// The fence of a commit whose plan does not carry one. Only a merge plan
+    /// can carry a fence, and a schema-replacing overwrite is not a merge.
+    fn ambient_fence(&self) -> Option<FencedWrite> {
+        None
+    }
 }
 
 /// The session's commit authority; sessions without one have no fenced writes.

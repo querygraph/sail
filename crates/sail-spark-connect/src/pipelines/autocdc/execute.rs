@@ -350,7 +350,7 @@ impl CdcRun {
         // Materializing an existing table commits outside the authority, so
         // only tables that do not exist yet are created.
         let manager = ctx.extension::<CatalogManager>()?;
-        let selected: Vec<&Name> = selection.refresh.intersection(&targets).collect();
+        let selected: Vec<&Name> = targets.iter().filter(|name| selection.runs(name)).collect();
         let mut missing = BTreeSet::new();
         for name in selected.iter().copied() {
             match manager.get_table_or_view(name).await {
@@ -363,10 +363,11 @@ impl CdcRun {
         }
         // `DatasetManager` merges the existing schema with the flow's and
         // fails here, before any write, when they cannot merge.
+        // A full refresh takes the flow's schema, so nothing has to merge.
         for name in selected
             .iter()
             .copied()
-            .filter(|name| !missing.contains(*name))
+            .filter(|name| !missing.contains(*name) && !selection.reset.contains(*name))
         {
             let Some(output_schema) = schemas.get(name) else {
                 continue;

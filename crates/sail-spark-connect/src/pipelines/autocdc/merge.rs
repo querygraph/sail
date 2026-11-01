@@ -166,12 +166,6 @@ pub(super) fn auxiliary_merge(
     }
 }
 
-/// A fenced truncate: an empty source matches nothing, so every row of the
-/// table is deleted. A plain truncate cannot carry a fence.
-pub(super) fn reset_merge(table: &[String], empty_view: &str) -> spec::MergeInto {
-    empty_source_merge(table, empty_view, vec![delete_unmatched(None)], false)
-}
-
 /// A fenced schema change: nothing is inserted, and the commit adds the
 /// columns that the empty source has and the table lacks.
 pub(super) fn evolve_merge(table: &[String], empty_view: &str) -> spec::MergeInto {
