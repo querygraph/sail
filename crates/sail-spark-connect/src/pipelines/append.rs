@@ -1110,19 +1110,24 @@ fn bind_streams<'a>(
     .boxed()
 }
 
-const SOURCES_CHANGED: &str = "STREAMING_SOURCES_CHANGED";
+const SOURCES_CHANGED: &str = "sourcesChanged";
 const TIME_TRAVEL: &str = "DELTA_UNSUPPORTED_TIME_TRAVEL_VIEWS";
 
-fn sources_changed_error(flow: &Flow) -> SparkError {
+/// Spark's offset log refuses the changed query, as the stream's failure.
+fn sources_changed_error(flow: &Flow, before: usize, after: usize) -> SparkError {
+    let cause = format!(
+        "There are [{before}] sources in the checkpoint offsets and now there are [{after}] \
+         sources requested by the query. Cannot continue."
+    );
     Box::new(StructuredSparkError {
-        class: "org.apache.spark.sql.AnalysisException".into(),
-        condition: SOURCES_CHANGED.into(),
-        sql_state: "42000".into(),
+        class: "org.apache.spark.sql.streaming.StreamingQueryException".into(),
+        condition: "STREAM_FAILED".into(),
+        sql_state: "XXKST".into(),
         message: format!(
-            "Flow {} had streaming sources added or removed.",
+            "Query [id = {}] terminated with exception: {cause}",
             flow.name.join(".")
         ),
-        parameters: HashMap::new(),
+        parameters: HashMap::from([(SOURCES_CHANGED.into(), cause)]),
     })
     .into()
 }
@@ -1130,7 +1135,7 @@ fn sources_changed_error(flow: &Flow) -> SparkError {
 /// Whether this failure needs a full refresh, which no retry can stand in for.
 pub(super) fn sources_changed(error: &SparkError) -> bool {
     matches!(error, SparkError::Structured(error)
-        if error.condition == SOURCES_CHANGED || error.condition == TIME_TRAVEL)
+        if error.parameters.contains_key(SOURCES_CHANGED) || error.condition == TIME_TRAVEL)
 }
 
 pub(super) struct AppendFlow<'a> {
@@ -1181,7 +1186,11 @@ pub(super) async fn run(
     .await?;
     let sources = batch.sources();
     if !state.sources.is_empty() && state.sources != sources {
-        return Err(sources_changed_error(run.flow));
+        return Err(sources_changed_error(
+            run.flow,
+            state.sources.len(),
+            sources.len(),
+        ));
     }
     state.sources = sources;
     let windowed = windowed_aggregate(&scope, &run.flow.query)?;

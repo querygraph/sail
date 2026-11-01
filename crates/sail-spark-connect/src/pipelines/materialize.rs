@@ -114,7 +114,8 @@ pub(super) async fn tables(
         columns.retain(|column| !column.name.starts_with(DUPLICATE_COLUMN_MARK));
         for column in &details.clustering_columns {
             if !columns.iter().any(|x| x.name.eq_ignore_ascii_case(column)) {
-                return Err(errors::missing_cluster_column(column, &output.name));
+                let columns = columns.iter().map(|x| x.name.clone()).collect::<Vec<_>>();
+                return Err(errors::missing_cluster_column(column, &columns));
             }
         }
         if !details.clustering_columns.is_empty() {

@@ -85,11 +85,24 @@ pub(super) fn cluster_change(existing: &[String], requested: &[String]) -> Spark
     .into()
 }
 
-pub(super) fn missing_cluster_column(column: &str, table: &[String]) -> SparkError {
-    SparkError::invalid(format!(
-        "Cluster column `{column}` is not defined in the table {}.",
-        table.join(".")
-    ))
+/// Spark's table materialization fails, with this as its cause.
+pub(super) fn missing_cluster_column(column: &str, columns: &[String]) -> SparkError {
+    let root = columns
+        .iter()
+        .map(|name| format!(" |-- {name}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Box::new(StructuredSparkError {
+        class: "org.apache.spark.sql.pipelines.graph.DatasetManager$TableMaterializationException"
+            .into(),
+        condition: "TABLE_MATERIALIZATION_FAILED".into(),
+        sql_state: String::new(),
+        message: format!(
+            "org.apache.spark.sql.AnalysisException: Couldn't find column {column} in:\nroot\n{root}"
+        ),
+        parameters: HashMap::new(),
+    })
+    .into()
 }
 
 pub(super) fn all_partition_columns() -> SparkError {

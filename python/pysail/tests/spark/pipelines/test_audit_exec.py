@@ -128,11 +128,6 @@ def test_a_selection_naming_no_table_materializes_nothing(suite, option):
     assert not suite.exists("a")
 
 
-@pytest.mark.xfail(
-    not is_jvm_spark(),
-    strict=True,
-    reason="Sail refuses the column at registration with its own IllegalArgumentException text",
-)
 def test_a_missing_cluster_column_is_an_analysis_exception(suite):
     """MaterializeTablesSuite:1070: the cause of the materialization failure is an AnalysisException."""
     suite.source()
@@ -169,11 +164,6 @@ def test_the_earliest_failed_flow_is_the_runs_failure(suite):
     assert "late failure" not in str(error)
 
 
-@pytest.mark.xfail(
-    not is_jvm_spark(),
-    strict=True,
-    reason="Sail ends the run with STREAMING_SOURCES_CHANGED, and Spark with the query's STREAM_FAILED",
-)
 def test_a_source_change_fails_the_run_with_its_own_error(suite):
     """TriggeredGraphExecutionSuite:419: the run's cause reaches the client; its Run is FAILED event does not."""
     suite.source("src1", 10)
