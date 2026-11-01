@@ -43,7 +43,13 @@ pub(super) async fn execute(
         }
         return Err(SparkError::unsupported("incremental pipeline execution"));
     }
-    super::materialize::tables(ctx, graph, &analyzed.schemas, &selection).await?;
+    let mut deferred =
+        super::materialize::tables(ctx, graph, &analyzed.schemas, &selection).await?;
+    for (name, column) in &analyzed.duplicate_columns {
+        deferred
+            .entry(name.clone())
+            .or_insert_with(|| super::materialize::ambiguous_reference(column));
+    }
     super::materialize::views(ctx, graph, &analyzed, events).await?;
     let runnable =
         |output: &Output| output.view.is_none() && output.kind != OutputType::TemporaryView;
@@ -70,6 +76,7 @@ pub(super) async fn execute(
         selection: &selection,
         storage: &storage,
         events,
+        deferred: &deferred,
     };
     // A failed flow does not stop independent flows, only what reads from it.
     // The first failure is the run's error.
@@ -169,6 +176,7 @@ struct FlowRun<'a> {
     selection: &'a Selection,
     storage: &'a str,
     events: &'a RunEvents,
+    deferred: &'a super::materialize::DeferredFailures,
 }
 
 impl FlowRun<'_> {
@@ -247,6 +255,9 @@ impl FlowRun<'_> {
         accepted: &HashMap<String, String>,
         truncate: bool,
     ) -> SparkResult<()> {
+        if let Some(failure) = self.deferred.get(&output.name) {
+            return Err(Box::new(failure.clone()).into());
+        }
         let spark = self.ctx.extension::<SparkSession>()?;
         let config = spark.plan_config_with_overrides(accepted.clone())?;
         let name = &output.name;

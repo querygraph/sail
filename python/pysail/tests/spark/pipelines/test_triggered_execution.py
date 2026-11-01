@@ -24,7 +24,6 @@ from pathlib import Path
 import pyspark.pipelines as dp
 import pytest
 
-from pysail.testing.spark.utils.common import is_jvm_spark
 from pyspark.pipelines.add_pipeline_analysis_context import add_pipeline_analysis_context
 from pyspark.pipelines.graph_element_registry import graph_element_registration_context
 from pyspark.pipelines.spark_connect_graph_element_registry import SparkConnectGraphElementRegistry
@@ -409,7 +408,6 @@ def test_flow_fails_to_resolve(suite):
     )
 
 
-@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="Sail reports a bad partition column once, while materializing, before any flow")
 def test_consecutive_failures_are_each_reported(suite):
     # The Scala test counts two WARN events and one ERROR event; a client sees their messages.
     messages, error = suite.attempt(

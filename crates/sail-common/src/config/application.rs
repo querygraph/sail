@@ -759,6 +759,7 @@ pub struct CatalogConfig {
     pub default_catalog: Option<String>,
     pub default_database: Vec<String>,
     pub global_temporary_database: Vec<String>,
+    pub shared_memory: bool,
     pub list: Vec<CatalogType>,
     pub system: SystemCatalogConfig,
 }

@@ -484,7 +484,22 @@ pub fn from_ast_table_factor_with_joins(
     table: TableFactor,
     joins: Vec<TableJoin>,
 ) -> SqlResult<spec::QueryPlan> {
-    let plan = from_ast_table_factor(table)?;
+    let mut joins = joins;
+    let mut plan = from_ast_table_factor(table)?;
+    // A bare `t OUTER JOIN d` is not a join type in Spark: OUTER is an alias of
+    // `t`, and this is an inner join. `NATURAL OUTER JOIN` is a Sail extension.
+    if let Some(join) = joins.first_mut()
+        && matches!(join.operator, Some(JoinOperator::Outer(_)))
+        && join.natural.is_none()
+        && !matches!(plan.node, spec::QueryNode::TableAlias { .. })
+    {
+        join.operator = None;
+        plan = spec::QueryPlan::new(spec::QueryNode::TableAlias {
+            input: Box::new(plan),
+            name: spec::Identifier::from("OUTER".to_string()),
+            columns: vec![],
+        });
+    }
     let plan = joins.into_iter().try_fold(plan, query_plan_with_join)?;
     Ok(plan)
 }
@@ -1025,8 +1040,7 @@ fn query_plan_with_join(left: spec::QueryPlan, join: TableJoin) -> SqlResult<spe
         Some(JoinOperator::RightOuter(_, _)) | Some(JoinOperator::Right(_)) => {
             spec::JoinType::RightOuter
         }
-        // A bare `t OUTER JOIN d` is not a join type in Spark, where OUTER is an
-        // alias of `t`. `NATURAL OUTER JOIN` is a Sail extension.
+        // OUTER would be a second alias here, which Spark does not parse either.
         Some(JoinOperator::Outer(_)) if natural.is_none() => {
             return Err(SqlError::invalid(
                 "OUTER JOIN without NATURAL, LEFT, RIGHT or FULL",

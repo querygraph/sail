@@ -20,14 +20,14 @@ use crate::ast::keywords::{
     Default, Defined, Delete, Delimited, Desc, Describe, Detail, Directory, Distributed, Drop, Dry,
     Escaped, Evolution, Exists, Explain, Extended, External, Fields, Fileformat, First, For,
     Format, Formatted, From, Full, Function, Functions, Generated, Global, History, Hours,
-    Identity, If, In, Increment, Inpath, Inputformat, Insert, Interval, Into, Is, Items, Keys,
+    Identity, If, In, Increment, Inpath, Inputformat, Insert, Interval, Into, Is, Items, Key, Keys,
     Lazy, Like, Limit, Lines, Lite, Load, Local, Location, Map, Matched, Merge, Name, Namespace,
     Namespaces, Noscan, Not, Null, On, Optimize, Options, Or, Outputformat, Overwrite, Partition,
-    Partitioned, Partitions, Properties, Purge, Recover, Refresh, Rename, Replace, Reset, Restrict,
-    Retain, Row, Run, Schema, Schemas, Serde, Serdeproperties, Set, Show, Sorted, Source, Start,
-    Statistics, Stored, System, Table, Tables, Target, Tblproperties, Temp, Temporary, Terminated,
-    Then, Time, To, Truncate, Type, Uncache, Unset, Update, Use, User, Using, Vacuum, Values,
-    Verbose, View, Views, When, Where, With, Zone, Zorder,
+    Partitioned, Partitions, Primary, Properties, Purge, Recover, References, Refresh, Rename,
+    Replace, Reset, Restrict, Retain, Row, Run, Schema, Schemas, Serde, Serdeproperties, Set, Show,
+    Sorted, Source, Start, Statistics, Stored, System, Table, Tables, Target, Tblproperties, Temp,
+    Temporary, Terminated, Then, Time, To, Truncate, Type, Uncache, Unique, Unset, Update, Use,
+    User, Using, Vacuum, Values, Verbose, View, Views, When, Where, With, Zone, Zorder,
 };
 use crate::ast::literal::{IntegerLiteral, NumberLiteral, StringLiteral};
 use crate::ast::operator::{
@@ -614,6 +614,21 @@ pub enum ColumnDefinitionOption {
         RightParenthesis,
     ),
     Comment(Comment, StringLiteral),
+    Check(
+        Option<(Constraint, Ident)>,
+        Check,
+        LeftParenthesis,
+        #[parser(function = |e, _| e)] Expr,
+        RightParenthesis,
+    ),
+    Unique(Option<(Constraint, Ident)>, Unique),
+    PrimaryKey(Option<(Constraint, Ident)>, Primary, Key),
+    References(
+        Option<(Constraint, Ident)>,
+        References,
+        ObjectName,
+        Option<IdentList>,
+    ),
 }
 
 #[derive(Debug, Clone, TreeParser, TreeSyntax, TreeText)]

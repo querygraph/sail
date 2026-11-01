@@ -26,6 +26,7 @@ pub(super) struct GraphScope<'a> {
     pub graph: &'a GraphDefinition,
     pub resolved: &'a BTreeMap<Name, LogicalPlan>,
     pub reads: Mutex<BTreeSet<Name>>,
+    read_with_options: Mutex<BTreeSet<Name>>,
     pub flow: &'a Flow,
     virtual_tables: Option<VirtualInputs<'a>>,
     // Whether any input of this call is streaming as analyzed, which a STREAM
@@ -95,6 +96,7 @@ impl<'a> GraphScope<'a> {
             graph,
             resolved,
             reads: Mutex::default(),
+            read_with_options: Mutex::default(),
             flow,
             virtual_tables: None,
             streaming: AtomicBool::new(false),
@@ -135,6 +137,14 @@ impl<'a> GraphScope<'a> {
         }
     }
 
+    fn has_read_options(&self, name: &Name) -> PlanResult<bool> {
+        Ok(self
+            .read_with_options
+            .lock()
+            .map_err(|e| PlanError::internal(e.to_string()))?
+            .contains(name))
+    }
+
     fn read(&self, name: &[String], is_streaming: bool) -> PlanResult<Option<LogicalPlan>> {
         let name = self.input_name(name)?;
         if self.graph.outputs.iter().any(|x| x.name == name) {
@@ -163,6 +173,19 @@ impl<'a> GraphScope<'a> {
                 inputs.check_view_read(&name, is_streaming, streaming)?;
                 self.record_streaming(streaming);
             }
+            // Options apply to the table's files, so a read with options goes to
+            // the table itself. Before a run there is only its schema.
+            if !is_streaming
+                && self.virtual_tables.is_none()
+                && self.has_read_options(&name)?
+                && self.graph.outputs.iter().any(|output| {
+                    output.name == name
+                        && output.view.is_none()
+                        && output.kind != OutputType::TemporaryView
+                })
+            {
+                return Ok(None);
+            }
             self.resolved
                 .get(&name)
                 .cloned()
@@ -186,6 +209,16 @@ impl RelationScope for GraphScope<'_> {
 
     fn observe_source_read(&self, is_streaming: bool) {
         self.record_streaming(is_streaming);
+    }
+
+    fn observe_read_options(&self, name: &[String], options: &[(String, String)]) {
+        if let (false, Ok(name), Ok(mut recorded)) = (
+            options.is_empty(),
+            self.input_name(name),
+            self.read_with_options.lock(),
+        ) {
+            recorded.insert(name);
+        }
     }
 
     // Computed IDENTIFIER targets materialize after Spark's graph substitution.
@@ -258,6 +291,29 @@ pub(super) struct AnalyzedGraph {
     pub schemas: BTreeMap<Name, SchemaRef>,
     pub publications: BTreeMap<Name, CreateViewOptions>,
     pub accepted_confs: BTreeMap<Name, HashMap<String, String>>,
+    /// A column a target's query produces twice. Spark analyzes such a query,
+    /// and its flow fails when it runs.
+    pub duplicate_columns: BTreeMap<Name, String>,
+}
+
+/// Marks a repeated column, which only analysis sees.
+pub(super) const DUPLICATE_COLUMN_MARK: &str = "__sail_duplicate_column_";
+
+/// Names a query's repeated columns apart, so its plan has a schema.
+fn disambiguated(fields: Vec<String>, duplicate: &mut Option<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    fields
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| {
+            if seen.insert(name.to_ascii_lowercase()) {
+                return name;
+            }
+            let renamed = format!("{DUPLICATE_COLUMN_MARK}{index}");
+            duplicate.get_or_insert(name);
+            renamed
+        })
+        .collect()
 }
 
 mod failure;
@@ -290,6 +346,7 @@ async fn analyze_queries(
     let mut dependencies = BTreeMap::new();
     let mut publications = BTreeMap::new();
     let mut accepted_confs = BTreeMap::new();
+    let mut duplicate_columns = BTreeMap::new();
     let base = HashMap::new();
     let source_case_sensitive = spark.plan_config()?.case_sensitive;
     while order.len() < graph.outputs.len() {
@@ -334,6 +391,17 @@ async fn analyze_queries(
                         }
                         let plan = result.plan;
                         let plan = if let Some(fields) = plan.fields {
+                            let is_view =
+                                output.kind == OutputType::TemporaryView || output.view.is_some();
+                            let mut duplicate = None;
+                            let fields = if is_view {
+                                fields
+                            } else {
+                                disambiguated(fields, &mut duplicate)
+                            };
+                            if let Some(duplicate) = duplicate {
+                                duplicate_columns.insert(output.name.clone(), duplicate);
+                            }
                             rename_logical_plan(plan.plan, &fields)?
                         } else {
                             plan.plan
@@ -475,6 +543,7 @@ async fn analyze_queries(
         schemas,
         publications,
         accepted_confs,
+        duplicate_columns,
     }))
 }
 

@@ -59,6 +59,14 @@ def cli(*arguments, spec_path):
     return process.returncode, process.stdout + process.stderr
 
 
+# The CLI opens a session of its own, which sees this test's schema when sessions share a catalog,
+# as Spark sessions do and as Sail sessions do under this setting.
+SHARED_CATALOG = pytest.mark.skipif(
+    not is_jvm_spark() and os.environ.get("SAIL_CATALOG__SHARED_MEMORY") != "true",
+    reason="needs a server with catalog.shared_memory",
+)
+
+
 @pytest.fixture
 def schema(spark, request):
     name = "cl_" + "".join(c if c.isalnum() else "_" for c in request.node.name).lower()[:48]
@@ -74,7 +82,7 @@ def rows(spark, table):
     return sorted(tuple(row) for row in spark.table(table).collect())
 
 
-@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="Sail catalogs are per session, so the CLI's session cannot see this test's schema")
+@SHARED_CATALOG
 def test_a_dry_run_creates_nothing(spark, schema, tmp_path):
     code, output = cli("dry-run", spec_path=spec(tmp_path, spark.catalog.currentCatalog(), schema))
     assert code == 0, output
@@ -82,7 +90,7 @@ def test_a_dry_run_creates_nothing(spark, schema, tmp_path):
     assert not spark.catalog.tableExists(f"{schema}.st")
 
 
-@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="Sail catalogs are per session, so the CLI's session cannot see this test's schema")
+@SHARED_CATALOG
 def test_a_run_and_a_full_refresh_all(spark, schema, tmp_path):
     path = spec(tmp_path, spark.catalog.currentCatalog(), schema)
     code, output = cli("run", spec_path=path)
@@ -98,7 +106,7 @@ def test_a_run_and_a_full_refresh_all(spark, schema, tmp_path):
         assert rows(spark, f"{schema}.{table}") == [(3,)]
 
 
-@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="Sail catalogs are per session, so the CLI's session cannot see this test's schema")
+@SHARED_CATALOG
 def test_a_failed_run_exits_nonzero(spark, schema, tmp_path):
     path = spec(tmp_path, spark.catalog.currentCatalog(), schema)
     (tmp_path / "transformations" / "bad.sql").write_text("CREATE MATERIALIZED VIEW bad AS SELECT * FROM missing_table;\n")

@@ -1,12 +1,12 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use datafusion::common::{Result, plan_datafusion_err};
 use datafusion_common::plan_err;
 use sail_catalog::credentials::{
     CatalogCredentials, EmptyCatalogCredentials, FileCatalogCredentials, StaticCatalogCredentials,
 };
-use sail_catalog::error::CatalogResult;
+use sail_catalog::error::{CatalogError, CatalogResult};
 use sail_catalog::manager::{CatalogManager, CatalogManagerOptions};
 use sail_catalog::provider::{
     CachingCatalogProvider, CatalogCacheManager, CatalogProvider, RuntimeAwareCatalogProvider,
@@ -22,10 +22,38 @@ use sail_common::config::{AppConfig, CacheType, CatalogCacheConfig, CatalogType,
 use sail_common::runtime::RuntimeHandle;
 use secrecy::{ExposeSecret, SecretString};
 
+/// The memory catalogs of a server, when `catalog.shared_memory` is set. As in
+/// Spark, what one session creates in a catalog is then there for the others.
+/// Temporary views stay with their session.
+#[derive(Default)]
+pub struct SharedMemoryCatalogs {
+    catalogs: Mutex<HashMap<String, Arc<MemoryCatalogProvider>>>,
+}
+
+impl SharedMemoryCatalogs {
+    fn get_or_create(
+        &self,
+        name: &str,
+        create: impl FnOnce() -> CatalogResult<MemoryCatalogProvider>,
+    ) -> CatalogResult<Arc<MemoryCatalogProvider>> {
+        let mut catalogs = self
+            .catalogs
+            .lock()
+            .map_err(|e| CatalogError::Internal(e.to_string()))?;
+        if let Some(provider) = catalogs.get(name) {
+            return Ok(provider.clone());
+        }
+        let provider = Arc::new(create()?);
+        catalogs.insert(name.to_string(), provider.clone());
+        Ok(provider)
+    }
+}
+
 pub fn create_catalog_manager(
     config: &AppConfig,
     runtime: RuntimeHandle,
     cache_manager: Arc<CatalogCacheManager>,
+    memory_catalogs: &SharedMemoryCatalogs,
 ) -> Result<CatalogManager> {
     let mut catalogs = config
         .catalog
@@ -38,12 +66,19 @@ pub fn create_catalog_manager(
                     initial_database,
                     initial_database_comment,
                 } => {
-                    let provider = MemoryCatalogProvider::new(
-                        name.clone(),
-                        initial_database.clone().try_into()?,
-                        initial_database_comment.clone(),
-                    );
-                    Ok((name.clone(), Arc::new(provider)))
+                    let create = || {
+                        Ok(MemoryCatalogProvider::new(
+                            name.clone(),
+                            initial_database.clone().try_into()?,
+                            initial_database_comment.clone(),
+                        ))
+                    };
+                    let provider = if config.catalog.shared_memory {
+                        memory_catalogs.get_or_create(name, create)?
+                    } else {
+                        Arc::new(create()?)
+                    };
+                    Ok((name.clone(), provider))
                 }
                 CatalogType::IcebergRest {
                     name,
@@ -362,8 +397,30 @@ mod tests {
         config.catalog.default_catalog = Some("hms".to_string());
         let handle = tokio::runtime::Handle::current();
         let runtime = RuntimeHandle::new(handle.clone(), handle);
-        create_catalog_manager(&config, runtime, Arc::new(CatalogCacheManager::new()))
-            .expect("catalog manager creation should succeed");
+        create_catalog_manager(
+            &config,
+            runtime,
+            Arc::new(CatalogCacheManager::new()),
+            &SharedMemoryCatalogs::default(),
+        )
+        .expect("catalog manager creation should succeed");
+    }
+
+    #[test]
+    fn a_memory_catalog_is_shared_by_name() {
+        let shared = SharedMemoryCatalogs::default();
+        let create = || {
+            Ok(MemoryCatalogProvider::new(
+                "sail".to_string(),
+                vec!["default".to_string()].try_into()?,
+                None,
+            ))
+        };
+        let first = shared.get_or_create("sail", create).unwrap();
+        let again = shared.get_or_create("sail", create).unwrap();
+        let other = shared.get_or_create("other", create).unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        assert!(!Arc::ptr_eq(&first, &other));
     }
 
     #[tokio::test]
@@ -385,13 +442,23 @@ mod tests {
         let cache_manager = Arc::new(CatalogCacheManager::new());
 
         // First session
-        let _ = create_catalog_manager(&config, runtime.clone(), cache_manager.clone())
-            .expect("first creation should succeed");
+        let _ = create_catalog_manager(
+            &config,
+            runtime.clone(),
+            cache_manager.clone(),
+            &SharedMemoryCatalogs::default(),
+        )
+        .expect("first creation should succeed");
         let bundle1 = cache_manager.get_cache("glue").unwrap().unwrap();
 
         // Second session
-        let _ = create_catalog_manager(&config, runtime.clone(), cache_manager.clone())
-            .expect("second creation should succeed");
+        let _ = create_catalog_manager(
+            &config,
+            runtime.clone(),
+            cache_manager.clone(),
+            &SharedMemoryCatalogs::default(),
+        )
+        .expect("second creation should succeed");
         let bundle2 = cache_manager.get_cache("glue").unwrap().unwrap();
 
         // Verify that both sessions reuse the exact same cache bundle rather than
@@ -421,8 +488,13 @@ mod tests {
         let cache_manager = Arc::new(CatalogCacheManager::new());
 
         // Create manager
-        let _ = create_catalog_manager(&config, runtime.clone(), cache_manager.clone())
-            .expect("creation should succeed");
+        let _ = create_catalog_manager(
+            &config,
+            runtime.clone(),
+            cache_manager.clone(),
+            &SharedMemoryCatalogs::default(),
+        )
+        .expect("creation should succeed");
 
         // Verify that NOTHING was stored in the global manager
         let bundle = cache_manager.get_cache("glue").unwrap();

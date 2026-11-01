@@ -21,6 +21,7 @@ mod function;
 mod insert;
 mod merge;
 mod procedure;
+mod refresh;
 mod row_level;
 mod show;
 mod table_properties;
@@ -221,8 +222,8 @@ impl PlanResolver<'_> {
             CommandNode::CacheTable { .. } => Err(PlanError::todo("PlanNode::CacheTable")),
             CommandNode::UncacheTable { .. } => Err(PlanError::todo("PlanNode::UncacheTable")),
             CommandNode::ClearCache => Err(PlanError::todo("PlanNode::ClearCache")),
-            CommandNode::RefreshTable { .. } => Err(PlanError::todo("PlanNode::RefreshTable")),
-            CommandNode::RefreshByPath { .. } => Err(PlanError::todo("PlanNode::RefreshByPath")),
+            CommandNode::RefreshTable { table } => self.resolve_command_refresh(Some(table)).await,
+            CommandNode::RefreshByPath { .. } => self.resolve_command_refresh(None).await,
             CommandNode::CurrentCatalog => {
                 self.resolve_catalog_command(CatalogCommand::CurrentCatalog)
             }

@@ -1890,6 +1890,12 @@ impl TryFrom<Vec<ColumnDefinitionOption>> for ColumnDefinitionOptions {
                         return Err(SqlError::invalid("duplicate COMMENT clause"));
                     }
                 }
+                ColumnDefinitionOption::Check(..)
+                | ColumnDefinitionOption::Unique(..)
+                | ColumnDefinitionOption::PrimaryKey(..)
+                | ColumnDefinitionOption::References(..) => {
+                    return Err(SqlError::unsupported("column constraints"));
+                }
             }
         }
         if output.generated_always_as.is_some() && output.identity.is_some() {

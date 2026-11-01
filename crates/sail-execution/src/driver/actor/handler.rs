@@ -456,6 +456,7 @@ impl DriverActor {
                 handle,
                 key,
                 schema,
+                retrying,
             } => {
                 let assignment =
                     TaskAssignmentGetter::get(&self.task_assigner, &TaskKey::from(key.clone()));
@@ -506,6 +507,7 @@ impl DriverActor {
                         .send(JobOutputItem::Stream {
                             key,
                             stream: Box::pin(stream),
+                            retrying,
                         })
                         .await;
                 });

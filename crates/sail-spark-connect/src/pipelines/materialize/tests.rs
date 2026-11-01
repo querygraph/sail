@@ -56,7 +56,7 @@ fn location() -> String {
 async fn materialize(ctx: &SessionContext, graph: &GraphDefinition) -> SparkResult<()> {
     let schemas = metadata_schemas(ctx, graph).await?;
     let selection = Selection::new(graph, &pc::StartRun::default())?;
-    tables(ctx, graph, &schemas, &selection).await
+    tables(ctx, graph, &schemas, &selection).await.map(|_| ())
 }
 
 async fn catalog_columns(

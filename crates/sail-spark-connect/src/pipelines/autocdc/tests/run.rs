@@ -371,7 +371,9 @@ async fn full_refresh(
             ..Default::default()
         },
     )?;
-    crate::pipelines::materialize::tables(ctx, graph, &schemas, &selection).await
+    crate::pipelines::materialize::tables(ctx, graph, &schemas, &selection)
+        .await
+        .map(|_| ())
 }
 
 // FullRefreshSuite:34–71: the refreshed run wipes the target rows and the
@@ -611,7 +613,9 @@ async fn selective_refresh(
             ..Default::default()
         },
     )?;
-    crate::pipelines::materialize::tables(ctx, graph, &schemas, &selection).await
+    crate::pipelines::materialize::tables(ctx, graph, &schemas, &selection)
+        .await
+        .map(|_| ())
 }
 
 fn pair_schema() -> SchemaRef {

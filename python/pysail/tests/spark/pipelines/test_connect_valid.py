@@ -19,7 +19,6 @@ from pathlib import Path
 import pyspark.pipelines as dp
 import pytest
 
-from pysail.testing.spark.utils.common import is_jvm_spark
 from pyspark.errors.exceptions.connect import AnalysisException
 from pyspark.pipelines.add_pipeline_analysis_context import add_pipeline_analysis_context
 from pyspark.pipelines.graph_element_registry import graph_element_registration_context
@@ -134,7 +133,6 @@ def test_dependencies(suite):
     assert suite.rows("c") == [(1,), (2,), (3,)]
 
 
-@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="OUTER cannot be a table alias in Sail, so a bare OUTER JOIN is refused")
 def test_multi_hop_schema_merging(suite):
     # `OUTER` is an alias of the VALUES relation here, so this is an inner join on false.
     suite.run(

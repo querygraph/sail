@@ -54,6 +54,9 @@ pub enum JobOutputItem {
     Stream {
         key: TaskStreamKey,
         stream: TaskStreamSource,
+        /// The failure that made this a retry. If the partition cannot be
+        /// retried, this is what the job reports.
+        retrying: Option<CommonErrorCause>,
     },
     Error {
         cause: CommonErrorCause,
@@ -180,15 +183,23 @@ impl Stream for JobOutputStream {
                         TaskStreamError::from(cause),
                     )))));
                 }
-                Poll::Ready(Some(JobOutputItem::Stream { key, stream })) => {
+                Poll::Ready(Some(JobOutputItem::Stream {
+                    key,
+                    stream,
+                    retrying,
+                })) => {
                     if self.emitted.contains(&OutputPartition::from(&key)) {
                         self.state = JobOutputState::Failed;
-                        return Poll::Ready(Some(Err(DataFusionError::External(Box::new(
-                            TaskStreamError::Unknown(format!(
-                                "cannot add stream for {}: a different attempt has already produced job output",
-                                TaskStreamKeyDisplay(&key)
-                            )),
-                        )))));
+                        let error = retrying.map_or_else(
+                            || {
+                                TaskStreamError::Unknown(format!(
+                                    "cannot add stream for {}: a different attempt has already produced job output",
+                                    TaskStreamKeyDisplay(&key)
+                                ))
+                            },
+                            TaskStreamError::from,
+                        );
+                        return Poll::Ready(Some(Err(DataFusionError::External(Box::new(error)))));
                     }
                     inner.iter_mut().for_each(|s| s.mute_if_needed(&key));
                     inner.push(TaskStreamWrapper::new(key, stream));
@@ -303,9 +314,11 @@ mod tests {
 
     use datafusion::arrow::array::{ArrayRef, Int32Array};
     use futures::task::{ArcWake, waker};
+    use sail_python_udf::error::PyErrExtractor;
 
     use super::*;
     use crate::driver::job_scheduler::JobState;
+    use crate::error::ExecutionError;
 
     #[derive(Default)]
     struct WakeCounter(AtomicUsize);
@@ -372,6 +385,7 @@ mod tests {
         assert!(
             sender
                 .try_send(JobOutputItem::Stream {
+                    retrying: None,
                     key: stream_key(),
                     stream: Box::pin(futures::stream::iter([Ok(batch.clone())])),
                 })
@@ -392,6 +406,7 @@ mod tests {
         assert!(
             sender
                 .try_send(JobOutputItem::Stream {
+                    retrying: None,
                     key: TaskStreamKey {
                         attempt: 1,
                         ..stream_key()
@@ -409,6 +424,35 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_refused_retry_reports_the_failure_that_caused_it() {
+        let (sender, receiver) = mpsc::channel(1);
+        let mut output = JobOutputStream::new(receiver);
+        let key = TaskStreamKey {
+            attempt: 1,
+            ..stream_key()
+        };
+        output.emitted.insert(OutputPartition::from(&key));
+        let cause = CommonErrorCause::new::<PyErrExtractor>(&ExecutionError::InternalError(
+            "Test error".to_string(),
+        ));
+        assert!(
+            sender
+                .try_send(JobOutputItem::Stream {
+                    retrying: Some(cause),
+                    key,
+                    stream: Box::pin(futures::stream::empty()),
+                })
+                .is_ok()
+        );
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert!(matches!(
+            Pin::new(&mut output).poll_next(&mut cx),
+            Poll::Ready(Some(Err(error))) if error.to_string().contains("Test error")
+        ));
+    }
+
     #[tokio::test]
     async fn output_conflict_fails_running_and_draining_jobs() {
         for disconnected in [false, true] {
@@ -424,6 +468,7 @@ mod tests {
                 assert!(
                     sender
                         .try_send(JobOutputItem::Stream {
+                            retrying: None,
                             key,
                             stream: Box::pin(futures::stream::empty()),
                         })
@@ -458,6 +503,7 @@ mod tests {
             assert!(
                 sender
                     .try_send(JobOutputItem::Stream {
+                        retrying: None,
                         key: stream_key(),
                         stream: Box::pin(futures::stream::iter([Err(TaskStreamError::Unknown(
                             "test stream failure".to_string(),
@@ -534,6 +580,7 @@ mod tests {
 
     fn empty_stream() -> JobOutputItem {
         JobOutputItem::Stream {
+            retrying: None,
             key: stream_key(),
             stream: Box::pin(futures::stream::empty()),
         }

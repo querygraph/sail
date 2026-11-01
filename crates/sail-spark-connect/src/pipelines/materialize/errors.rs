@@ -91,3 +91,42 @@ pub(super) fn missing_cluster_column(column: &str, table: &[String]) -> SparkErr
         table.join(".")
     ))
 }
+
+/// Reported by the flow, on each attempt, as Spark's table write does.
+pub(in crate::pipelines) fn missing_partition_column(
+    column: &str,
+    table: &[String],
+    columns: &[String],
+) -> StructuredSparkError {
+    let quote = |name: &String| format!("`{name}`");
+    let table = table.iter().map(quote).collect::<Vec<_>>().join(".");
+    let defined = columns.iter().map(quote).collect::<Vec<_>>().join(", ");
+    StructuredSparkError {
+        class: "org.apache.spark.sql.AnalysisException".into(),
+        condition: "COLUMN_NOT_DEFINED_IN_TABLE".into(),
+        sql_state: "42703".into(),
+        message: format!(
+            "partition column `{column}` is not defined in table {table}, defined table columns \
+             are: {defined}."
+        ),
+        parameters: HashMap::from([
+            ("colName".into(), format!("`{column}`")),
+            ("tableName".into(), table),
+            ("tableCols".into(), defined),
+        ]),
+    }
+}
+
+pub(in crate::pipelines) fn ambiguous_reference(column: &str) -> StructuredSparkError {
+    let names = format!("[`{column}`, `{column}`]");
+    StructuredSparkError {
+        class: "org.apache.spark.sql.AnalysisException".into(),
+        condition: "AMBIGUOUS_REFERENCE".into(),
+        sql_state: "42704".into(),
+        message: format!("Reference `{column}` is ambiguous, could be: {names}."),
+        parameters: HashMap::from([
+            ("name".into(), format!("`{column}`")),
+            ("referenceNames".into(), names),
+        ]),
+    }
+}
