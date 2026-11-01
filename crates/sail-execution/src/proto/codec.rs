@@ -115,7 +115,9 @@ use sail_data_source::formats::binary::source::BinarySource;
 use sail_data_source::formats::console::ConsoleSinkExec;
 use sail_data_source::formats::csv::CsvSource;
 use sail_data_source::formats::noop::NoopSinkExec;
-use sail_data_source::formats::orc::{OrcJavaTimeZoneConfig, OrcSource};
+use sail_data_source::formats::orc::{
+    OrcJavaTimeZoneConfig, OrcSink, OrcSource, OrcWriteCompression, OrcWriterOptions,
+};
 use sail_data_source::formats::python::{
     InputPartition, PythonDataSourceExec, PythonDataSourceWriteCommitExec,
     PythonDataSourceWriteExec,
@@ -1476,31 +1478,33 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 let file_sink_config = FileSinkConfig::try_from(&file_sink_config)?;
                 let writer_options = TextWriterOptions::new(line_sep, compression_type_variant);
                 let data_sink = TextSink::new(file_sink_config, writer_options);
-                let physical_sort_expr_nodes = if let Some(sort_order) = sort_order {
-                    let physical_sort_expr_nodes: Vec<PhysicalSortExprNode> = sort_order
-                        .physical_sort_expr_nodes
-                        .iter()
-                        .map(|x| try_decode_message(x))
-                        .collect::<Result<Vec<_>>>()?;
-                    Some(physical_sort_expr_nodes)
-                } else {
-                    None
-                };
-                let sort_order = physical_sort_expr_nodes
-                    .as_ref()
-                    .map(|physical_sort_expr_nodes| {
-                        parse_physical_sort_exprs(
-                            physical_sort_expr_nodes,
-                            &PhysicalPlanDecodeContext::new(ctx, self),
-                            &schema,
-                            proto_converter,
-                        )
-                        .map(|sort_exprs| {
-                            LexRequirement::new(sort_exprs.into_iter().map(Into::into))
-                        })
-                    })
-                    .transpose()?
-                    .flatten();
+                let sort_order =
+                    self.try_decode_sink_sort_order(sort_order, &schema, ctx, proto_converter)?;
+                Ok(Arc::new(DataSinkExec::new(
+                    input,
+                    Arc::new(data_sink),
+                    sort_order,
+                )))
+            }
+            NodeKind::OrcSink(r#gen::OrcSinkExecNode {
+                input,
+                base_config,
+                schema,
+                sort_order,
+                compression,
+            }) => {
+                let input =
+                    try_decode_physical_plan_with_converter(ctx, self, proto_converter, &input)?;
+                let schema = try_decode_schema(&schema)?;
+                let file_sink_config: datafusion_proto::protobuf::FileSinkConfig =
+                    try_decode_message(&base_config)?;
+                let file_sink_config = FileSinkConfig::try_from(&file_sink_config)?;
+                let compression = OrcWriteCompression::resolve(Some(&compression), None, None)
+                    .map_err(|e| plan_datafusion_err!("failed to decode ORC sink: {e}"))?;
+                let data_sink =
+                    OrcSink::try_new(file_sink_config, OrcWriterOptions { compression })?;
+                let sort_order =
+                    self.try_decode_sink_sort_order(sort_order, &schema, ctx, proto_converter)?;
                 Ok(Arc::new(DataSinkExec::new(
                     input,
                     Arc::new(data_sink),
@@ -3046,6 +3050,19 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                     line_sep,
                     compression_type_variant,
                     sort_order,
+                })
+            } else if let Some(sink) = data_sink.sink().downcast_ref::<OrcSink>() {
+                let base_config = try_encode_message(
+                    datafusion_proto::protobuf::FileSinkConfig::try_from(sink.config())
+                        .map_err(|e| plan_datafusion_err!("failed to encode ORC sink: {e}"))?,
+                )?;
+                let schema = try_encode_schema(data_sink.schema().as_ref())?;
+                NodeKind::OrcSink(r#gen::OrcSinkExecNode {
+                    input,
+                    base_config,
+                    schema,
+                    sort_order,
+                    compression: sink.options().compression.orc_name().to_string(),
                 })
             } else {
                 return plan_err!("unsupported data sink node: {data_sink:?}");
@@ -6312,6 +6329,38 @@ impl RemoteExecutionCodec {
 
     fn try_decode_file_compression_type(&self, variant: i32) -> Result<FileCompressionType> {
         Ok(self.try_decode_compression_type_variant(variant)?.into())
+    }
+
+    fn try_decode_sink_sort_order(
+        &self,
+        sort_order: Option<r#gen::PhysicalSortExprNodeCollection>,
+        schema: &Schema,
+        ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<Option<LexRequirement>> {
+        let physical_sort_expr_nodes = if let Some(sort_order) = sort_order {
+            let physical_sort_expr_nodes: Vec<PhysicalSortExprNode> = sort_order
+                .physical_sort_expr_nodes
+                .iter()
+                .map(|x| try_decode_message(x))
+                .collect::<Result<Vec<_>>>()?;
+            Some(physical_sort_expr_nodes)
+        } else {
+            None
+        };
+        Ok(physical_sort_expr_nodes
+            .as_ref()
+            .map(|physical_sort_expr_nodes| {
+                parse_physical_sort_exprs(
+                    physical_sort_expr_nodes,
+                    &PhysicalPlanDecodeContext::new(ctx, self),
+                    schema,
+                    proto_converter,
+                )
+                .map(|sort_exprs| LexRequirement::new(sort_exprs.into_iter().map(Into::into)))
+            })
+            .transpose()?
+            .flatten())
     }
 
     fn try_decode_compression_type_variant(&self, variant: i32) -> Result<CompressionTypeVariant> {

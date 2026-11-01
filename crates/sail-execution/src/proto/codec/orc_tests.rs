@@ -414,3 +414,52 @@ fn options_that_exceed_worker_usize_are_rejected() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn orc_sink_roundtrip_keeps_config_codec_and_schema_admission() -> Result<()> {
+    use datafusion::datasource::listing::ListingTableUrl;
+    use datafusion::datasource::physical_plan::FileOutputMode;
+    use datafusion::logical_expr::dml::InsertOp;
+    use datafusion::physical_plan::empty::EmptyExec;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, true),
+        Field::new("p", DataType::Int64, true),
+    ]));
+    let config = FileSinkConfig {
+        original_url: "file:///t".into(),
+        object_store_url: ObjectStoreUrl::parse("file://")?,
+        file_group: FileGroup::default(),
+        table_paths: vec![ListingTableUrl::parse("file:///t")?],
+        output_schema: schema.clone(),
+        table_partition_cols: vec![("p".into(), DataType::Null)],
+        insert_op: InsertOp::Append,
+        keep_partition_by_columns: false,
+        file_extension: "orc".into(),
+        file_output_mode: FileOutputMode::Automatic,
+    };
+    let compression = OrcWriteCompression::Lz4;
+    let sink = OrcSink::try_new(config, OrcWriterOptions { compression })?;
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(DataSinkExec::new(
+        Arc::new(EmptyExec::new(schema)),
+        Arc::new(sink),
+        None,
+    ));
+    let codec = RemoteExecutionCodec;
+    let converter = RemotePhysicalProtoConverter::default();
+    let mut buffer = vec![];
+    codec.try_encode(plan.clone(), &mut buffer, &converter)?;
+    let context = TaskContext::default();
+    let decoded = codec.try_decode(&buffer, &[], &context, &converter)?;
+    let exec = decoded
+        .downcast_ref::<DataSinkExec>()
+        .ok_or_else(|| plan_datafusion_err!("expected a data sink"))?;
+    let decoded = exec
+        .sink()
+        .downcast_ref::<OrcSink>()
+        .ok_or_else(|| plan_datafusion_err!("expected an ORC sink"))?;
+    assert_eq!(decoded.options().compression, compression);
+    assert_eq!(decoded.config().file_extension, "orc");
+    assert_eq!(decoded.config().table_partition_cols.len(), 1);
+    Ok(())
+}

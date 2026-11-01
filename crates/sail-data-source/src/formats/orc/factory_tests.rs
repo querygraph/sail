@@ -52,7 +52,7 @@ fn reader_capture_is_once_and_separate_from_the_captured_display_label() -> Resu
 }
 
 #[test]
-fn timezone_capture_failures_keep_their_cause_and_writes_are_explicitly_unsupported() {
+fn timezone_capture_failures_keep_their_cause() {
     let context = SessionContext::new();
     let error = read_with_timezone(&context.state(), vec![], || {
         Err(CommonError::invalid("host zone lookup failed"))
@@ -63,8 +63,5 @@ fn timezone_capture_failures_keep_their_cause_and_writes_are_explicitly_unsuppor
             if cause.downcast_ref::<CommonError>().is_some()
                 && cause.to_string().contains("host zone lookup failed")
     ));
-    assert!(matches!(
-        OrcFormatFactory::write(&context.state(), vec![]),
-        Err(DataFusionError::NotImplemented(message)) if message == "ORC writing is not implemented"
-    ));
+    assert!(OrcFormatFactory::write(&context.state(), vec![]).is_ok());
 }

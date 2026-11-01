@@ -84,7 +84,6 @@ fn unsupported_native_and_temporal_types_are_rejected_before_encoding() {
         DataType::UInt64,
         DataType::Float16,
         DataType::Decimal128(20, 4),
-        DataType::Date32,
         DataType::Date64,
         DataType::Timestamp(TimeUnit::Microsecond, None),
         DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),

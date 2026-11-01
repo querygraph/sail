@@ -7852,6 +7852,7 @@ dependencies = [
  "pin-project-lite",
  "prost 0.14.4",
  "sail-common",
+ "sail-object-store",
  "serde",
  "serde_arrow",
  "serde_json",
@@ -7908,6 +7909,7 @@ dependencies = [
  "sail-build-scripts",
  "sail-common",
  "sail-common-datafusion",
+ "sail-object-store",
  "sail-physical-plan",
  "sail-sql-analyzer",
  "sail-sql-parser",
@@ -7918,6 +7920,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "url",
+ "uuid",
 ]
 
 [[package]]
