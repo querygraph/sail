@@ -1453,6 +1453,12 @@
               }
             },
             {
+              "name": "Box(WatermarkClause)",
+              "node": {
+                "nonTerminal": "WatermarkClause"
+              }
+            },
+            {
               "name": "Box(WindowFrame)",
               "node": {
                 "nonTerminal": "WindowFrame"
@@ -1718,6 +1724,64 @@
                         "nonTerminal": "StringLiteral"
                       }
                     ]
+                  },
+                  {
+                    "sequence": [
+                      {
+                        "nonTerminal": "Option(Tuple(Keyword(Constraint), Identifier))"
+                      },
+                      {
+                        "nonTerminal": "Keyword(Check)"
+                      },
+                      {
+                        "nonTerminal": "Operator(LeftParenthesis)"
+                      },
+                      {
+                        "nonTerminal": "Expression"
+                      },
+                      {
+                        "nonTerminal": "Operator(RightParenthesis)"
+                      }
+                    ]
+                  },
+                  {
+                    "sequence": [
+                      {
+                        "nonTerminal": "Option(Tuple(Keyword(Constraint), Identifier))"
+                      },
+                      {
+                        "nonTerminal": "Keyword(Unique)"
+                      }
+                    ]
+                  },
+                  {
+                    "sequence": [
+                      {
+                        "nonTerminal": "Option(Tuple(Keyword(Constraint), Identifier))"
+                      },
+                      {
+                        "nonTerminal": "Keyword(Primary)"
+                      },
+                      {
+                        "nonTerminal": "Keyword(Key)"
+                      }
+                    ]
+                  },
+                  {
+                    "sequence": [
+                      {
+                        "nonTerminal": "Option(Tuple(Keyword(Constraint), Identifier))"
+                      },
+                      {
+                        "nonTerminal": "Keyword(References)"
+                      },
+                      {
+                        "nonTerminal": "ObjectName"
+                      },
+                      {
+                        "nonTerminal": "Option(IdentList)"
+                      }
+                    ]
                   }
                 ]
               }
@@ -1932,6 +1996,19 @@
                       },
                       {
                         "nonTerminal": "Keyword(Buckets)"
+                      }
+                    ]
+                  },
+                  {
+                    "sequence": [
+                      {
+                        "nonTerminal": "Keyword(Default)"
+                      },
+                      {
+                        "nonTerminal": "Keyword(Collation)"
+                      },
+                      {
+                        "nonTerminal": "Identifier"
                       }
                     ]
                   },
@@ -4137,6 +4214,19 @@
               }
             },
             {
+              "name": "IntervalLiteral",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Option(Keyword(Interval))"
+                  },
+                  {
+                    "nonTerminal": "IntervalExpr"
+                  }
+                ]
+              }
+            },
+            {
               "name": "IntervalQualifier",
               "node": {
                 "choice": [
@@ -4843,6 +4933,14 @@
               }
             },
             {
+              "name": "Keyword(Collation)",
+              "node": {
+                "terminal": {
+                  "keyword": "COLLATION"
+                }
+              }
+            },
+            {
               "name": "Keyword(Collection)",
               "node": {
                 "terminal": {
@@ -5055,6 +5153,14 @@
               "node": {
                 "terminal": {
                   "keyword": "DEFINED"
+                }
+              }
+            },
+            {
+              "name": "Keyword(Delay)",
+              "node": {
+                "terminal": {
+                  "keyword": "DELAY"
                 }
               }
             },
@@ -5675,6 +5781,14 @@
               }
             },
             {
+              "name": "Keyword(Key)",
+              "node": {
+                "terminal": {
+                  "keyword": "KEY"
+                }
+              }
+            },
+            {
               "name": "Keyword(Keys)",
               "node": {
                 "terminal": {
@@ -6147,6 +6261,14 @@
               }
             },
             {
+              "name": "Keyword(Primary)",
+              "node": {
+                "terminal": {
+                  "keyword": "PRIMARY"
+                }
+              }
+            },
+            {
               "name": "Keyword(Properties)",
               "node": {
                 "terminal": {
@@ -6199,6 +6321,14 @@
               "node": {
                 "terminal": {
                   "keyword": "RECURSIVE"
+                }
+              }
+            },
+            {
+              "name": "Keyword(References)",
+              "node": {
+                "terminal": {
+                  "keyword": "REFERENCES"
                 }
               }
             },
@@ -6827,6 +6957,14 @@
               }
             },
             {
+              "name": "Keyword(Unique)",
+              "node": {
+                "terminal": {
+                  "keyword": "UNIQUE"
+                }
+              }
+            },
+            {
               "name": "Keyword(Unknown)",
               "node": {
                 "terminal": {
@@ -6967,6 +7105,14 @@
               "node": {
                 "terminal": {
                   "keyword": "VOID"
+                }
+              }
+            },
+            {
+              "name": "Keyword(Watermark)",
+              "node": {
+                "terminal": {
+                  "keyword": "WATERMARK"
                 }
               }
             },
@@ -7897,6 +8043,14 @@
               }
             },
             {
+              "name": "Option(Box(WatermarkClause))",
+              "node": {
+                "optional": {
+                  "nonTerminal": "Box(WatermarkClause)"
+                }
+              }
+            },
+            {
               "name": "Option(Box(WindowFrame))",
               "node": {
                 "optional": {
@@ -8125,6 +8279,14 @@
               "node": {
                 "optional": {
                   "nonTerminal": "Keyword(Global)"
+                }
+              }
+            },
+            {
+              "name": "Option(Keyword(Interval))",
+              "node": {
+                "optional": {
+                  "nonTerminal": "Keyword(Interval)"
                 }
               }
             },
@@ -8533,6 +8695,14 @@
               "node": {
                 "optional": {
                   "nonTerminal": "Tuple(Keyword(Comment), StringLiteral)"
+                }
+              }
+            },
+            {
+              "name": "Option(Tuple(Keyword(Constraint), Identifier))",
+              "node": {
+                "optional": {
+                  "nonTerminal": "Tuple(Keyword(Constraint), Identifier)"
                 }
               }
             },
@@ -11510,6 +11680,9 @@
                         "nonTerminal": "Either(Tuple(Operator(LeftParenthesis), ObjectName, Operator(RightParenthesis)), ObjectName)"
                       },
                       {
+                        "nonTerminal": "Option(Box(WatermarkClause))"
+                      },
+                      {
                         "nonTerminal": "Option(AliasClause)"
                       }
                     ]
@@ -12357,6 +12530,19 @@
                   },
                   {
                     "nonTerminal": "Keyword(Statistics)"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "Tuple(Keyword(Constraint), Identifier)",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Keyword(Constraint)"
+                  },
+                  {
+                    "nonTerminal": "Identifier"
                   }
                 ]
               }
@@ -13505,6 +13691,28 @@
                   },
                   {
                     "nonTerminal": "Option(Tuple(Keyword(Options), PropertyList))"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "WatermarkClause",
+              "node": {
+                "sequence": [
+                  {
+                    "nonTerminal": "Keyword(Watermark)"
+                  },
+                  {
+                    "nonTerminal": "Identifier"
+                  },
+                  {
+                    "nonTerminal": "Keyword(Delay)"
+                  },
+                  {
+                    "nonTerminal": "Keyword(Of)"
+                  },
+                  {
+                    "nonTerminal": "IntervalLiteral"
                   }
                 ]
               }

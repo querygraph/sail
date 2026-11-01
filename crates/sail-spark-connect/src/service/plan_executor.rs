@@ -1,7 +1,10 @@
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::compute::concat_batches;
+use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::prelude::SessionContext;
 use fastrace::Span;
 use fastrace::collector::SpanContext;
@@ -255,7 +258,14 @@ pub(crate) async fn handle_execute_sql_command(
     match plan {
         spec::Plan::Command(command) if !request.defers_sql() => {
             let mode = ExecutorMode::command_with_completion(move |schema, data| {
-                let data = concat_batches(&schema, data.iter())?;
+                // A write reports a count, which Spark does not return as rows.
+                let wrote = matches!(schema.fields().as_ref(), [field]
+                    if field.name() == "count" && field.data_type() == &DataType::UInt64);
+                let data = if wrote {
+                    RecordBatch::new_empty(Arc::new(Schema::empty()))
+                } else {
+                    concat_batches(&schema, data.iter())?
+                };
                 let relation = Relation {
                     common: None,
                     rel_type: Some(relation::RelType::LocalRelation(LocalRelation {

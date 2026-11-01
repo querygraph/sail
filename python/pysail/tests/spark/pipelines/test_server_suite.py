@@ -111,7 +111,6 @@ def test_cross_dependency_runs_when_the_target_takes_flows(server):
     assert server.rows("st") == [(i,) for i in range(5)]
 
 
-@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="Sail refuses duplicate unqualified columns while resolving the flow")
 def test_simple_graph_resolution(server):
     """tableC reads no stream, so the graph resolves and a dry run then refuses a batch streaming table."""
     graph = server.graph()

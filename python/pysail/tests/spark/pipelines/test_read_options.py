@@ -10,7 +10,6 @@ from pathlib import Path
 import pyspark.pipelines as dp
 import pytest
 
-from pysail.testing.spark.utils.common import is_jvm_spark
 from pyspark.pipelines.add_pipeline_analysis_context import add_pipeline_analysis_context
 from pyspark.pipelines.graph_element_registry import graph_element_registration_context
 from pyspark.pipelines.spark_connect_graph_element_registry import SparkConnectGraphElementRegistry
@@ -69,7 +68,7 @@ def b():
     ("read", "expected"),
     [
         ('spark.read.table("a")', 2),
-        pytest.param(*(f'spark.read.option("pathGlobFilter", "{NO_FILE}").table("a")', 0), marks=pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="A batch read of a graph dataset does not apply its read options")),
+        (f'spark.read.option("pathGlobFilter", "{NO_FILE}").table("a")', 0),
     ],
     ids=["control", "option"],
 )

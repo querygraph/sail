@@ -7,9 +7,15 @@
 //! committed may leave that file; this is not table-wide atomicity.
 //!
 //! Each file is supervised by the execution's resource scope, which keeps the
-//! upload owned until it settles even if this sink's future is dropped. The
-//! bytes between the encoder and the upload are reserved from the memory pool.
-//! The native encoder's own buffers are not, so this is not a heap bound.
+//! upload owned until it settles even if this sink's future is dropped.
+//!
+//! Memory comes from the session pool before it is used. An encoder reservation
+//! covers the stripe in progress, which is reserved for a slice of a batch before
+//! that slice is encoded, along with compressor state and the stripe directory.
+//! Output bytes move to a part reservation on their way to the upload. Under
+//! pressure the stripe flushes early, and a denial that a flush cannot relieve is
+//! a resource error. These are estimates of what the writer retains. Input
+//! batches and allocator overhead are not included, so this is not a heap bound.
 use std::fmt;
 use std::future::Future;
 use std::io::{self, Write};
@@ -17,9 +23,14 @@ use std::num::NonZeroUsize;
 use std::pin::pin;
 use std::sync::Arc;
 
-use arrow::array::{RecordBatch, RecordBatchOptions};
-use arrow::compute::cast;
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::array::{
+    Array, ArrayRef, AsArray, GenericListArray, MapArray, OffsetSizeTrait, RecordBatch,
+    RecordBatchOptions, StructArray,
+};
+use arrow::compute::{CastOptions, cast, cast_with_options};
+use arrow::datatypes::{
+    DataType, Field, Fields, Int64Type, Schema, SchemaRef, TimeUnit, TimestampMicrosecondType,
+};
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::common::runtime::SpawnedTask;
@@ -34,7 +45,8 @@ use datafusion_datasource::write::demux::DemuxedStreamReceiver;
 use futures::stream::{FuturesUnordered, StreamExt};
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
-use orc_rust::ArrowWriterBuilder;
+use orc_rust::proto::CalendarKind;
+use orc_rust::{ArrowWriter, ArrowWriterBuilder};
 use sail_common_datafusion::owned_multipart::execution_error;
 use sail_common_datafusion::task_resources::TaskResourceScope;
 use sail_object_store::owned_multipart::{self, Disposition, MultipartHandle};
@@ -42,7 +54,7 @@ use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 use super::write_options::OrcWriteCompression;
-use super::write_schema::OrcWriteSchema;
+use super::write_schema::{OrcWriteSchema, column_count};
 
 /// Spark's default `orc.stripe.size`.
 const STRIPE_BYTES: usize = 64 * 1024 * 1024;
@@ -50,6 +62,19 @@ const STRIPE_BYTES: usize = 64 * 1024 * 1024;
 const PART_BYTES: usize = 8 * 1024 * 1024;
 const PARTS_IN_FLIGHT: usize = 2;
 const PARTS_QUEUED: usize = 2;
+/// Rows encoded between memory checks: the native writer's own encoding unit.
+const ENCODE_ROWS: usize = 1024;
+/// The most a slice can take to encode, and also what a buffer can hold, as a
+/// multiple of its size: the encoded form of a value is under twice its in-memory
+/// size, buffers double as they grow, and a flush holds a stream and its compressed
+/// form together.
+const ENCODED_EXPANSION: usize = 2;
+/// An estimate of a codec's retained state, chiefly a ZSTD context.
+const COMPRESSOR_BYTES: usize = 2 * 1024 * 1024;
+/// An estimate of a column encoder's fixed state, chiefly its run literals.
+const COLUMN_BYTES: usize = 8 * 1024;
+/// An estimate of a stripe's retained directory entry and its footer form.
+const STRIPE_ENTRY_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OrcWriterOptions {
@@ -99,6 +124,8 @@ impl OrcSink {
     ) -> impl Future<Output = Result<FileOutcome>> + use<> {
         let reservation =
             MemoryConsumer::new(format!("OrcSink[{path}]")).register(context.memory_pool());
+        let encoder_reservation =
+            MemoryConsumer::new(format!("OrcSink encoder[{path}]")).register(context.memory_pool());
         let job = FileJob {
             path,
             batches,
@@ -106,6 +133,7 @@ impl OrcSink {
             schema: self.file_schema.clone(),
             options: self.options,
             reservation: Arc::new(reservation),
+            encoder_reservation: Arc::new(encoder_reservation),
             decided: decided.clone(),
             resources: resources.clone(),
         };
@@ -114,8 +142,7 @@ impl OrcSink {
     }
 }
 
-/// The schema of each file: partition values live in the path, and view
-/// arrays are stored as their plain equivalents.
+/// The schema of each file: partition values live in the path.
 fn file_schema(config: &FileSinkConfig) -> Result<SchemaRef> {
     let is_partition = |field: &Field| {
         !config.keep_partition_by_columns
@@ -129,21 +156,13 @@ fn file_schema(config: &FileSinkConfig) -> Result<SchemaRef> {
         .fields()
         .iter()
         .filter(|field| !is_partition(field))
-        .map(|field| field.as_ref().clone().with_data_type(stored_type(field)))
+        .cloned()
         .collect::<Vec<_>>();
     let schema = Arc::new(Schema::new_with_metadata(
         fields,
         config.output_schema().metadata().clone(),
     ));
-    Ok(OrcWriteSchema::try_new(schema)?.schema().clone())
-}
-
-fn stored_type(field: &Field) -> DataType {
-    match field.data_type() {
-        DataType::Utf8View => DataType::Utf8,
-        DataType::BinaryView => DataType::Binary,
-        data_type => data_type.clone(),
-    }
+    Ok(OrcWriteSchema::try_new(schema)?.file_schema().clone())
 }
 
 impl fmt::Debug for OrcSink {
@@ -294,6 +313,7 @@ struct FileJob {
     schema: SchemaRef,
     options: OrcWriterOptions,
     reservation: Arc<MemoryReservation>,
+    encoder_reservation: Arc<MemoryReservation>,
     decided: watch::Receiver<Option<bool>>,
     resources: Arc<TaskResourceScope>,
 }
@@ -307,6 +327,7 @@ impl FileJob {
             schema,
             options,
             reservation,
+            encoder_reservation,
             mut decided,
             resources,
         } = self;
@@ -323,9 +344,10 @@ impl FileJob {
         };
         let (inputs, inputs_rx) = mpsc::channel(1);
         let (parts, parts_rx) = mpsc::channel(PARTS_QUEUED);
-        let writer = PartWriter::new(parts, reservation.clone());
+        let writer = PartWriter::new(parts, reservation.clone(), encoder_reservation.clone());
+        let budget = EncoderBudget::new(encoder_reservation, &schema, options)?;
         let encoder =
-            tokio::task::spawn_blocking(move || encode(inputs_rx, writer, schema, options));
+            tokio::task::spawn_blocking(move || encode(inputs_rx, writer, schema, options, budget));
         // Whichever side stops first closes a channel, which stops the others.
         // All three are always joined, so nothing outlives this file.
         let (forwarded, uploaded, encoded) = tokio::join!(
@@ -469,8 +491,9 @@ fn encode(
     mut output: PartWriter,
     schema: SchemaRef,
     options: OrcWriterOptions,
+    budget: EncoderBudget,
 ) -> Result<()> {
-    let result = encode_file(&mut inputs, &mut output, &schema, options);
+    let result = encode_file(&mut inputs, &mut output, &schema, options, budget);
     let stopped = output.failure.take();
     match (result, stopped) {
         // The native error only says that a write failed; this says why.
@@ -484,9 +507,15 @@ fn encode_file(
     output: &mut PartWriter,
     schema: &SchemaRef,
     options: OrcWriterOptions,
+    mut budget: EncoderBudget,
 ) -> Result<()> {
-    let mut builder =
-        ArrowWriterBuilder::new(&mut *output, schema.clone()).with_stripe_byte_size(STRIPE_BYTES);
+    budget.start()?;
+    // Stripes flush from here, where memory is known. Arrow dates and timestamps
+    // are proleptic Gregorian; a Java reader assumes otherwise unless told.
+    let mut builder = ArrowWriterBuilder::new(&mut *output, schema.clone())
+        .with_stripe_byte_size(usize::MAX)
+        .with_batch_size(ENCODE_ROWS)
+        .with_calendar(CalendarKind::ProlepticGregorian);
     if let Some(compression) = options.compression.native_compression()? {
         builder = builder.with_compression(compression);
     }
@@ -494,40 +523,136 @@ fn encode_file(
     loop {
         match inputs.blocking_recv() {
             Some(Input::Batch(batch)) => {
-                writer
-                    .write(&conform(&batch, schema)?)
-                    .map_err(native_error)?;
+                let batch = conform(&batch, schema)?;
+                for offset in (0..batch.num_rows()).step_by(ENCODE_ROWS) {
+                    let length = ENCODE_ROWS.min(batch.num_rows() - offset);
+                    budget.write(&mut writer, &batch.slice(offset, length))?;
+                }
             }
             Some(Input::Finish) => break,
             // Without an explicit finish the input is incomplete: no footer.
             None => return Err(canceled_error()),
         }
     }
+    budget.prepare_footer()?;
     writer.close().map_err(native_error)?;
     output.finish()
+}
+
+/// The encoder's memory: what a stripe in progress and the writer's fixed state
+/// hold, reserved before use. Dropping it releases all of that, however the file
+/// ends.
+struct EncoderBudget {
+    reservation: Arc<MemoryReservation>,
+    fixed_bytes: usize,
+    stripes: usize,
+}
+
+impl EncoderBudget {
+    fn new(
+        reservation: Arc<MemoryReservation>,
+        schema: &SchemaRef,
+        options: OrcWriterOptions,
+    ) -> Result<Self> {
+        let compressor_bytes = match options.compression.native_compression()? {
+            Some(_) => COMPRESSOR_BYTES,
+            None => 0,
+        };
+        Ok(Self {
+            reservation,
+            fixed_bytes: compressor_bytes + column_count(schema.fields()) * COLUMN_BYTES,
+            stripes: 0,
+        })
+    }
+
+    fn idle_bytes(&self) -> usize {
+        self.fixed_bytes + self.stripes * STRIPE_ENTRY_BYTES
+    }
+
+    fn start(&self) -> Result<()> {
+        self.reservation.try_grow(self.fixed_bytes)
+    }
+
+    fn write<W: Write>(&mut self, writer: &mut ArrowWriter<W>, slice: &RecordBatch) -> Result<()> {
+        let bound = slice
+            .columns()
+            .iter()
+            .map(|column| encoded_bound(column.as_ref()))
+            .sum::<Result<usize>>()?
+            * ENCODED_EXPANSION;
+        if let Err(denied) = self.reservation.try_grow(bound) {
+            if writer.buffered_rows() == 0 {
+                return Err(denied);
+            }
+            self.flush(writer)?;
+            self.reservation.try_grow(bound)?;
+        }
+        writer.write(slice).map_err(native_error)?;
+        let buffered = writer.estimate_memory_size();
+        let retained = self.idle_bytes() + buffered * ENCODED_EXPANSION;
+        if buffered > STRIPE_BYTES || self.reservation.try_resize(retained).is_err() {
+            self.flush(writer)?;
+        }
+        Ok(())
+    }
+
+    fn flush<W: Write>(&mut self, writer: &mut ArrowWriter<W>) -> Result<()> {
+        writer.flush_stripe().map_err(native_error)?;
+        self.stripes += 1;
+        self.reservation.resize(self.idle_bytes());
+        Ok(())
+    }
+
+    /// The footer is the directory and the schema, and then its compressed form.
+    fn prepare_footer(&self) -> Result<()> {
+        self.reservation.try_grow(self.idle_bytes())
+    }
+}
+
+/// An upper bound on the bytes of the rows in this array, before any expansion.
+/// The slice of a list or a map covers only part of its child arrays.
+fn encoded_bound(array: &dyn Array) -> Result<usize> {
+    fn child_bound<O: OffsetSizeTrait>(offsets: &[O], rows: &dyn Array) -> Result<usize> {
+        let (first, last) = (offsets[0].as_usize(), offsets[offsets.len() - 1].as_usize());
+        let lengths = (offsets.len() - 1) * size_of::<i64>();
+        Ok(lengths + encoded_bound(rows.slice(first, last - first).as_ref())?)
+    }
+    let nulls = array.nulls().map_or(0, |_| array.len().div_ceil(8));
+    let values = match array.data_type() {
+        DataType::List(_) => {
+            let list = array.as_list::<i32>();
+            child_bound(list.value_offsets(), list.values())?
+        }
+        DataType::LargeList(_) => {
+            let list = array.as_list::<i64>();
+            child_bound(list.value_offsets(), list.values())?
+        }
+        DataType::Map(_, _) => {
+            let map = array.as_map();
+            child_bound(map.value_offsets(), map.entries())?
+        }
+        DataType::Struct(_) => array
+            .as_struct()
+            .columns()
+            .iter()
+            .map(|column| encoded_bound(column.as_ref()))
+            .sum::<Result<usize>>()?,
+        _ => return Ok(array.to_data().get_slice_memory_size()?),
+    };
+    Ok(nulls + values)
 }
 
 fn native_error(error: orc_rust::error::OrcError) -> DataFusionError {
     DataFusionError::External(Box::new(error))
 }
 
-/// The batch under the file schema. Only view arrays change representation.
+/// The batch under the file schema.
 fn conform(batch: &RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
     let columns = batch
         .columns()
         .iter()
         .zip(schema.fields())
-        .map(
-            |(column, field)| match (column.data_type(), field.data_type()) {
-                (from, to) if from == to => Ok(column.clone()),
-                (DataType::Utf8View, DataType::Utf8) | (DataType::BinaryView, DataType::Binary) => {
-                    Ok(cast(column, field.data_type())?)
-                }
-                (from, to) => {
-                    exec_err!("ORC input type {from:?} differs from the file type {to:?}")
-                }
-            },
-        )
+        .map(|(column, field)| conform_array(column, field))
         .collect::<Result<Vec<_>>>()?;
     let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
     Ok(RecordBatch::try_new_with_options(
@@ -537,21 +662,119 @@ fn conform(batch: &RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
     )?)
 }
 
+/// The array under a stored field, which changes only view arrays and timestamps.
+/// A container is rebuilt around its children, so that its nulls stay as they are.
+fn conform_array(array: &ArrayRef, field: &Field) -> Result<ArrayRef> {
+    match (array.data_type(), field.data_type()) {
+        (from, to) if from == to => Ok(array.clone()),
+        (DataType::Utf8View, DataType::Utf8) | (DataType::BinaryView, DataType::Binary) => {
+            Ok(cast(array, field.data_type())?)
+        }
+        (DataType::Timestamp(_, Some(_)), DataType::Timestamp(_, zone)) => Ok(Arc::new(
+            timestamp_micros(array)?.with_timezone_opt(zone.clone()),
+        )),
+        (DataType::Timestamp(_, _), DataType::Int64) => Ok(Arc::new(
+            timestamp_micros(array)?.reinterpret_cast::<Int64Type>(),
+        )),
+        (DataType::List(_), DataType::List(child)) => conform_list(array.as_list::<i32>(), child),
+        (DataType::LargeList(_), DataType::LargeList(child)) => {
+            conform_list(array.as_list::<i64>(), child)
+        }
+        (DataType::Struct(_), DataType::Struct(fields)) => {
+            let array = array.as_struct();
+            let columns = conform_children(array.columns(), fields)?;
+            Ok(Arc::new(StructArray::try_new(
+                fields.clone(),
+                columns,
+                array.nulls().cloned(),
+            )?))
+        }
+        (DataType::Map(_, _), DataType::Map(entries, sorted)) => {
+            let DataType::Struct(fields) = entries.data_type() else {
+                return exec_err!("ORC map entries are not a struct: {entries:?}");
+            };
+            let map = array.as_map();
+            let columns = conform_children(map.entries().columns(), fields)?;
+            let entry_rows = StructArray::try_new(fields.clone(), columns, None)?;
+            Ok(Arc::new(MapArray::try_new(
+                entries.clone(),
+                map.offsets().clone(),
+                entry_rows,
+                map.nulls().cloned(),
+                *sorted,
+            )?))
+        }
+        (from, to) => exec_err!("ORC input type {from:?} differs from the file type {to:?}"),
+    }
+}
+
+fn conform_list<O: OffsetSizeTrait>(
+    array: &GenericListArray<O>,
+    child: &Arc<Field>,
+) -> Result<ArrayRef> {
+    Ok(Arc::new(GenericListArray::<O>::try_new(
+        child.clone(),
+        array.offsets().clone(),
+        conform_array(array.values(), child)?,
+        array.nulls().cloned(),
+    )?))
+}
+
+fn conform_children(columns: &[ArrayRef], fields: &Fields) -> Result<Vec<ArrayRef>> {
+    if columns.len() != fields.len() {
+        return exec_err!(
+            "ORC input has {} child columns, but the file has {}",
+            columns.len(),
+            fields.len()
+        );
+    }
+    columns
+        .iter()
+        .zip(fields)
+        .map(|(column, field)| conform_array(column, field))
+        .collect()
+}
+
+/// The values in microseconds, keeping any zone label: they are not local times.
+/// An overflow is an error here, not the null that a safe cast leaves.
+fn timestamp_micros(
+    array: &ArrayRef,
+) -> Result<arrow::array::PrimitiveArray<TimestampMicrosecondType>> {
+    let DataType::Timestamp(_, zone) = array.data_type() else {
+        return exec_err!("ORC input {:?} is not a timestamp", array.data_type());
+    };
+    let options = CastOptions {
+        safe: false,
+        ..Default::default()
+    };
+    let micros = DataType::Timestamp(TimeUnit::Microsecond, zone.clone());
+    let micros = cast_with_options(array, &micros, &options)?;
+    Ok(micros.as_primitive::<TimestampMicrosecondType>().clone())
+}
+
 /// The encoder's synchronous output: fills a part, then hands it to the upload,
-/// blocking while the upload is behind. Bytes are reserved before they are copied.
+/// blocking while the upload is behind. Bytes are reserved before they are copied,
+/// out of the encoder's reservation where they can be: they are the stripe that it
+/// covers leaving the encoder, and asking the pool for them again could be refused.
 struct PartWriter {
     buffer: Vec<u8>,
     parts: mpsc::Sender<Bytes>,
     reservation: Arc<MemoryReservation>,
+    encoder_reservation: Arc<MemoryReservation>,
     failure: Option<DataFusionError>,
 }
 
 impl PartWriter {
-    fn new(parts: mpsc::Sender<Bytes>, reservation: Arc<MemoryReservation>) -> Self {
+    fn new(
+        parts: mpsc::Sender<Bytes>,
+        reservation: Arc<MemoryReservation>,
+        encoder_reservation: Arc<MemoryReservation>,
+    ) -> Self {
         Self {
             buffer: vec![],
             parts,
             reservation,
+            encoder_reservation,
             failure: None,
         }
     }
@@ -571,7 +794,10 @@ impl PartWriter {
     }
 
     fn try_write(&mut self, data: &[u8]) -> Result<()> {
-        self.reservation.try_grow(data.len())?;
+        let moved = self.encoder_reservation.size().min(data.len());
+        self.encoder_reservation.shrink(moved);
+        self.reservation.grow(moved);
+        self.reservation.try_grow(data.len() - moved)?;
         self.buffer.extend_from_slice(data);
         if self.buffer.len() >= PART_BYTES {
             self.send()?;

@@ -464,7 +464,11 @@ impl CdcRun {
             refresh: missing,
             reset: BTreeSet::new(),
         };
-        crate::pipelines::materialize::tables(ctx, &graph, &schemas, &creation).await?;
+        let deferred =
+            crate::pipelines::materialize::tables(ctx, &graph, &schemas, &creation).await?;
+        if let Some(failure) = deferred.into_values().next() {
+            return Err(Box::new(failure).into());
+        }
         let directory = warehouse.join("_control");
         std::fs::create_dir_all(&directory)
             .map_err(|e| SparkError::internal(format!("create {}: {e}", directory.display())))?;

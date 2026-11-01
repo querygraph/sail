@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from pysail.testing.spark.utils.common import is_jvm_spark
 from pyspark.errors.exceptions.connect import ParseException
 from pyspark.pipelines.spark_connect_graph_element_registry import SparkConnectGraphElementRegistry
 from pyspark.pipelines.spark_connect_pipeline import create_dataflow_graph, start_run
@@ -47,7 +46,6 @@ KINDS = ["MATERIALIZED VIEW", "STREAMING TABLE"]
 
 @pytest.mark.parametrize("api", ["direct", "registration"])
 @pytest.mark.parametrize("kind", KINDS)
-@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="Sail's grammar has no column constraints, so this is a syntax error")
 def test_column_constraints_are_unsupported(parser, kind, api):
     sql = f"CREATE {kind} table1 (id INT CHECK(id > 0)) AS SELECT 1"
     with pytest.raises(ParseException) as error:

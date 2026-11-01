@@ -3,7 +3,7 @@
 use either::Either;
 use sail_common::error::StructuredSparkError;
 use sail_sql_parser::ast::pipeline::CreatePipelineDataset;
-use sail_sql_parser::ast::statement::CreateTableClause;
+use sail_sql_parser::ast::statement::{ColumnDefinitionOption, CreateTableClause};
 
 use crate::error::SqlResult;
 
@@ -13,7 +13,26 @@ pub(crate) fn validate(dataset: &CreatePipelineDataset) -> SqlResult<()> {
         Either::Right(_) => "STREAMING TABLE",
     };
     // Match SparkSqlParser's validation precedence, independently of clause order.
-    let message = if dataset
+    let constrained = dataset.columns.as_ref().is_some_and(|list| {
+        list.columns.clone().into_items().any(|column| {
+            column.options.iter().any(|option| {
+                matches!(
+                    option,
+                    ColumnDefinitionOption::Check(..)
+                        | ColumnDefinitionOption::Unique(..)
+                        | ColumnDefinitionOption::PrimaryKey(..)
+                        | ColumnDefinitionOption::References(..)
+                )
+            })
+        })
+    });
+    let message = if constrained {
+        Some(
+            "Pipeline datasets do not currently support column constraints. Please remove any \
+             CHECK, UNIQUE, PK, and FK constraints specified on the pipeline dataset."
+                .to_string(),
+        )
+    } else if dataset
         .clauses
         .iter()
         .any(|c| matches!(c, CreateTableClause::ClusteredBy(..)))

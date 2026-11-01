@@ -76,6 +76,10 @@
     {
       "commit": "41304b061d13bc5278e2308c35c9574bc9a03b17",
       "subject": "fix: validate ORC writer schemas before emitting bytes"
+    },
+    {
+      "commit": "sail-local",
+      "subject": "feat: write ORC decimals, nested types and type attributes"
     }
   ],
   "package": {
@@ -108,7 +112,7 @@
     "src/array_decoder/timestamp.rs": "97fa9d02382de00cb16b813fef94e9bc7b0cf92236d5e20ddd90a803be2a5496",
     "src/array_decoder/union.rs": "461b9b9ab606f34b83e877fabe3eaae1c0ab9c1db15a4af8aa80b9724909f953",
     "src/arrow_reader.rs": "b6a7ddbfc1c05dea7fe27af46ed3c6801403b27a7c886fb3129561c2dd09095b",
-    "src/arrow_writer.rs": "2e32866dd5be08007298225da6b45e95aedeb2afbbc6b67fa2ce0ff57fc27ff2",
+    "src/arrow_writer.rs": "7856bfcb500b9f4161ab2842bf580cbae9c2bcd8c6f4cc90697159313d8db726",
     "src/async_arrow_reader.rs": "0810dd6d06b07191f5d4535b66a159a2ce2f13311b7138f073b30cdd1d31cf69",
     "src/bin/orc/bloom.rs": "74a3b31909802030a2c1a53a9fc081f39515701236e6222431a86761367529dd",
     "src/bin/orc/common.rs": "02c348b38c209e5cd28916b41976ac19737cd310ca0acef78d5af79575458977",
@@ -162,9 +166,9 @@
     "src/timestamp_tests.rs": "fd0208a7622926ba66207227fb90b5a7cacf15170d0290cdacfa7000ba8a37eb",
     "src/timestamp_timezone.rs": "91d7259666176a49039e93dc37ea336b18cdbe8c86ff5b1731a4d5a7e3f506fb",
     "src/timestamp_timezone_tests.rs": "136a62dde6947cf7d6102243ddf9fac77450840cbe37df65f8ce8f23004eda26",
-    "src/writer/column.rs": "6fd1b0903ebff69f9d4debe1b6fb169e9b91050b14585137c1b8dab3a5ccad6e",
+    "src/writer/column.rs": "47e2e40e6370d42157bd77bfe284e7ec372b8a7f6b4712d0ee082cf0cdfce1e0",
     "src/writer/mod.rs": "58f92fcec92c29bd47a9660452542b7dacc2d4bd0eb8ae0246c1d4e1e3019af7",
-    "src/writer/stripe.rs": "6c76d30deb39f9242121aab8084ec7b0458d989a14de34081ca81544c07da924",
-    "src/writer_admission_tests.rs": "bd2f3044c72c48d973dac145d2d84a5d659a3b5a1966857db628229f15130121"
+    "src/writer/stripe.rs": "4cee2754b3fbf3f1a6523853f38e1cca45367e24747ede367d220f065998b15d",
+    "src/writer_admission_tests.rs": "18521fe93f90865561be7c6c38a72dfb18ec53a49ccc8de5fb38bb97896633cd"
   }
 }

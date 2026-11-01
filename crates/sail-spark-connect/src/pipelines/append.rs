@@ -291,6 +291,10 @@ impl RelationScope for BatchScope<'_> {
         self.graph.resolve(name)
     }
 
+    fn observe_read_options(&self, name: &[String], options: &[(String, String)]) {
+        self.graph.observe_read_options(name, options);
+    }
+
     fn resolve_source_stream(
         &self,
         source: &spec::ReadDataSource,

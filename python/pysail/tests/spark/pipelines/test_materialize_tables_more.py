@@ -23,7 +23,6 @@ from pathlib import Path
 import pyspark.pipelines as dp
 import pytest
 
-from pysail.testing.spark.utils.common import is_jvm_spark
 from pyspark.pipelines.add_pipeline_analysis_context import add_pipeline_analysis_context
 from pyspark.pipelines.graph_element_registry import graph_element_registration_context
 from pyspark.pipelines.spark_connect_graph_element_registry import SparkConnectGraphElementRegistry
@@ -219,7 +218,6 @@ def test_partition_columns_with_a_user_schema(suite):
     assert suite.partitions("a") == ["x2"]
 
 
-@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="Sail's catalog keeps declared column order; Spark moves partition columns last")
 def test_specifying_a_partition_column_with_an_existing_partitioned_table(suite):
     suite.sql("CREATE TABLE {schema}.t7(x BOOLEAN, y INT) PARTITIONED BY (x)")
     assert suite.partitions("t7") == ["x"]

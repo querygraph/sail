@@ -924,6 +924,16 @@
     This is a list of strings, where each string is a part of the namespace.
   experimental: true
 
+- key: catalog.shared_memory
+  type: boolean
+  default: "false"
+  description: |
+    Whether the sessions of a server share each memory catalog, as Spark sessions share a catalog.
+    By default each session has its own memory catalogs. Temporary views stay with their session either way.
+    This matters to a client that opens a session of its own, such as the Spark pipelines CLI,
+    when it reads what another session created in a memory catalog.
+  experimental: true
+
 - key: catalog.global_temporary_database
   type: array
   default: '["global_temp"]'

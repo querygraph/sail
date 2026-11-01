@@ -514,6 +514,7 @@ impl JobScheduler {
     }
 
     fn extend_job_output(job_id: JobId, job: &mut JobDescriptor) -> Vec<JobAction> {
+        let failure = Self::latest_failure_cause(job);
         let JobState::Running { output, .. } = &mut job.state else {
             return vec![];
         };
@@ -536,6 +537,7 @@ impl JobScheduler {
                     continue;
                 }
                 attempt.job_output_fetched = true;
+                let retrying = failure.clone().filter(|_| !head.is_empty());
                 for c in 0..channels {
                     let key = TaskStreamKey {
                         job_id,
@@ -548,6 +550,7 @@ impl JobScheduler {
                         handle: output.handle(),
                         key,
                         schema: schema.clone(),
+                        retrying: retrying.clone(),
                     });
                 }
             }
@@ -557,6 +560,14 @@ impl JobScheduler {
     }
 
     fn infer_job_failure_cause(job: &JobDescriptor) -> CommonErrorCause {
+        Self::latest_failure_cause(job).unwrap_or_else(|| {
+            CommonErrorCause::new::<PyErrExtractor>(&ExecutionError::InternalError(
+                "job failed for unknown reason".to_string(),
+            ))
+        })
+    }
+
+    fn latest_failure_cause(job: &JobDescriptor) -> Option<CommonErrorCause> {
         // a map from (stage, partition) to a list of causes
         let mut causes: HashMap<(usize, usize), Vec<&CommonErrorCause>> = HashMap::new();
         for (s, stage) in job.stages.iter().enumerate() {
@@ -565,7 +576,7 @@ impl JobScheduler {
                     if let Some(cause) = &attempt.cause
                         && !cause.is_retryable()
                     {
-                        return cause.clone();
+                        return Some(cause.clone());
                     }
                     if matches!(attempt.state, TaskState::Failed)
                         && let Some(cause) = &attempt.cause
@@ -576,20 +587,16 @@ impl JobScheduler {
             }
         }
         // Get the most recent cause from the most likely failed task.
-        if let Some((_, &[.., cause])) = causes.iter().map(|(k, v)| (k, v.as_slice())).min_by(
-            |((s1, p1), v1), ((s2, p2), v2)| {
+        causes
+            .iter()
+            .map(|(k, v)| (k, v.as_slice()))
+            .min_by(|((s1, p1), v1), ((s2, p2), v2)| {
                 // Find the task that fails the most number of times,
                 // and if there is a tie, choose the one with the smallest
                 // stage and partition.
                 v2.len().cmp(&v1.len()).then(s1.cmp(s2)).then(p1.cmp(p2))
-            },
-        ) {
-            cause.clone()
-        } else {
-            CommonErrorCause::new::<PyErrExtractor>(&ExecutionError::InternalError(
-                "job failed for unknown reason".to_string(),
-            ))
-        }
+            })
+            .and_then(|(_, causes)| causes.last().map(|cause| (*cause).clone()))
     }
 
     /// Determine the actions needed in the driver to clean up the job.

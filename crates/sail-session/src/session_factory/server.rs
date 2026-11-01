@@ -20,7 +20,7 @@ use sail_delta_lake::session_extension::DeltaTableCache;
 use sail_physical_optimizer::{PhysicalOptimizerOptions, get_physical_optimizers};
 use sail_telemetry::telemetry::global_system_store_reader;
 
-use crate::catalog::create_catalog_manager;
+use crate::catalog::{SharedMemoryCatalogs, create_catalog_manager};
 use crate::formats::create_data_source_registry;
 use crate::optimizer::{default_analyzer_rules, default_optimizer_rules};
 use crate::planner::new_query_planner;
@@ -59,6 +59,7 @@ pub struct ServerSessionFactory {
     mutator: Box<dyn ServerSessionMutator>,
     runtime_env: RuntimeEnvFactory,
     catalog_cache_manager: Arc<CatalogCacheManager>,
+    memory_catalogs: SharedMemoryCatalogs,
 }
 
 impl ServerSessionFactory {
@@ -74,6 +75,7 @@ impl ServerSessionFactory {
             mutator,
             runtime_env,
             catalog_cache_manager: Arc::new(CatalogCacheManager::new()),
+            memory_catalogs: SharedMemoryCatalogs::default(),
         }
     }
 }
@@ -113,6 +115,7 @@ impl ServerSessionFactory {
                 &self.config,
                 self.runtime.clone(),
                 self.catalog_cache_manager.clone(),
+                &self.memory_catalogs,
             )?))
             .with_extension(Arc::new(ActivityTracker::new()))
             .with_extension(Arc::new(JobService::new(job_runner)))

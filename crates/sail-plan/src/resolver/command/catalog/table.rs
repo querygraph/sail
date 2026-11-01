@@ -11,6 +11,7 @@ use sail_common::spec;
 use sail_common_datafusion::catalog::{
     CatalogTableBucketBy, CatalogTableColumnIdentity, CatalogTableConstraint, CatalogTableSort,
 };
+use sail_common_datafusion::datasource::is_lakehouse_format;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_common_datafusion::utils::items::ItemTaker;
@@ -69,6 +70,16 @@ impl PlanResolver<'_> {
                     "PARTITIONED BY IDENTITY column `{}` is not supported",
                     partition.column
                 )));
+            }
+        }
+        // A file table stores its partition columns last, as Spark's catalog does.
+        // A lakehouse table keeps the order it was declared in.
+        if !is_lakehouse_format(&format) {
+            for partition in &partition_by {
+                if let Some(index) = columns.iter().position(|x| x.name == partition.column) {
+                    let column = columns.remove(index);
+                    columns.push(column);
+                }
             }
         }
         let sort_by = self.resolve_catalog_table_sort(sort_by)?;

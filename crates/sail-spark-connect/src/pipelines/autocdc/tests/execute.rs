@@ -82,6 +82,7 @@ fn analyzed(flow: &Flow) -> AnalyzedGraph {
         schemas: BTreeMap::from([(target(), Arc::new(schema))]),
         publications: BTreeMap::new(),
         accepted_confs: BTreeMap::from([(flow.name.clone(), HashMap::new())]),
+        duplicate_columns: BTreeMap::new(),
     }
 }
 

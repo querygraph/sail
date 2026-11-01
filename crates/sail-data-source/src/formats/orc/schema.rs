@@ -11,7 +11,7 @@ use sail_sql_analyzer::data_type::from_ast_data_type;
 use sail_sql_analyzer::parser::parse_data_type;
 use sail_sql_parser::ast::data_type::DataType as AstDataType;
 
-const CATALYST_TYPE: &str = "spark.sql.catalyst.type";
+pub(super) const CATALYST_TYPE: &str = "spark.sql.catalyst.type";
 const SPARK_VERSION: &str = "org.apache.spark.version";
 pub(super) const CHAR_VARCHAR_TYPE: &str = "__CHAR_VARCHAR_TYPE_STRING";
 
