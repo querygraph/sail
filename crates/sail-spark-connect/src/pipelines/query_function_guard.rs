@@ -85,6 +85,11 @@ impl PipelineRequest {
     }
 
     /// The flow function analyzes this statement later, so nothing runs for it now.
+    /// Whether a query sent through `spark.sql()` is analyzed when it is sent.
+    pub(crate) fn analyzes_sql_eagerly(self) -> bool {
+        matches!(self, Self::Definition)
+    }
+
     pub(crate) fn defers_sql(self) -> bool {
         self == Self::QueryFunction
     }

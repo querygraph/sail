@@ -1,4 +1,5 @@
 mod analysis;
+mod append;
 mod autocdc;
 mod config;
 mod execution;
@@ -52,6 +53,39 @@ fn event(message: &str) -> ExecutorOutput {
             }),
         },
     )))
+}
+
+/// `PipelineUpdateContextImpl.validateStorageRoot`: absolute, with a scheme.
+fn validate_storage_root(root: &str) -> SparkResult<()> {
+    let scheme = root.split_once(':').map(|(scheme, _)| scheme);
+    let has_scheme = scheme.is_some_and(|scheme| {
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    });
+    let is_absolute = root
+        .split_once(':')
+        .is_some_and(|(_, path)| path.starts_with('/'));
+    if has_scheme && is_absolute {
+        return Ok(());
+    }
+    Err(Box::new(crate::error::StructuredSparkError {
+        class: "org.apache.spark.SparkException".into(),
+        condition: "PIPELINE_STORAGE_ROOT_INVALID".into(),
+        sql_state: "42K03".into(),
+        message: format!(
+            "Pipeline storage root must be an absolute path with a URI scheme (e.g., file://, \
+             s3a://, hdfs://). Got: `{root}`."
+        ),
+        parameters: std::collections::HashMap::from([("storage_root".into(), root.to_string())]),
+    })
+    .into())
+}
+
+enum RunStep {
+    Event(Option<String>),
+    Finished(Result<(), analysis::AnalysisError>),
 }
 
 pub(crate) async fn handle_command(
@@ -158,23 +192,40 @@ pub(crate) async fn handle_command(
                         "Storage must be specified to start a run.",
                     ));
                 }
+                validate_storage_root(command.storage.as_deref().unwrap_or_default())?;
                 let (definition, cancelled) = graph.start(graph_id)?;
                 (definition, cancelled, selection)
             };
             let ctx = ctx.clone();
+            let storage = command.storage.clone().unwrap_or_default();
             let inner = async_stream::try_stream! {
-                yield event("Starting pipeline analysis");
-                let run = async {
+                let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+                let run = async move {
                     let analyzed = analysis::analyze(&ctx, &definition).await?;
                     if !command.dry.unwrap_or(false) {
-                        execution::execute(&ctx, &definition, analyzed, selection).await?;
+                        execution::execute(&ctx, &definition, analyzed, selection, storage, &sender)
+                            .await?;
                     }
                     Ok::<_, analysis::AnalysisError>(())
                 };
-                let outcome = tokio::select! {
-                    value = run => value,
-                    _ = cancelled.changed() => Err(analysis::AnalysisError::from(SparkError::invalid("pipeline run cancelled"))),
+                tokio::pin!(run);
+                let outcome = loop {
+                    let step = tokio::select! {
+                        message = events.recv() => RunStep::Event(message),
+                        value = &mut run => RunStep::Finished(value),
+                        _ = cancelled.changed() => RunStep::Finished(Err(
+                            analysis::AnalysisError::from(SparkError::invalid("pipeline run cancelled")),
+                        )),
+                    };
+                    match step {
+                        RunStep::Event(Some(message)) => yield event(&message),
+                        RunStep::Event(None) => {}
+                        RunStep::Finished(value) => break value,
+                    }
                 };
+                while let Ok(message) = events.try_recv() {
+                    yield event(&message);
+                }
                 match outcome {
                     Ok(()) => {}
                     Err(analysis::AnalysisError::Unresolved(failures)) => {
@@ -185,7 +236,7 @@ pub(crate) async fn handle_command(
                     }
                     Err(analysis::AnalysisError::Other(error)) => Err(error)?,
                 }
-                yield event("Pipeline run completed");
+                yield event("Run is COMPLETED.");
                 yield result(sc::PipelineCommandResult::default());
             };
             let operation_id = metadata.operation_id.clone();

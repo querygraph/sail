@@ -73,6 +73,7 @@ fn validate_field(field: &Field) -> Result<()> {
         | DataType::Int64
         | DataType::Float32
         | DataType::Float64
+        | DataType::Date32
         | DataType::Utf8
         | DataType::LargeUtf8
         | DataType::Binary

@@ -245,6 +245,13 @@ pub(crate) async fn handle_execute_sql_command(
         }
     };
     let plan = request.parse_sql_command(relation.clone())?;
+    // Spark analyzes `spark.sql()` when it is called. While a graph is defined
+    // this is what reports a read of a dataset that is not published yet.
+    if matches!(plan, spec::Plan::Query(_)) && request.analyzes_sql_eagerly() {
+        sail_plan::resolver::PlanResolver::new(ctx, spark.plan_config()?)
+            .resolve_named_plan(plan.clone())
+            .await?;
+    }
     match plan {
         spec::Plan::Command(command) if !request.defers_sql() => {
             let mode = ExecutorMode::command_with_completion(move |schema, data| {

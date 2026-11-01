@@ -1,15 +1,18 @@
 use std::error::Error;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use datafusion::common::DataFusionError;
 use fixture::{Gate, Injected, State, Upload};
 use futures::FutureExt;
-use object_store::ObjectStoreExt;
+use object_store::{MultipartUpload, ObjectStoreExt};
 use sail_common_datafusion::error::{
     CommonErrorCause, PythonErrorCause, PythonErrorCauseExtractor,
 };
-use sail_object_store::owned_multipart::{Disposition, MultipartError};
+use sail_common_datafusion::task_resources::TaskResourceScope;
+use sail_object_store::owned_multipart::{Disposition, MultipartError, Stage};
 use tokio::runtime::Handle;
 use tokio::time::timeout;
 

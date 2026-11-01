@@ -330,17 +330,17 @@ impl CatalogManager {
         }
         match self.get_view(reference).await {
             Ok(x) => Ok(x),
-            Err(CatalogError::NotFound(_, name)) => Err(CatalogError::NotFound(
-                CatalogObject::Table,
-                format!("[TABLE_OR_VIEW_NOT_FOUND] Table or view not found: {name}"),
-            )),
-            Err(CatalogError::NotSupported(_)) => Err(CatalogError::NotFound(
-                CatalogObject::Table,
-                format!(
-                    "[TABLE_OR_VIEW_NOT_FOUND] Table or view not found: {}",
-                    reference.last().map(AsRef::as_ref).unwrap_or("<unknown>")
-                ),
-            )),
+            Err(CatalogError::NotFound(_, _) | CatalogError::NotSupported(_)) => {
+                let name = reference
+                    .iter()
+                    .map(|part| format!("`{}`", part.as_ref()))
+                    .collect::<Vec<_>>()
+                    .join(".");
+                Err(CatalogError::NotFound(
+                    CatalogObject::Table,
+                    format!("[TABLE_OR_VIEW_NOT_FOUND] The table or view {name} cannot be found."),
+                ))
+            }
             Err(e) => Err(e),
         }
     }

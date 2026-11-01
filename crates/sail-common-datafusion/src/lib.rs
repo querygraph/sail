@@ -18,6 +18,7 @@ pub mod logical_expr;
 pub mod logical_rewriter;
 pub mod managed_stream;
 pub mod metadata_aggregate;
+pub mod owned_multipart;
 pub mod owned_put;
 pub mod rename;
 pub mod scan;

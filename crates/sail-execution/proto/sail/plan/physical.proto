@@ -80,6 +80,7 @@ message ExtendedPhysicalPlanNode {
     DeltaMaintenanceExecNode delta_maintenance = 65;
     DeltaOptimizeRewriteExecNode delta_optimize_rewrite = 66;
     OrcExecNode orc = 68;
+    OrcSinkExecNode orc_sink = 69;
   }
   // Only leaf file scan nodes carry this supplement. DataFusion's base scan
   // encoding omits object ETags and versions. Older workers ignore this field,
@@ -1011,6 +1012,15 @@ message TextSinkExecNode {
   bytes line_sep = 4;
   CompressionTypeVariant compression_type_variant = 5;
   optional PhysicalSortExprNodeCollection sort_order = 6;
+}
+
+message OrcSinkExecNode {
+  bytes input = 1;
+  bytes base_config = 2;
+  bytes schema = 3;
+  optional PhysicalSortExprNodeCollection sort_order = 4;
+  // The Spark codec name, resolved when the write was planned.
+  string compression = 5;
 }
 
 message FileDeleteExecNode {
