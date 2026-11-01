@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::arrow::ipc::reader::FileReader;
 use datafusion::arrow::ipc::writer::FileWriter;
 use datafusion::prelude::SessionContext;
@@ -38,8 +38,9 @@ use url::Url;
 use super::authority::{ControlCommits, effect_step_name};
 use super::run::{FlowRun, flow_schema};
 use super::write::{
-    PreparedBatch, ensure_auxiliary_table, merge_auxiliary, merge_destination, prepare_microbatch,
-    publish_prepared, read_table, truncate_fenced,
+    IN_COMMIT_TIMESTAMPS_PROPERTY, PreparedBatch, enable_commit_timestamps, ensure_auxiliary_table,
+    evolve_fenced, flow_output_schema, merge_auxiliary, merge_destination, noop_fenced,
+    prepare_microbatch, publish_prepared, read_table, truncate_fenced,
 };
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::graph::Name;
@@ -60,6 +61,8 @@ pub(super) enum Stage {
     ResetBegun,
     /// The target is truncated and the auxiliary table is not.
     ResetTargetDone,
+    /// The target has its new columns and the initialization is unfinished.
+    EvolvedTarget,
 }
 
 type StageHook<'a> = &'a (dyn Fn(Stage, u64) -> SparkResult<()> + Send + Sync);
@@ -341,6 +344,33 @@ fn check_reset_origin(source: &dyn BoundedSource) -> SparkResult<()> {
     Ok(())
 }
 
+fn schema_intent(
+    enrolled: &Enrolled,
+    generation: u64,
+    checkpoint: &FlowCheckpoint,
+    added: &[String],
+) -> SparkResult<Intent> {
+    let request = json!({"add_columns": added});
+    let request_digest = digest("schema-intent", &request).map_err(encoding_error)?;
+    Ok(Intent {
+        id: IntentId(format!(
+            "{}/schema/{generation}/{}",
+            enrolled.target.0, request_digest
+        )),
+        kind: IntentKind::Initialization,
+        target: enrolled.target.clone(),
+        generation,
+        flow: enrolled.flow.clone(),
+        batch_sequence: checkpoint.next_batch_sequence,
+        request_digest,
+        request,
+        start_progress_digest: checkpoint.progress_digest.clone(),
+        end_progress: Value::Null,
+        end_progress_digest: String::new(),
+        prepared_digest: None,
+    })
+}
+
 fn reset_intent(enrolled: &Enrolled, generation: u64) -> SparkResult<Intent> {
     let id = IntentId::reset(&enrolled.target, generation);
     let request = json!({"reset": id.0});
@@ -617,6 +647,118 @@ impl<S: Store> DurableRun<'_, S> {
         self.reached(Stage::Completed, sequence)
     }
 
+    /// The target's schema with the flow's new columns, if it has any. Columns
+    /// the flow no longer emits stay, as `StructType.merge` keeps them.
+    async fn evolved_schema(
+        &self,
+        ctx: &SessionContext,
+        config: Arc<PlanConfig>,
+    ) -> SparkResult<Option<(SchemaRef, Vec<String>)>> {
+        let write = self.run.write;
+        let current = read_table(ctx, config.clone(), write.destination).await?;
+        let current = current.schema().as_arrow().clone();
+        let output = flow_output_schema(
+            ctx,
+            config,
+            write.args,
+            write.case,
+            &self.run.source.schema(),
+        )
+        .await?;
+        let resolver = write.case.resolver();
+        let added: Vec<Field> = output
+            .fields()
+            .iter()
+            .filter(|field| {
+                !current
+                    .fields()
+                    .iter()
+                    .any(|existing| resolver(existing.name(), field.name()))
+            })
+            .map(|field| field.as_ref().clone().with_nullable(true))
+            .collect();
+        if added.is_empty() {
+            return Ok(None);
+        }
+        let names = added.iter().map(|field| field.name().clone()).collect();
+        let fields: Vec<Field> = current
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone())
+            .chain(added)
+            .collect();
+        Ok(Some((Arc::new(Schema::new(fields)), names)))
+    }
+
+    /// Finish an initialization, repeating only what has no receipt. It
+    /// advances no progress and no batch number.
+    async fn finish_initialization(
+        &self,
+        ctx: &SessionContext,
+        config: Arc<PlanConfig>,
+        token: &FenceToken,
+        enrolled: &Enrolled,
+        intent: &Intent,
+    ) -> SparkResult<()> {
+        let control = &self.control;
+        let destination = self.run.write.destination;
+        let digest = digest("schema-prepared", &intent.id.0).map_err(encoding_error)?;
+        let target_done = control
+            .receipt(&intent.id, EffectStep::InitializeTarget)
+            .await
+            .map_err(control_error)?
+            .is_some();
+        let evolved = self.evolved_schema(ctx, config.clone()).await?;
+        let schema = match &evolved {
+            Some((schema, _)) => schema.clone(),
+            None => Arc::new(
+                read_table(ctx, config.clone(), destination)
+                    .await?
+                    .schema()
+                    .as_arrow()
+                    .clone(),
+            ),
+        };
+        let columns = schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect();
+        publish_prepared(
+            ctx,
+            &PreparedBatch {
+                schema,
+                batches: vec![],
+                columns,
+            },
+        )
+        .await?;
+        if !target_done {
+            let fenced = fence(token, intent, EffectStep::InitializeTarget, &digest)?;
+            evolve_fenced(ctx, config.clone(), destination, fenced).await?;
+        }
+        self.reached(Stage::EvolvedTarget, 0)?;
+        let auxiliary_done = control
+            .receipt(&intent.id, EffectStep::InitializeAuxiliary)
+            .await
+            .map_err(control_error)?
+            .is_some();
+        if !auxiliary_done {
+            let fenced = fence(token, intent, EffectStep::InitializeAuxiliary, &digest)?;
+            noop_fenced(ctx, config, &enrolled.auxiliary_name, fenced).await?;
+        }
+        let tables = [
+            (&enrolled.auxiliary, EffectStep::InitializeAuxiliary),
+            (&enrolled.destination, EffectStep::InitializeTarget),
+        ];
+        publish_receipts(ctx, control, &intent.id, tables).await?;
+        control
+            .complete_initialization(token, &intent.id)
+            .await
+            .map_err(control_error)?;
+        Ok(())
+    }
+
     /// Finish a begun reset, repeating only what has no receipt. Truncating
     /// keeps both tables and their identities, so their schemas carry over.
     async fn finish_reset(
@@ -668,6 +810,27 @@ impl<S: Store> DurableRun<'_, S> {
     }
 }
 
+/// Whether a Delta table made outside a pipeline needs in-commit timestamps.
+/// Only a table that is not enrolled can lack them, so this writes no enrolled
+/// table around the fence.
+async fn lacks_commit_timestamps(ctx: &SessionContext, name: &Name) -> SparkResult<bool> {
+    let table = ctx
+        .extension::<CatalogManager>()?
+        .get_table_or_view(name)
+        .await
+        .map_err(PlanError::from)?;
+    let TableKind::Table {
+        format, properties, ..
+    } = &table.kind
+    else {
+        return Ok(false);
+    };
+    Ok(format.eq_ignore_ascii_case("delta")
+        && !properties
+            .iter()
+            .any(|(key, value)| key == IN_COMMIT_TIMESTAMPS_PROPERTY && value == "true"))
+}
+
 /// Hand the target back when the source stops a run, so that the next run,
 /// perhaps the full refresh that error asks for, need not wait out the lease.
 /// A release failure leaves the lease to expire; the source's error is the
@@ -701,6 +864,9 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
 ) -> SparkResult<DurableOutcome> {
     let run = durable.run;
     let control = &durable.control;
+    if lacks_commit_timestamps(ctx, run.write.destination).await? {
+        enable_commit_timestamps(ctx, config.clone(), run.write.destination).await?;
+    }
     let auxiliary_name = ensure_auxiliary_table(
         ctx,
         config.clone(),
@@ -727,6 +893,11 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
                 })
             })?;
         match intent.kind {
+            IntentKind::Initialization => {
+                durable
+                    .finish_initialization(ctx, config.clone(), &acquired.token, &enrolled, &intent)
+                    .await?;
+            }
             IntentKind::Reset => {
                 let generation = durable
                     .finish_reset(ctx, config.clone(), &acquired.token, &enrolled, &intent)
@@ -752,11 +923,6 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
                 outcome.batches += 1;
                 outcome.recovered = Some(intent.batch_sequence);
             }
-            kind => {
-                return Err(control_error(Outcome::UnsupportedCapability {
-                    reason: format!("unfinished {kind:?} intent"),
-                }));
-            }
         }
     }
     if reset {
@@ -771,6 +937,28 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
             .finish_reset(ctx, config.clone(), &token, &enrolled, &intent)
             .await?;
         outcome.reset = Some(generation);
+    }
+    if let Some((_, added)) = durable.evolved_schema(ctx, config.clone()).await? {
+        let token = control
+            .acquire(&enrolled.target, durable.owner, durable.lease_ms)
+            .await
+            .map_err(control_error)?
+            .token;
+        let checkpoint = control
+            .checkpoint(&enrolled.target, token.generation, &enrolled.flow)
+            .await
+            .map_err(control_error)?
+            .ok_or_else(|| SparkError::internal("flow has no checkpoint"))?;
+        let intent = control
+            .seal_intent(
+                &token,
+                &schema_intent(&enrolled, token.generation, &checkpoint, &added)?,
+            )
+            .await
+            .map_err(control_error)?;
+        durable
+            .finish_initialization(ctx, config.clone(), &token, &enrolled, &intent)
+            .await?;
     }
     let frontier = RunFrontier::capture(run.source).map_err(SparkError::from);
     let frontier = released_on_error(durable, &enrolled, frontier).await?;

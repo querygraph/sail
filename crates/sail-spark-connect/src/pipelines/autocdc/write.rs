@@ -511,6 +511,51 @@ pub(super) async fn truncate_fenced(
     run_command(ctx, config, spec::CommandNode::MergeInto(merge), None).await
 }
 
+/// Add the columns of the published empty view that `table` lacks, under a
+/// fence.
+pub(super) async fn evolve_fenced(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    table: &Name,
+    fenced_write: spec::FencedWrite,
+) -> SparkResult<()> {
+    let mut merge = merge::evolve_merge(table, RECONCILED_VIEW);
+    merge.fenced_write = Some(fenced_write);
+    run_command(ctx, config, spec::CommandNode::MergeInto(merge), None).await
+}
+
+/// Record a fenced effect on `table` that changes nothing.
+pub(super) async fn noop_fenced(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    table: &Name,
+    fenced_write: spec::FencedWrite,
+) -> SparkResult<()> {
+    let mut merge = merge::noop_merge(table, RECONCILED_VIEW);
+    merge.fenced_write = Some(fenced_write);
+    run_command(ctx, config, spec::CommandNode::MergeInto(merge), None).await
+}
+
+/// `CommandNode` for turning on in-commit timestamps, which every fenced
+/// commit needs and a table made outside a pipeline may lack.
+pub(super) async fn enable_commit_timestamps(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    table: &Name,
+) -> SparkResult<()> {
+    let command = spec::CommandNode::AlterTable {
+        table: spec::ObjectName::from(table.to_vec()),
+        if_exists: false,
+        operation: spec::AlterTableOperation::SetTableProperties {
+            properties: vec![(
+                IN_COMMIT_TIMESTAMPS_PROPERTY.to_string(),
+                "true".to_string(),
+            )],
+        },
+    };
+    run_command(ctx, config, command, None).await
+}
+
 pub(super) async fn merge_destination(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,

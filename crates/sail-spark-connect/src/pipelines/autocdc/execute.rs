@@ -3,7 +3,7 @@
 //! bounded source (decision 2 of `CDC-ACTIVATION-DESIGN.md`). Anything else
 //! stays refused before its first write.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -26,10 +26,12 @@ use super::ScdType;
 use super::durable::{DurableOutcome, DurableRun, run_durable_flow};
 use super::run::{FlowRun, checkpoint_dir};
 use super::schema::{Case, METADATA_COLUMN};
-use super::write::{IN_COMMIT_TIMESTAMPS_PROPERTY, Scd1Write, flow_output_schema};
-use crate::error::{SparkError, SparkResult};
+use super::write::{IN_COMMIT_TIMESTAMPS_PROPERTY, Scd1Write, flow_output_schema, read_table};
+use crate::error::{SparkError, SparkResult, StructuredSparkError};
 use crate::pipelines::analysis::AnalyzedGraph;
+use crate::pipelines::append::spec_schema;
 use crate::pipelines::graph::{Flow, GraphDefinition, Name, Output};
+use crate::pipelines::schema_merge::merge_fields;
 use crate::pipelines::selection::Selection;
 use crate::pipelines::streaming::source::BoundedSource;
 use crate::session::SparkSession;
@@ -211,6 +213,48 @@ async fn with_output_schemas(
     Ok(schemas)
 }
 
+/// `StructType.merge` matches names exactly, so a column that differs from
+/// the target only by case becomes a second column, and Spark's write then
+/// finds the name ambiguous under case-insensitive resolution.
+fn check_case_only_names(
+    table: &Name,
+    current: &datafusion::arrow::datatypes::Schema,
+    output: &SchemaRef,
+) -> SparkResult<()> {
+    for field in output.fields() {
+        let matches = current
+            .fields()
+            .iter()
+            .filter(|existing| existing.name().eq_ignore_ascii_case(field.name()));
+        let names: Vec<_> = matches.map(|existing| existing.name().clone()).collect();
+        if !names.is_empty() && !names.contains(field.name()) {
+            let qualified = |column: &str| {
+                let mut parts = table.clone();
+                parts.push(column.to_string());
+                parts
+                    .iter()
+                    .map(|part| format!("`{part}`"))
+                    .collect::<Vec<_>>()
+                    .join(".")
+            };
+            let name = qualified(field.name());
+            let references = format!("[{}, {}]", qualified(&names[0]), name);
+            return Err(Box::new(StructuredSparkError {
+                class: "org.apache.spark.sql.AnalysisException".into(),
+                condition: "AMBIGUOUS_REFERENCE".into(),
+                sql_state: "42704".into(),
+                message: format!("Reference {name} is ambiguous, could be: {references}."),
+                parameters: HashMap::from([
+                    ("name".into(), name),
+                    ("referenceNames".into(), references),
+                ]),
+            })
+            .into());
+        }
+    }
+    Ok(())
+}
+
 fn flow_config(
     spark: &SparkSession,
     analyzed: &AnalyzedGraph,
@@ -304,6 +348,26 @@ pub(in crate::pipelines) async fn execute_graph(
             }
             Err(error) => return Err(PlanError::from(error).into()),
         }
+    }
+    // `DatasetManager` merges the existing schema with the flow's and fails
+    // here, before any write, when they cannot merge.
+    let existing = selection
+        .refresh
+        .iter()
+        .filter(|name| !missing.contains(*name));
+    for name in existing {
+        let Some(output_schema) = schemas.get(name) else {
+            continue;
+        };
+        let config = spark.plan_config()?;
+        let current = read_table(ctx, config.clone(), name).await?;
+        if !config.case_sensitive {
+            check_case_only_names(name, current.schema().as_arrow(), output_schema)?;
+        }
+        merge_fields(
+            &spec_schema(current.schema().as_arrow())?.fields,
+            &spec_schema(output_schema)?.fields,
+        )?;
     }
     // A reset runs through the authority inside the flow; the plain truncate
     // would write around the fence.

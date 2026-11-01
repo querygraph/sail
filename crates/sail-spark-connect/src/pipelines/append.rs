@@ -413,7 +413,9 @@ async fn table_source(ctx: &SessionContext, name: &Name) -> SparkResult<TableSou
     })
 }
 
-fn spec_schema(schema: &datafusion::arrow::datatypes::Schema) -> SparkResult<spec::Schema> {
+pub(super) fn spec_schema(
+    schema: &datafusion::arrow::datatypes::Schema,
+) -> SparkResult<spec::Schema> {
     let fields = schema
         .fields()
         .iter()
