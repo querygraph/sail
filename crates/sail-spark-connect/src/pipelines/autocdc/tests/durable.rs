@@ -580,6 +580,11 @@ async fn a_reset_replaces_an_unfinished_batch_and_keeps_its_ratified_commit() ->
             .await
             .is_err()
     );
+    // The batch's ratified commit never reached the log, so the head the
+    // reset must build on exists only once that commit is published.
+    let dir = table_dir(&case.ctx, &aux())?;
+    let latest = delta_version(&dir)?;
+    std::fs::remove_file(dir.join("_delta_log").join(format!("{latest:020}.json")))?;
     clock.0.store(LEASE + 1, Ordering::SeqCst);
     let outcome = case.run_with(&source(), &control, "w2", None, true).await?;
     assert_eq!(
