@@ -14,6 +14,7 @@ use sail_common_datafusion::task_resources::{ScopedTaskContext, TaskResourceScop
 use sail_telemetry::telemetry::global_metrics;
 use sail_telemetry::{TracingExecOptions, trace_execution_plan};
 
+use super::checkpoint_effects::{OwnedCheckpointStoreRegistry, checkpoint_store_urls};
 use super::{LocalJobRunner, panic_error};
 
 /// One admitted preparation. Its minting runner is borrowed, not supplied again
@@ -76,6 +77,17 @@ impl LocalJobPreparation<'_> {
                 None => context.task_ctx(),
             };
             let scoped = ScopedTaskContext::from_resources(&task, resources);
+            let checkpoint_stores = checkpoint_store_urls(&plan);
+            let context = if checkpoint_stores.is_empty() {
+                scoped.context
+            } else {
+                let registry = Arc::new(OwnedCheckpointStoreRegistry::new(
+                    task.runtime_env().object_store_registry.clone(),
+                    scoped.resources.clone(),
+                    &checkpoint_stores,
+                ));
+                scoped.with_object_store_registry(registry)?.context
+            };
             let plan = trace_execution_plan(
                 plan,
                 TracingExecOptions {
@@ -88,7 +100,7 @@ impl LocalJobPreparation<'_> {
                 },
             )?;
             let schema = plan.schema();
-            let stream = execute_stream(plan, scoped.context)?;
+            let stream = execute_stream(plan, context)?;
             Ok::<_, datafusion::common::DataFusionError>((schema, stream))
         }))
         .unwrap_or_else(|payload| Err(panic_error("preparation", payload)));

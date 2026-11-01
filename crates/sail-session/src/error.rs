@@ -17,6 +17,9 @@ pub enum SessionError {
     InvalidArgument(String),
     #[error("internal error: {0}")]
     InternalError(String),
+    /// The session has been closed, and its ID can no longer be used.
+    #[error("session was closed: {0}")]
+    SessionClosed(String),
 }
 
 impl SessionError {

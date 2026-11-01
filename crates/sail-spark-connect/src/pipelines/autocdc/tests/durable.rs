@@ -160,6 +160,7 @@ impl Fixture {
             write: &write,
             checkpoint: &self.checkpoint,
             max_rows_per_partition: 1,
+            flow_source: None,
         };
         run_durable_flow(
             &self.ctx,
@@ -493,10 +494,10 @@ async fn a_reset_rebuilds_the_tables_from_the_origin_under_a_new_generation() ->
     assert_heads_match_the_logs(&case, &control).await?;
     let guard = control.guard(&target_key()).await?.ok_or("no guard")?;
     assert_eq!((guard.generation, guard.checkpoint_index), (1, 1));
-    assert_eq!(
-        (&guard.sink, &guard.auxiliary),
-        (&before.sink, &before.auxiliary)
-    );
+    // The target is replaced in place; the auxiliary table is dropped, as
+    // `DatasetManager` does, which is how a flow's keys change.
+    assert_eq!(guard.sink, before.sink);
+    assert_ne!(guard.auxiliary, before.auxiliary);
     // Batch numbers restart, so the new generation archives beside the old one.
     let root = case.checkpoint.parent().ok_or("no parent")?;
     assert!(root.join("0").join("prepared").join("2.arrow").exists());
@@ -621,6 +622,35 @@ async fn a_run_stopped_by_its_source_leaves_the_target_free_for_a_reset() -> Tes
             .await?
             .is_empty()
     );
+    finish(&case.ctx).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_crash_during_a_schema_change_resumes_it_and_advances_no_batch() -> TestResult {
+    let mut case = setup().await?;
+    let clock = Arc::new(ManualClock::default());
+    let control = Arc::new(Control::new(UnfencedMemoryStore::new(), clock.clone()));
+    case.run(&source(), &control, "w1", None).await?;
+    // The flow stops excluding a column, so the target must gain it.
+    case.args = ChangeArgs::new(
+        vec![key("id")?],
+        attribute("version"),
+        ScdType::Type1,
+        Some(eq_true("is_delete")),
+        None,
+    )?;
+    let hook = crash_at(Stage::EvolvedTarget, 0);
+    let crashed = case.run(&source(), &control, "w1", Some(&hook)).await;
+    assert!(crashed.is_err(), "the run must stop");
+    clock.0.store(LEASE + 1, Ordering::SeqCst);
+    let outcome = case.run(&source(), &control, "w2", None).await?;
+    assert_eq!(outcome.batches, 0);
+    let guard = control.guard(&target_key()).await?.ok_or("no guard")?;
+    assert_eq!((guard.active_intent, guard.generation), (None, 0));
+    let plan = super::super::write::read_table(&case.ctx, case.config.clone(), &target()).await?;
+    assert!(plan.schema().has_column_with_unqualified_name("is_delete"));
+    assert_heads_match_the_logs(&case, &control).await?;
     finish(&case.ctx).await?;
     Ok(())
 }

@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use datafusion::prelude::SessionContext;
 use sail_common::telemetry::{SpanAssociation, SpanAttribute};
@@ -9,6 +10,16 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 use crate::error::SessionResult;
+use crate::session_manager::actor::SessionCleanup;
+use crate::session_manager::actor::cleanup::CleanupOutcome;
+
+/// The result of accepting a session release.
+pub enum SessionRelease {
+    /// There was nothing to release: the session is unknown, or was already deleted.
+    Nothing,
+    /// The release is complete once this cleanup is.
+    Cleanup(Arc<SessionCleanup>),
+}
 
 pub enum SessionManagerMessage {
     GetOrCreateSession {
@@ -18,10 +29,13 @@ pub enum SessionManagerMessage {
     },
     CompleteSessionCreation {
         session_id: String,
-        user_id: String,
-        context: SessionContext,
-        driver_id: Option<DriverId>,
         activation: ExecutionResult<()>,
+    },
+    /// Sent after the cleanup has published its outcome.
+    /// This updates the session state and is not needed to observe the outcome.
+    CompleteSessionCleanup {
+        session_id: String,
+        attempt: u64,
     },
     ProbeIdleSession {
         session_id: String,
@@ -29,6 +43,11 @@ pub enum SessionManagerMessage {
         instant: Instant,
     },
     DeleteSession {
+        session_id: String,
+        result: oneshot::Sender<SessionResult<SessionRelease>>,
+    },
+    /// Check that a request may use a session, without creating the session.
+    CheckSession {
         session_id: String,
         result: oneshot::Sender<SessionResult<()>>,
     },
@@ -39,8 +58,11 @@ pub enum SessionManagerMessage {
         driver_id: DriverId,
         result: oneshot::Sender<ExecutionResult<DriverHandle>>,
     },
-    Shutdown {
-        result: oneshot::Sender<()>,
+    /// Start shutting down. The result is observed through the shared manager state.
+    Shutdown,
+    /// Sent when everything has stopped. This is what makes the actor stop.
+    CompleteShutdown {
+        outcome: CleanupOutcome,
     },
 }
 
@@ -49,11 +71,14 @@ impl SpanAssociation for SessionManagerMessage {
         let name = match self {
             SessionManagerMessage::GetOrCreateSession { .. } => "GetOrCreateSession",
             SessionManagerMessage::CompleteSessionCreation { .. } => "CompleteSessionCreation",
+            SessionManagerMessage::CompleteSessionCleanup { .. } => "CompleteSessionCleanup",
             SessionManagerMessage::ProbeIdleSession { .. } => "ProbeIdleSession",
             SessionManagerMessage::DeleteSession { .. } => "DeleteSession",
+            SessionManagerMessage::CheckSession { .. } => "CheckSession",
             SessionManagerMessage::SetSessionFailure { .. } => "SetSessionFailure",
             SessionManagerMessage::GetDriver { .. } => "GetDriver",
-            SessionManagerMessage::Shutdown { .. } => "Shutdown",
+            SessionManagerMessage::Shutdown => "Shutdown",
+            SessionManagerMessage::CompleteShutdown { .. } => "CompleteShutdown",
         };
         name.into()
     }
@@ -68,16 +93,21 @@ impl SpanAssociation for SessionManagerMessage {
             }
             | SessionManagerMessage::CompleteSessionCreation {
                 session_id,
-                user_id: _,
-                context: _,
-                driver_id: _,
                 activation: _,
+            }
+            | SessionManagerMessage::CompleteSessionCleanup {
+                session_id,
+                attempt: _,
             }
             | SessionManagerMessage::ProbeIdleSession {
                 session_id,
                 instant: _,
             }
             | SessionManagerMessage::DeleteSession {
+                session_id,
+                result: _,
+            }
+            | SessionManagerMessage::CheckSession {
                 session_id,
                 result: _,
             }
@@ -90,7 +120,7 @@ impl SpanAssociation for SessionManagerMessage {
             } => {
                 p.push((SpanAttribute::CLUSTER_DRIVER_ID, driver_id.to_string()));
             }
-            SessionManagerMessage::Shutdown { .. } => {}
+            SessionManagerMessage::Shutdown | SessionManagerMessage::CompleteShutdown { .. } => {}
         }
         p.into_iter().map(|(k, v)| (k.into(), v.into()))
     }

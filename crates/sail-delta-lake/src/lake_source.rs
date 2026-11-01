@@ -26,6 +26,8 @@ use sail_common_datafusion::datasource::{
     BucketBy, CATALOG_TABLE_OPTION, DataSource, OptionLayer, PhysicalSinkMode, SinkInfo, SinkMode,
     SourceInfo, create_sort_order, find_path_in_options,
 };
+use sail_common_datafusion::extension::SessionExtensionAccessor;
+use sail_common_datafusion::fenced_commit::FencedCommits;
 use sail_common_datafusion::lakesource::{
     LakeSource, LakeSourceAlterTableOperation, LakeSourceCreateTableColumn,
     LakeSourceCreateTableInfo, LakeSourceCreateTableResult, LakeSourceMetadata, RowLevelOperation,
@@ -151,6 +153,22 @@ impl DataSource for DeltaLakeSource {
             )),
         }))
     }
+}
+
+/// DDL commits outside `DeltaCommitExec`, so it cannot carry a fence. Refusing
+/// it keeps the authority's head equal to the log.
+async fn reject_enrolled_delta_alter(
+    ctx: &datafusion::execution::TaskContext,
+    path: &str,
+) -> Result<()> {
+    let Ok(commits) = ctx.extension::<FencedCommits>() else {
+        return Ok(());
+    };
+    let table_url = format!("{}/", path.trim_end_matches('/'));
+    if commits.0.is_enrolled(&table_url).await? {
+        return plan_err!("table {table_url} is enrolled and refuses a change without a fence");
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -499,6 +517,7 @@ impl LakeSource for DeltaLakeSource {
         lakehouse_table: Option<LakehouseExecutionContext>,
     ) -> Result<sail_common_datafusion::lakesource::LakeSourceAlterTableResult> {
         reject_catalog_managed_delta_alter(lakehouse_table.as_ref(), &operation)?;
+        reject_enrolled_delta_alter(ctx, path).await?;
         let runtime_env = ctx.runtime_env();
         match operation {
             LakeSourceAlterTableOperation::AlterSnapshotReference { .. } => {

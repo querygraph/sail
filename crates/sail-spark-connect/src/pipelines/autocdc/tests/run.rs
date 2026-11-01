@@ -147,6 +147,7 @@ async fn two_runs_continue_from_the_record() -> TestResult {
         source: &source,
         write: &write,
         checkpoint: &checkpoint,
+        flow_source: None,
         max_rows_per_partition: 100,
     };
     let first = run_flow(&ctx, config.clone(), &scope, &run).await?;
@@ -215,6 +216,7 @@ async fn a_replayed_batch_leaves_the_target_unchanged() -> TestResult {
         source: &source,
         write: &write,
         checkpoint: &checkpoint,
+        flow_source: None,
         max_rows_per_partition: 100,
     };
     let first = run_flow(&ctx, config.clone(), &scope, &run).await?;
@@ -280,6 +282,7 @@ async fn a_reset_creates_the_next_checkpoint_version_and_restarts() -> TestResul
         source: &source,
         write: &write,
         checkpoint: &first_dir,
+        flow_source: None,
         max_rows_per_partition: 100,
     };
     assert_eq!(
@@ -415,6 +418,7 @@ async fn a_full_refresh_wipes_the_target_and_the_auxiliary_table() -> TestResult
         source: &first_source,
         write: &write,
         checkpoint: &first_dir,
+        flow_source: None,
         max_rows_per_partition: 100,
     };
     run_flow(&ctx, config.clone(), &scope, &first).await?;
@@ -516,6 +520,7 @@ async fn after_a_full_refresh_an_event_below_the_old_watermark_lands() -> TestRe
         source: &first_source,
         write: &write,
         checkpoint: &first_dir,
+        flow_source: None,
         max_rows_per_partition: 100,
     };
     run_flow(&ctx, config.clone(), &scope, &first).await?;
@@ -739,6 +744,7 @@ async fn a_selective_full_refresh_wipes_only_the_requested_targets_state() -> Te
         source: &source_a1,
         write: &write_a,
         checkpoint: &dir_a,
+        flow_source: None,
         max_rows_per_partition: 100,
     };
     let run_b = FlowRun {
@@ -783,6 +789,7 @@ async fn a_selective_full_refresh_wipes_only_the_requested_targets_state() -> Te
         source: &source_a2,
         write: &write_a,
         checkpoint: &dir_a2,
+        flow_source: None,
         max_rows_per_partition: 100,
     };
     let run_b2 = FlowRun {

@@ -245,8 +245,7 @@ pub(crate) async fn handle_command(
                 Box::pin(inner),
                 spark.options().execution_heartbeat_interval,
             );
-            let rx = executor.start()?;
-            spark.add_executor(executor)?;
+            let rx = spark.add_executor(executor)?.start()?;
             return Ok(ExecutePlanResponseStream::new(
                 spark.session_id().to_string(),
                 operation_id,
@@ -288,8 +287,7 @@ pub(crate) async fn handle_command(
         outputs.push(ExecutorOutput::complete());
     }
     let executor = Executor::completed(metadata, outputs);
-    let rx = executor.start()?;
-    spark.add_executor(executor)?;
+    let rx = spark.add_executor(executor)?.start()?;
     Ok(ExecutePlanResponseStream::new(
         spark.session_id().to_string(),
         operation_id,

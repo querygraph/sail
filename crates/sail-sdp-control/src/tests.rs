@@ -756,6 +756,7 @@ fn reset_fences_the_old_generation_and_resumes_after_a_crash<S: Store>(f: Fixtur
     let new = ResetIdentities {
         sink: f.sink.clone(),
         auxiliary: SinkIdentity("delta:dddd".into()),
+        auxiliary_head: 0,
     };
     assert!(matches!(
         f.store.finalize_reset(&token, 6, new.clone()),

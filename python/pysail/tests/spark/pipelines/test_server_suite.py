@@ -172,7 +172,6 @@ def define(graph):
     return command
 
 
-@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="Sail reports a closed session without INVALID_HANDLE.SESSION_CLOSED")
 def test_dataflow_graphs_are_cleaned_up_when_session_is_closed(spark):
     """The registry is internal. A client sees the closed session refused, and its graph gone for a new one."""
     stub = spark.client._stub

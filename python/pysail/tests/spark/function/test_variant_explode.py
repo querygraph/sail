@@ -23,12 +23,10 @@ from pyspark.sql import functions as F  # noqa: N812
 
 from pysail.testing.spark.utils.common import is_jvm_spark, pyspark_version
 
-pytestmark = [
-    pytest.mark.skipif(pyspark_version() < (4,), reason="VARIANT requires Spark 4+"),
-    pytest.mark.xfail(not is_jvm_spark(), reason="Sail does not support the Connect TVF relation", strict=True),
-]
+pytestmark = pytest.mark.skipif(pyspark_version() < (4,), reason="VARIANT requires Spark 4+")
 
 
+@pytest.mark.xfail(not is_jvm_spark(), reason="Sail does not declare the schema of the Connect TVF relation", strict=True)
 def test_tvf_relation_returns_the_declared_schema(spark):
     df = spark.tvf.variant_explode(F.parse_json(F.lit("[1, 2]")))
 

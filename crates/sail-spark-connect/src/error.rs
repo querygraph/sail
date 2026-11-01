@@ -165,8 +165,22 @@ impl From<SessionError> for SparkError {
             SessionError::IoError(e) => SparkError::IoError(e),
             SessionError::InvalidArgument(message) => SparkError::InvalidArgument(message),
             SessionError::InternalError(message) => SparkError::InternalError(message),
+            SessionError::SessionClosed(session_id) => session_closed_error(&session_id),
         }
     }
+}
+
+/// The error that Spark reports for any request on a released session.
+/// The text is the same as that of Spark 4.2.1, which reports `INVALID_HANDLE.SESSION_CLOSED`
+/// with the gRPC status code `INTERNAL`.
+pub(crate) fn session_closed_error(session_id: &str) -> SparkError {
+    SparkError::Structured(Box::new(StructuredSparkError {
+        class: "org.apache.spark.SparkSQLException".into(),
+        condition: "INVALID_HANDLE.SESSION_CLOSED".into(),
+        sql_state: "HY000".into(),
+        message: format!("The handle {session_id} is invalid. Session was closed. SQLSTATE: HY000"),
+        parameters: HashMap::from([("handle".into(), session_id.into())]),
+    }))
 }
 
 impl<T> From<PoisonError<T>> for SparkError {
@@ -364,6 +378,9 @@ fn spark_status(class: &str, message: &str, mut metadata: HashMap<String, String
         ),
         "org.apache.spark.sql.connector.catalog.CatalogNotFoundException" => format!(
             "[\"{class}\",\"org.apache.spark.SparkException\",\"java.lang.Exception\",\"java.lang.Throwable\",\"java.lang.Object\"]"
+        ),
+        "org.apache.spark.SparkSQLException" => format!(
+            "[\"{class}\",\"java.sql.SQLException\",\"java.lang.Exception\",\"java.lang.Throwable\",\"java.lang.Object\"]"
         ),
         "org.apache.spark.SparkUnsupportedOperationException" => format!(
             "[\"{class}\",\"java.lang.UnsupportedOperationException\",\"java.lang.RuntimeException\",\"java.lang.Exception\",\"java.lang.Throwable\",\"java.lang.Object\"]"
