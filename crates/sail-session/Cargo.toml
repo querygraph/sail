@@ -54,4 +54,7 @@ futures = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }

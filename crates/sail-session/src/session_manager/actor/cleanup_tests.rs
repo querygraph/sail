@@ -112,10 +112,11 @@ async fn failed_stop_preserves_checkpoint_registry_and_typed_causes() -> TestRes
         let checkpoints = RemoteCheckpointRegistry::new(None, "cleanup-test".into());
         checkpoints.insert(descriptor("existing")?)?;
         let original = checkpoints.get("existing")?.ok_or("missing checkpoint")?;
-        let error = stop_and_clean_checkpoints(&runner, Some(&checkpoints), &RuntimeEnv::default())
-            .await
-            .err()
-            .ok_or("failed stop reported success")?;
+        let error =
+            stop_and_clean_checkpoints(&runner, Some(&checkpoints), &RuntimeEnv::default(), |_| {})
+                .await
+                .err()
+                .ok_or("failed stop reported success")?;
         let DataFusionError::Shared(retained) = &error else {
             return Err("stop error was replaced".into());
         };
@@ -155,7 +156,7 @@ async fn checkpoint_cleanup_waits_for_successful_stop_then_clears_and_seals() ->
     let checkpoints = RemoteCheckpointRegistry::new(None, "cleanup-test".into());
     checkpoints.insert(descriptor("existing")?)?;
     let runtime = RuntimeEnv::default();
-    let cleanup = stop_and_clean_checkpoints(&runner, Some(&checkpoints), &runtime);
+    let cleanup = stop_and_clean_checkpoints(&runner, Some(&checkpoints), &runtime, |_| {});
     tokio::pin!(cleanup);
     assert!(futures::poll!(cleanup.as_mut()).is_pending());
     assert_eq!(runner.stop_calls.load(Ordering::SeqCst), 1);
@@ -175,7 +176,7 @@ async fn missing_checkpoint_registry_does_not_skip_stopping_the_runner() -> Test
         CommitStateUnknownError("stop outcome unknown".into()),
     )));
     let runner = TestRunner::new(Some(error.clone()), None);
-    let result = stop_and_clean_checkpoints(&runner, None, &RuntimeEnv::default()).await;
+    let result = stop_and_clean_checkpoints(&runner, None, &RuntimeEnv::default(), |_| {}).await;
     let Err(DataFusionError::Shared(retained)) = result else {
         return Err("missing registry suppressed the stop failure".into());
     };

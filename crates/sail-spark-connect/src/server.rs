@@ -118,6 +118,13 @@ async fn handle_command(
     }
 }
 
+impl SparkConnectServer {
+    /// Refuse a request on a closed session, for requests that do not need the session.
+    async fn check_session(&self, session_id: String) -> SparkResult<()> {
+        Ok(self.session_manager.check_session(session_id).await?)
+    }
+}
+
 // TODO: make sure that `server_side_session_id` is set properly
 
 #[tonic::async_trait]
@@ -464,13 +471,19 @@ impl SparkConnectService for SparkConnectServer {
         }
         let session_id = request.session_id.clone();
         let _user_id = request.user_context.map(|u| u.user_id).unwrap_or_default();
-        self.session_manager
+        let closed = self
+            .session_manager
             .delete_session(session_id)
             .await
             .map_err(SparkError::from)?;
+        // Like Spark, name the server side session only if this request closed a session.
         let response = ReleaseSessionResponse {
             session_id: request.session_id.clone(),
-            server_side_session_id: request.session_id,
+            server_side_session_id: if closed {
+                request.session_id
+            } else {
+                Default::default()
+            },
         };
         debug!("{response:?}");
         Ok(Response::new(response))
@@ -482,6 +495,7 @@ impl SparkConnectService for SparkConnectServer {
     ) -> Result<Response<FetchErrorDetailsResponse>, Status> {
         let request = request.into_inner();
         debug!("{request:?}");
+        self.check_session(request.session_id).await?;
         Err(Status::unimplemented("fetch error details"))
     }
 
@@ -491,6 +505,7 @@ impl SparkConnectService for SparkConnectServer {
     ) -> Result<Response<CloneSessionResponse>, Status> {
         let request = request.into_inner();
         debug!("{request:?}");
+        self.check_session(request.session_id).await?;
         Err(Status::unimplemented("clone session"))
     }
 
@@ -498,7 +513,9 @@ impl SparkConnectService for SparkConnectServer {
         &self,
         request: Request<GetStatusRequest>,
     ) -> Result<Response<GetStatusResponse>, Status> {
-        debug!("{:?}", request.into_inner());
+        let request = request.into_inner();
+        debug!("{request:?}");
+        self.check_session(request.session_id).await?;
         Err(Status::unimplemented("get status"))
     }
 }

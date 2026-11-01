@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use futures::future::join_all;
 use indexmap::IndexMap;
 use log::{info, warn};
 use sail_common::actor::{Actor, ActorAction, ActorContext, ActorHandle};
@@ -9,6 +10,7 @@ use sail_execution::{DriverId, IdGenerator};
 use sail_system_store::SystemEvent;
 
 use crate::session_manager::actor::SessionManagerActor;
+use crate::session_manager::shared::ManagerShared;
 use crate::session_manager::{
     SessionManagerComponents, SessionManagerMessage, SessionManagerOptions,
 };
@@ -34,14 +36,18 @@ impl DriverRegistryAccessor for SessionDriverRegistry {
 
 impl Actor for SessionManagerActor {
     type Message = SessionManagerMessage;
-    type Options = (SessionManagerOptions, SessionManagerComponents);
+    type Options = (
+        SessionManagerOptions,
+        SessionManagerComponents,
+        Arc<ManagerShared>,
+    );
 
     fn name() -> &'static str {
         "SessionManagerActor"
     }
 
     fn new(options: Self::Options) -> Self {
-        let (options, components) = options;
+        let (options, components, shared) = options;
         let SessionManagerComponents {
             session_factory,
             job_runner_factory,
@@ -56,6 +62,8 @@ impl Actor for SessionManagerActor {
             drivers: Default::default(),
             driver_gateway,
             driver_id_generator: IdGenerator::new(),
+            next_cleanup_attempt: 1,
+            shared,
             shutdown_notifier: None,
             event_reporter,
         }
@@ -90,19 +98,21 @@ impl Actor for SessionManagerActor {
             } => self.handle_get_or_create_session(ctx, session_id, user_id, result),
             SessionManagerMessage::CompleteSessionCreation {
                 session_id,
-                user_id,
-                context,
-                driver_id,
                 activation,
-            } => self.handle_complete_session_creation(
-                ctx, session_id, user_id, context, driver_id, activation,
-            ),
+            } => self.handle_complete_session_creation(ctx, session_id, activation),
+            SessionManagerMessage::CompleteSessionCleanup {
+                session_id,
+                attempt,
+            } => self.handle_complete_session_cleanup(session_id, attempt),
             SessionManagerMessage::ProbeIdleSession {
                 session_id,
                 instant,
             } => self.handle_probe_idle_session(ctx, session_id, instant),
             SessionManagerMessage::DeleteSession { session_id, result } => {
                 self.handle_delete_session(ctx, session_id, result)
+            }
+            SessionManagerMessage::CheckSession { session_id, result } => {
+                self.handle_check_session(session_id, result)
             }
             SessionManagerMessage::SetSessionFailure { session_id } => {
                 self.handle_set_session_failure(ctx, session_id)
@@ -118,6 +128,7 @@ impl Actor for SessionManagerActor {
     }
 
     async fn stop(mut self, ctx: &mut ActorContext<Self>) {
+        join_all(self.shared.cleanups().iter().map(|x| x.wait())).await;
         // Keep the gateway available while drivers stop. Graceful gateway shutdown waits for
         // active task stream connections, which are owned by the drivers.
         let drivers = self.drivers.drain().collect::<Vec<_>>();
