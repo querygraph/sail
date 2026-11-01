@@ -55,6 +55,11 @@ fn event(message: &str) -> ExecutorOutput {
     )))
 }
 
+enum RunStep {
+    Event(Option<String>),
+    Finished(Result<(), analysis::AnalysisError>),
+}
+
 pub(crate) async fn handle_command(
     ctx: &SessionContext,
     command: sc::PipelineCommand,
@@ -165,18 +170,33 @@ pub(crate) async fn handle_command(
             let ctx = ctx.clone();
             let storage = command.storage.clone().unwrap_or_default();
             let inner = async_stream::try_stream! {
-                yield event("Starting pipeline analysis");
-                let run = async {
+                let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+                let run = async move {
                     let analyzed = analysis::analyze(&ctx, &definition).await?;
                     if !command.dry.unwrap_or(false) {
-                        execution::execute(&ctx, &definition, analyzed, selection, storage).await?;
+                        execution::execute(&ctx, &definition, analyzed, selection, storage, &sender)
+                            .await?;
                     }
                     Ok::<_, analysis::AnalysisError>(())
                 };
-                let outcome = tokio::select! {
-                    value = run => value,
-                    _ = cancelled.changed() => Err(analysis::AnalysisError::from(SparkError::invalid("pipeline run cancelled"))),
+                tokio::pin!(run);
+                let outcome = loop {
+                    let step = tokio::select! {
+                        message = events.recv() => RunStep::Event(message),
+                        value = &mut run => RunStep::Finished(value),
+                        _ = cancelled.changed() => RunStep::Finished(Err(
+                            analysis::AnalysisError::from(SparkError::invalid("pipeline run cancelled")),
+                        )),
+                    };
+                    match step {
+                        RunStep::Event(Some(message)) => yield event(&message),
+                        RunStep::Event(None) => {}
+                        RunStep::Finished(value) => break value,
+                    }
                 };
+                while let Ok(message) = events.try_recv() {
+                    yield event(&message);
+                }
                 match outcome {
                     Ok(()) => {}
                     Err(analysis::AnalysisError::Unresolved(failures)) => {
@@ -187,7 +207,7 @@ pub(crate) async fn handle_command(
                     }
                     Err(analysis::AnalysisError::Other(error)) => Err(error)?,
                 }
-                yield event("Pipeline run completed");
+                yield event("Run is COMPLETED.");
                 yield result(sc::PipelineCommandResult::default());
             };
             let operation_id = metadata.operation_id.clone();

@@ -177,6 +177,7 @@ async fn ordinary_streaming_refresh_merges_schema_without_truncating_rows() -> T
         analyzed,
         Selection::new(&seed, &pc::StartRun::default())?,
         String::new(),
+        &tokio::sync::mpsc::unbounded_channel().0,
     )
     .await?;
     assert_eq!(row_count(&ctx, "target").await?, 1);
@@ -250,9 +251,16 @@ async fn public_execution_rejects_sink_outputs_before_catalog_effects() -> TestR
     let mut with_sink = graph.clone();
     with_sink.outputs[1].kind = OutputType::Sink;
     assert!(
-        execution::execute(&ctx, &with_sink, analyzed, selection, String::new())
-            .await
-            .is_err()
+        execution::execute(
+            &ctx,
+            &with_sink,
+            analyzed,
+            selection,
+            String::new(),
+            &tokio::sync::mpsc::unbounded_channel().0,
+        )
+        .await
+        .is_err()
     );
     for table in ["batch", "streaming"] {
         assert!(
@@ -301,6 +309,7 @@ async fn full_refresh_truncates_resets_schema_and_drops_only_its_auxiliary_state
         analyzed,
         Selection::new(&seed, &pc::StartRun::default())?,
         String::new(),
+        &tokio::sync::mpsc::unbounded_channel().0,
     )
     .await?;
     assert_eq!(row_count(&ctx, "target").await?, 1);
