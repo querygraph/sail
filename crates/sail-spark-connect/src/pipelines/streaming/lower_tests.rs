@@ -155,7 +155,7 @@ fn bind_clicks(
     let binding = SourceBinding {
         name: name(&["c", "d", "clicks"]),
         schema: schema(),
-        descriptor: source.describe(),
+        descriptor: source.describe()?,
         intent,
         scans,
     };

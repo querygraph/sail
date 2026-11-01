@@ -19,6 +19,7 @@
 //! watermark passes its end, and then aggregated once. Rows behind the
 //! watermark are dropped, as Spark drops late rows.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use datafusion::arrow::array::{Array, AsArray};
@@ -169,11 +170,18 @@ fn qualified(scope: &GraphScope<'_>, name: &[String]) -> PlanResult<Name> {
 struct RecordingScope<'a> {
     graph: &'a GraphScope<'a>,
     streaming: Mutex<BTreeSet<Name>>,
+    source_stream: AtomicBool,
 }
 
 impl RelationScope for RecordingScope<'_> {
     fn resolve(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>> {
         self.graph.resolve(name)
+    }
+
+    fn observe_source_read(&self, is_streaming: bool) {
+        if is_streaming {
+            self.source_stream.store(true, Ordering::Relaxed);
+        }
     }
 
     fn resolve_read(&self, name: &[String], is_streaming: bool) -> PlanResult<Option<LogicalPlan>> {
@@ -268,11 +276,19 @@ async fn streamed_names(
     let recording = RecordingScope {
         graph: scope,
         streaming: Mutex::default(),
+        source_stream: AtomicBool::new(false),
     };
     PlanResolver::new(ctx, config.clone())
         .with_relation_scope(&recording)
         .resolve_named_plan(spec::Plan::Query(query.clone()))
         .await?;
+    // Nothing below can read such a source. Without this refusal, a view over
+    // one contributes no files, and the flow would complete having read nothing.
+    if recording.source_stream.load(Ordering::Relaxed) {
+        return Err(SparkError::unsupported(
+            "incremental pipeline execution of a streaming read of a data source",
+        ));
+    }
     recording
         .streaming
         .into_inner()

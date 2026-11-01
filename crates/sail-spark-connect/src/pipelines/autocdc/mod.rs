@@ -48,7 +48,6 @@ use crate::spark::connect::{self as sc, OutputType};
 pub(super) enum ScdType {
     Type1,
     /// The proto has no SCD2 value; Spark rejects the type at planning.
-    #[cfg_attr(not(test), expect(dead_code, reason = "no proto value reaches it"))]
     Type2,
 }
 

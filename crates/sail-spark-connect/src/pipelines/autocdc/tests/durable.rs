@@ -307,6 +307,61 @@ async fn a_lost_publication_is_recovered_from_the_authority() -> TestResult {
     Ok(())
 }
 
+/// The log lost an entry the authority ratified, and what is left of it in
+/// staging is no longer what was ratified. Publishing it would put unratified
+/// actions in the log, so recovery stops until the original bytes are back.
+#[tokio::test]
+async fn a_changed_staged_entry_is_not_published() -> TestResult {
+    let case = setup().await?;
+    let source = source();
+    let clock = Arc::new(ManualClock::default());
+    let control = Arc::new(Control::new(UnfencedMemoryStore::new(), clock.clone()));
+    let hook = crash_at(Stage::AuxiliaryDone, 1);
+    case.run(&source, &control, "w1", Some(&hook))
+        .await
+        .err()
+        .ok_or("the run must stop")?;
+    let dir = table_dir(&case.ctx, &aux())?;
+    let latest = delta_version(&dir)?;
+    let log = dir.join("_delta_log");
+    let published = log.join(format!("{latest:020}.json"));
+    let ratified = std::fs::read(&published)?;
+    let mut staged = None;
+    for entry in std::fs::read_dir(log.join("_staged_commits"))? {
+        let path = entry?.path();
+        if std::fs::read(&path)? == ratified {
+            staged = Some(path);
+        }
+    }
+    let staged = staged.ok_or("no staged entry holds the ratified bytes")?;
+    let mut changed = ratified.clone();
+    changed.push(b'\n');
+    std::fs::write(&staged, &changed)?;
+    std::fs::remove_file(&published)?;
+    clock.0.store(LEASE + 1, Ordering::SeqCst);
+
+    let error = case
+        .run(&source, &control, "w2", None)
+        .await
+        .err()
+        .ok_or("recovery must refuse the changed entry")?;
+    assert!(
+        error
+            .to_string()
+            .contains("not the one the authority ratified"),
+        "{error}"
+    );
+    assert!(!published.exists(), "nothing was published");
+
+    std::fs::write(&staged, &ratified)?;
+    clock.0.store(2 * (LEASE + 1), Ordering::SeqCst);
+    case.run(&source, &control, "w3", None).await?;
+    case.assert_exact().await?;
+    assert_heads_match_the_logs(&case, &control).await?;
+    finish(&case.ctx).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_changed_archive_stops_the_run() -> TestResult {
     let case = setup().await?;

@@ -143,7 +143,7 @@ pub(super) struct RunOutcome {
 }
 
 fn descriptor_digest(source: &dyn BoundedSource) -> SparkResult<String> {
-    let descriptor = source.describe();
+    let descriptor = source.describe()?;
     let text = serde_json::to_string(&descriptor)
         .map_err(|e| SparkError::internal(format!("serialize source descriptor: {e}")))?;
     Ok(Sha256::digest(text.as_bytes())
@@ -193,7 +193,7 @@ pub(super) async fn run_flow(
     let frontier = RunFrontier::capture(run.source)?;
     record.frontier = Some(frontier.clone());
     record.store(run.checkpoint)?;
-    let descriptor = run.source.describe();
+    let descriptor = run.source.describe()?;
     let mut batches = 0;
     while let Some(intent) = next_intent(
         run.source,

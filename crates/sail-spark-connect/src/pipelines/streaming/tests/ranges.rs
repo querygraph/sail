@@ -80,7 +80,7 @@ fn a_retention_gap_fails_closed() {
         end: Cursor("pos:4".into()),
     };
     assert_eq!(
-        source.scan(&range).err(),
+        refused(source.scan(&range)),
         Some(ScanError::RetentionGap {
             partition: partition("p0"),
             expected: Cursor("pos:1".into()),
@@ -89,8 +89,8 @@ fn a_retention_gap_fails_closed() {
     );
     // A new run starts at the first retained position, not at zero.
     assert_eq!(
-        source.earliest(&partition("p0")),
-        Ok(Cursor("pos:3".into()))
+        source.earliest(&partition("p0")).ok(),
+        Some(Cursor("pos:3".into()))
     );
 }
 
@@ -109,7 +109,7 @@ fn a_recreated_partition_fails_ranges_captured_under_the_old_incarnation() {
     let new = source.create_partition("p0");
     assert_ne!(old, new);
     assert_eq!(
-        source.scan(&range).err(),
+        refused(source.scan(&range)),
         Some(ScanError::IncarnationMismatch {
             partition: partition("p0"),
             expected: old,
@@ -130,7 +130,7 @@ fn a_range_past_the_available_rows_is_not_contiguous() {
         end: Cursor("pos:5".into()),
     };
     assert_eq!(
-        source.scan(&range).err(),
+        refused(source.scan(&range)),
         Some(ScanError::NonContiguous {
             partition: partition("p0"),
             expected: Cursor("pos:5".into()),
@@ -147,10 +147,10 @@ fn a_partition_that_disappears_with_an_unprogressed_intent_is_an_error() -> Spar
     let frontier = RunFrontier::capture(&source)?;
     source.remove_partition("p0");
     assert_eq!(
-        next_intent(&source, &frontier, &Progress::default(), 10).err(),
-        Some(PlanError::Scan(ScanError::UnknownPartition {
+        refused_plan(next_intent(&source, &frontier, &Progress::default(), 10)),
+        Some(ScanError::UnknownPartition {
             partition: partition("p0")
-        }))
+        })
     );
     Ok(())
 }
@@ -172,14 +172,17 @@ fn progress_reached_under_an_old_incarnation_is_refused_not_caught_up() -> Spark
     source.create_partition("p0");
     source.append("p0", vec![row(10, "new"), row(20, "new")]);
     let second = RunFrontier::capture(&source)?;
-    assert_eq!(
-        next_intent(&source, &second, &progress, 10),
-        Err(PlanError::IncarnationChanged {
-            partition: partition("p0"),
-            progressed: Incarnation("inc:1".into()),
-            captured: Incarnation("inc:2".into()),
-        })
-    );
+    let Err(PlanError::IncarnationChanged {
+        partition: refused_partition,
+        progressed,
+        captured,
+    }) = next_intent(&source, &second, &progress, 10)
+    else {
+        return Err(SparkError::internal("expected an incarnation refusal"));
+    };
+    assert_eq!(refused_partition, partition("p0"));
+    assert_eq!(progressed, Incarnation("inc:1".into()));
+    assert_eq!(captured, Incarnation("inc:2".into()));
     // A run that starts over under the new incarnation reads the new rows.
     let intent = next_intent(&source, &second, &Progress::default(), 10)?;
     assert_eq!(
@@ -200,19 +203,22 @@ fn a_zero_limit_and_a_stalling_adapter_are_errors_not_caught_up() -> SparkResult
     source.create_partition("p0");
     source.append("p0", vec![row(1, "a")]);
     let frontier = RunFrontier::capture(&source)?;
-    assert_eq!(
+    assert!(matches!(
         next_intent(&source, &frontier, &Progress::default(), 0),
         Err(PlanError::ZeroLimit)
-    );
+    ));
     let stalled = Stalling(&source);
-    assert_eq!(
-        next_intent(&stalled, &frontier, &Progress::default(), 10),
-        Err(PlanError::Stalled {
-            partition: partition("p0"),
-            start: Cursor("pos:0".into()),
-            frontier: Cursor("pos:1".into()),
-        })
-    );
+    let Err(PlanError::Stalled {
+        partition: stalled_partition,
+        start,
+        frontier: stalled_frontier,
+    }) = next_intent(&stalled, &frontier, &Progress::default(), 10)
+    else {
+        return Err(SparkError::internal("expected a stall refusal"));
+    };
+    assert_eq!(stalled_partition, partition("p0"));
+    assert_eq!(start, Cursor("pos:0".into()));
+    assert_eq!(stalled_frontier, Cursor("pos:1".into()));
     Ok(())
 }
 
@@ -224,13 +230,13 @@ impl BoundedSource for Stalling<'_> {
     fn schema(&self) -> SchemaRef {
         self.0.schema()
     }
-    fn describe(&self) -> super::super::source::SourceDescriptor {
+    fn describe(&self) -> Result<super::super::source::SourceDescriptor, SourceError> {
         self.0.describe()
     }
-    fn earliest(&self, partition: &PartitionId) -> Result<Cursor, ScanError> {
+    fn earliest(&self, partition: &PartitionId) -> Result<Cursor, SourceError> {
         self.0.earliest(partition)
     }
-    fn frontier(&self, partition: &PartitionId) -> Result<Cursor, ScanError> {
+    fn frontier(&self, partition: &PartitionId) -> Result<Cursor, SourceError> {
         self.0.frontier(partition)
     }
     fn plan_end(
@@ -239,13 +245,13 @@ impl BoundedSource for Stalling<'_> {
         start: &Cursor,
         _frontier: &Cursor,
         _max_rows: usize,
-    ) -> Result<Cursor, ScanError> {
+    ) -> Result<Cursor, SourceError> {
         Ok(start.clone())
     }
     fn scan(
         &self,
         range: &Range,
-    ) -> Result<Arc<dyn datafusion::datasource::TableProvider>, ScanError> {
+    ) -> Result<Arc<dyn datafusion::datasource::TableProvider>, SourceError> {
         self.0.scan(range)
     }
 }
@@ -285,7 +291,7 @@ fn new_and_empty_partitions_are_handled_by_the_frontier_record() -> SparkResult<
 }
 
 #[test]
-fn cursors_are_opaque_to_generic_code_and_foreign_tokens_are_rejected() {
+fn cursors_are_opaque_to_generic_code_and_foreign_tokens_are_rejected() -> SparkResult<()> {
     let source = source();
     source.create_partition("p0");
     source.append("p0", vec![row(1, "a")]);
@@ -293,16 +299,38 @@ fn cursors_are_opaque_to_generic_code_and_foreign_tokens_are_rejected() {
     // does the arithmetic and refuses tokens it did not mint.
     let foreign = Cursor("offset=1".into());
     assert_eq!(
-        source.plan_end(&partition("p0"), &foreign, &Cursor("pos:1".into()), 1),
-        Err(ScanError::ForeignCursor {
+        refused(source.plan_end(&partition("p0"), &foreign, &Cursor("pos:1".into()), 1)),
+        Some(ScanError::ForeignCursor {
             partition: partition("p0"),
             cursor: foreign,
         })
     );
     assert_eq!(source.schema().fields().len(), 2);
-    let descriptor = source.describe();
+    let descriptor = source.describe()?;
     assert_eq!(descriptor.kind, "deterministic");
     assert_eq!(descriptor.partitions.len(), 1);
     let json = serde_json::to_string(&descriptor).unwrap_or_default();
     assert!(json.contains("\"name\":\"events\""));
+    Ok(())
+}
+
+#[test]
+fn an_outage_is_not_reported_as_the_callers_mistake() {
+    let unavailable = SourceError::Unavailable {
+        partition: Some(partition("p0")),
+        cause: "connection refused".into(),
+    };
+    assert!(matches!(
+        SparkError::from(unavailable),
+        SparkError::InternalError(message)
+            if message == "streaming source: source unavailable for partition p0: connection refused"
+    ));
+    let refusal = SourceError::Refused(ScanError::UnknownPartition {
+        partition: partition("p0"),
+    });
+    assert!(matches!(
+        SparkError::from(refusal),
+        SparkError::InvalidArgument(message)
+            if message == "streaming source: partition p0 no longer exists"
+    ));
 }

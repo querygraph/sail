@@ -184,6 +184,10 @@ impl RelationScope for GraphScope<'_> {
         self.read(name, is_streaming)
     }
 
+    fn observe_source_read(&self, is_streaming: bool) {
+        self.record_streaming(is_streaming);
+    }
+
     // Computed IDENTIFIER targets materialize after Spark's graph substitution.
     // Their expression subqueries still use this scope; the eventual target does not.
     fn resolve_late_bound(&self, _: &[String]) -> PlanResult<Option<LogicalPlan>> {

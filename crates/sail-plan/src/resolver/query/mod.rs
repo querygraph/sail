@@ -83,6 +83,9 @@ impl PlanResolver<'_> {
                 }
                 spec::ReadType::Udtf(udtf) => self.resolve_query_read_udtf(*udtf, state).await?,
                 spec::ReadType::DataSource(source) => {
+                    if let Some(scope) = self.relation_scope {
+                        scope.observe_source_read(is_streaming);
+                    }
                     self.resolve_query_read_data_source(*source, state).await?
                 }
                 spec::ReadType::DynamicTable(table) => {

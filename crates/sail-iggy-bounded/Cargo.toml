@@ -1,0 +1,25 @@
+[package]
+name = "sail-iggy-bounded"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Apache Iggy as a bounded streaming source: exact offset ranges that fail closed on retention gaps and recreated partitions"
+
+[lints]
+workspace = true
+
+[dependencies]
+sail-common-datafusion = { path = "../sail-common-datafusion" }
+
+async-trait = { workspace = true }
+chrono = { workspace = true }
+datafusion = { workspace = true }
+# The broker the capability evidence was recorded on. It is an edge build, so
+# the revision is pinned rather than a version range.
+iggy = { git = "https://github.com/apache/iggy", rev = "153fdf466aea94b7bcb90681ee7274f9f76ec00d" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+bytes = { workspace = true }
+tempfile = { workspace = true }

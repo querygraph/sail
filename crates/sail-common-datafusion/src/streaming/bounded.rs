@@ -238,15 +238,15 @@ pub trait BoundedSource: Send + Sync + fmt::Debug {
     fn schema(&self) -> SchemaRef;
 
     /// The source and its partitions now.
-    fn describe(&self) -> SourceDescriptor;
+    fn describe(&self) -> Result<SourceDescriptor, SourceError>;
 
     /// The earliest position of a partition now: where a partition first
     /// seen by a run starts.
-    fn earliest(&self, partition: &PartitionId) -> Result<Cursor, ScanError>;
+    fn earliest(&self, partition: &PartitionId) -> Result<Cursor, SourceError>;
 
     /// The end position of a partition now (`prepareForTriggerAvailableNow`).
     /// Captured once per run; later batches read it from the run record.
-    fn frontier(&self, partition: &PartitionId) -> Result<Cursor, ScanError>;
+    fn frontier(&self, partition: &PartitionId) -> Result<Cursor, SourceError>;
 
     /// The end of the next range from `start` towards `frontier`, holding at
     /// most `max_rows` rows: `min(frontier, start + max_rows)` in the
@@ -257,10 +257,11 @@ pub trait BoundedSource: Send + Sync + fmt::Debug {
         start: &Cursor,
         frontier: &Cursor,
         max_rows: usize,
-    ) -> Result<Cursor, ScanError>;
+    ) -> Result<Cursor, SourceError>;
 
-    /// A bounded provider yielding exactly the range, or a [`ScanError`].
-    fn scan(&self, range: &Range) -> Result<Arc<dyn TableProvider>, ScanError>;
+    /// A bounded provider yielding exactly the range, or a [`SourceError`];
+    /// a read that cannot honour the range is a [`ScanError`] refusal.
+    fn scan(&self, range: &Range) -> Result<Arc<dyn TableProvider>, SourceError>;
 }
 
 #[cfg(test)]

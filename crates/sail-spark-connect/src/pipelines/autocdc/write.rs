@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
 use datafusion::datasource::{MemTable, provider_as_source};
 use datafusion::logical_expr::{Expr, LogicalPlan, LogicalPlanBuilder};
 use datafusion::prelude::{SessionContext, col};
@@ -30,7 +30,10 @@ use sail_plan::error::PlanError;
 use sail_plan::resolver::PlanResolver;
 
 use super::auxiliary::{self, KEY_COLUMN_NAMES_PROPERTY, SCD_TYPE_PROPERTY};
-use super::schema::{Case, METADATA_COLUMN, RESERVED_PREFIX};
+use super::schema::{
+    Case, DELETE_SEQUENCE_FIELD, METADATA_COLUMN, RESERVED_PREFIX, UPSERT_SEQUENCE_FIELD,
+    output_field_names,
+};
 use super::{ChangeArgs, merge, microbatch, reconcile};
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::execution::run_command;
@@ -293,6 +296,45 @@ pub(super) async fn read_table(
 /// them durably is the sealed-input unit.
 /// Ratified staging needs a timestamp inside each commit.
 pub(super) const IN_COMMIT_TIMESTAMPS_PROPERTY: &str = "delta.enableInCommitTimestamps";
+
+/// `AutoCdcMergeFlow.schema`: the selected source fields, then the metadata
+/// column typed by the sequencing expression over the source.
+pub(super) async fn flow_output_schema(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    args: &ChangeArgs,
+    case: Case,
+    source: &SchemaRef,
+) -> SparkResult<SchemaRef> {
+    let empty = MemTable::try_new(source.clone(), vec![vec![]])?;
+    let plan = LogicalPlanBuilder::scan("source", provider_as_source(Arc::new(empty)), None)?
+        .build()
+        .map_err(PlanError::from)?;
+    let evaluated = vec![(SEQUENCING_COLUMN.to_string(), args.sequencing.clone())];
+    let evaluated = with_evaluated_columns(ctx, config, plan, evaluated).await?;
+    let sequencing = evaluated
+        .schema()
+        .fields()
+        .iter()
+        .find(|field| field.name() == SEQUENCING_COLUMN)
+        .map(|field| field.data_type().clone())
+        .ok_or_else(|| SparkError::internal("AutoCDC sequencing column was not evaluated"))?;
+    let names: Vec<String> = source.fields().iter().map(|x| x.name().clone()).collect();
+    let selected = output_field_names(args, &names, case)?;
+    let member = |name: &str| Field::new(name, sequencing.clone(), true);
+    let metadata = Fields::from(vec![
+        member(DELETE_SEQUENCE_FIELD),
+        member(UPSERT_SEQUENCE_FIELD),
+    ]);
+    let mut fields: Vec<Field> = Vec::with_capacity(selected.len());
+    for name in selected {
+        fields.push(match source.field_with_name(&name) {
+            Ok(field) => field.clone(),
+            Err(_) => Field::new(&name, DataType::Struct(metadata.clone()), false),
+        });
+    }
+    Ok(Arc::new(Schema::new(fields)))
+}
 
 /// The reconciled rows of one microbatch, sealed once.
 pub(super) struct PreparedBatch {
