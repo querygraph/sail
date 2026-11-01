@@ -231,3 +231,19 @@ def test_an_iggy_view_read_by_an_ordinary_flow_is_not_executed(pipeline_spark, p
 
     with pytest.raises((PySparkException, SparkConnectGrpcException), match="incremental pipeline execution"):
         start()
+
+
+def test_a_view_over_any_streaming_data_source_is_refused_rather_than_read_as_nothing(pipeline_spark, pipeline_factory):
+    _, registry, start = pipeline_factory()
+    with graph_element_registration_context(registry):
+
+        @dp.temporary_view
+        def ticks():
+            return pipeline_spark.readStream.format("rate").load()
+
+        @dp.table
+        def target():
+            return pipeline_spark.readStream.table("ticks")
+
+    with pytest.raises((PySparkException, SparkConnectGrpcException), match="incremental pipeline execution"):
+        start()

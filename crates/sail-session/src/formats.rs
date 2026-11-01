@@ -59,7 +59,6 @@ fn register_external_data_sources(registry: &DataSourceRegistry) -> Result<()> {
 mod tests {
     use datafusion::logical_expr::LogicalPlanBuilder;
     use datafusion::prelude::SessionContext;
-    use datafusion_common::DataFusionError;
     use sail_common_datafusion::datasource::{OptionLayer, SinkInfo, SinkMode};
 
     use super::*;
@@ -81,13 +80,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registered_orc_source_rejects_writing() -> Result<()> {
+    async fn registered_orc_source_plans_writing() -> Result<()> {
         let registry = DataSourceRegistry::new();
         register_builtin_data_sources(&registry)?;
         let directory = tempfile::tempdir()?;
         let output = directory.path().join("output");
         let context = SessionContext::new();
-        let result = registry
+        registry
             .get_data_source("orc")?
             .create_writer(
                 &context.state(),
@@ -103,11 +102,7 @@ mod tests {
                     lakehouse_table: None,
                 },
             )
-            .await;
-        assert!(matches!(
-            result,
-            Err(DataFusionError::NotImplemented(message)) if message == "ORC writing is not implemented"
-        ));
+            .await?;
         assert!(!output.exists());
         Ok(())
     }
