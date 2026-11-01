@@ -505,3 +505,90 @@ def test_a_view_downstream_of_a_target_sees_what_the_flow_writes(space, pipeline
     start()
     assert rows(space, "id", "upsertSequence", table="downstream") == [(1, 1)]
     space.sql("DROP TABLE IF EXISTS downstream")
+
+
+NESTED = "key INT, seq BIGINT, a INT, b_c INT, b_d INT"
+
+
+def nested_run(spark, factory, url, transform):
+    _, registry, start = factory()
+    with graph_element_registration_context(registry):
+
+        @dp.temporary_view
+        def raw():
+            return (
+                spark.readStream.format("iggy")
+                .option("url", url)
+                .option("stream", STREAM)
+                .option("topic", TOPIC)
+                .option("timeout_ms", "5000")
+                .schema(NESTED)
+                .load()
+            )
+
+        @dp.temporary_view
+        def changes():
+            return transform(spark.readStream.table("raw"))
+
+        dp.create_streaming_table("target", format="delta")
+        dp.create_auto_cdc_flow(target="target", source="changes", keys=["key"], sequence_by="seq")
+    start()
+
+
+def _event(key, seq, a, c, d):
+    return {"key": key, "seq": seq, "a": a, "b_c": c, "b_d": d}
+
+
+def _struct(*fields):
+    return lambda frame: frame.select(
+        "key",
+        "seq",
+        sf.struct("a", sf.struct(*[sf.col(source).alias(name) for name, source in fields]).alias("b")).alias("value"),
+    )
+
+
+def _array(*fields):
+    return lambda frame: frame.select(
+        "key",
+        "seq",
+        sf.array(
+            sf.struct("a", sf.struct(*[sf.col(source).alias(name) for name, source in fields]).alias("b"))
+        ).alias("vals"),
+    )
+
+
+def test_dropping_a_nested_struct_field_is_refused(space, pipeline_factory, broker):  # noqa: F811
+    broker.send(_event(1, 1, 1, 1, 1), _event(2, 1, 2, 2, 2))
+    nested_run(space, pipeline_factory, broker.url, _struct(("c", "b_c"), ("d", "b_d")))
+    broker.send(_event(1, 2, 10, 99, 10), _event(3, 1, 3, 99, 3))
+    with pytest.raises(FAILURE, match="INCOMPATIBLE_DATA_FOR_TABLE.CANNOT_FIND_DATA"):
+        nested_run(space, pipeline_factory, broker.url, _struct(("d", "b_d")))
+
+
+def test_a_new_field_in_an_array_of_structs_is_added(space, pipeline_factory, broker):  # noqa: F811
+    broker.send(_event(1, 1, 1, 1, 99))
+    nested_run(space, pipeline_factory, broker.url, _array(("c", "b_c")))
+    broker.send(_event(1, 2, 1, 1, 2), _event(3, 1, 3, 3, 3))
+    nested_run(space, pipeline_factory, broker.url, _array(("c", "b_c"), ("d", "b_d")))
+    exploded = space.table("target").selectExpr("key", "inline(vals) AS (a, b)").select("key", "a", "b.c", "b.d")
+    assert sorted(tuple(row) for row in exploded.collect()) == [(1, 1, 1, 2), (3, 3, 3, 3)]
+
+
+def test_dropping_a_field_in_an_array_of_structs_is_refused(space, pipeline_factory, broker):  # noqa: F811
+    broker.send(_event(1, 1, 1, 1, 1), _event(2, 1, 2, 2, 2))
+    nested_run(space, pipeline_factory, broker.url, _array(("c", "b_c"), ("d", "b_d")))
+    broker.send(_event(1, 2, 10, 10, 99), _event(3, 1, 3, 3, 99))
+    with pytest.raises(FAILURE, match="INCOMPATIBLE_DATA_FOR_TABLE.CANNOT_FIND_DATA"):
+        nested_run(space, pipeline_factory, broker.url, _array(("c", "b_c")))
+
+
+def test_a_composite_key_merges_on_every_key(space, pipeline_factory, broker):  # noqa: F811
+    schema = "region STRING, id INT, name STRING, seq BIGINT"
+    broker.send(
+        {"region": "eu", "id": 1, "name": "a", "seq": 1},
+        {"region": "us", "id": 1, "name": "b", "seq": 1},
+    )
+    run(space, pipeline_factory, broker.url, schema, keys=["region", "id"])
+    broker.send({"region": "eu", "id": 1, "name": "c", "seq": 2})
+    run(space, pipeline_factory, broker.url, schema, keys=["region", "id"])
+    assert rows(space, "region", "id", "name") == [("eu", 1, "c"), ("us", 1, "b")]

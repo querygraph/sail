@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::datasource::{MemTable, provider_as_source};
 use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
 use datafusion::prelude::SessionContext;
@@ -255,6 +255,56 @@ fn check_case_only_names(
     Ok(())
 }
 
+/// A top-level column the flow stopped writing is left alone, but Spark's
+/// writer cannot fill a nested field in, so it refuses one that is gone.
+fn check_nested_fields(
+    current: &datafusion::arrow::datatypes::Schema,
+    output: &SchemaRef,
+) -> SparkResult<()> {
+    fn missing(current: &DataType, output: &DataType, path: String) -> Option<String> {
+        match (current, output) {
+            (DataType::Struct(current), DataType::Struct(output)) => {
+                current.iter().find_map(|field| {
+                    let path = format!("{path}.`{}`", field.name());
+                    match output.iter().find(|other| other.name() == field.name()) {
+                        Some(other) => missing(field.data_type(), other.data_type(), path),
+                        None => Some(path),
+                    }
+                })
+            }
+            (DataType::List(current), DataType::List(output)) => missing(
+                current.data_type(),
+                output.data_type(),
+                format!("{path}.`element`"),
+            ),
+            _ => None,
+        }
+    }
+    for field in current.fields() {
+        let Ok(other) = output.field_with_name(field.name()) else {
+            continue;
+        };
+        let path = format!("`{}`", field.name());
+        if let Some(column) = missing(field.data_type(), other.data_type(), path) {
+            return Err(Box::new(StructuredSparkError {
+                class: "org.apache.spark.sql.AnalysisException".into(),
+                condition: "INCOMPATIBLE_DATA_FOR_TABLE.CANNOT_FIND_DATA".into(),
+                sql_state: "KD000".into(),
+                message: format!(
+                    "Cannot write incompatible data for the table ``: Cannot find data for the \
+                     output column {column}."
+                ),
+                parameters: HashMap::from([
+                    ("tableName".into(), "``".into()),
+                    ("colName".into(), column),
+                ]),
+            })
+            .into());
+        }
+    }
+    Ok(())
+}
+
 fn flow_config(
     spark: &SparkSession,
     analyzed: &AnalyzedGraph,
@@ -402,6 +452,7 @@ impl CdcRun {
             if !config.case_sensitive {
                 check_case_only_names(name, current.schema().as_arrow(), output_schema)?;
             }
+            check_nested_fields(current.schema().as_arrow(), output_schema)?;
             merge_fields(
                 &spec_schema(current.schema().as_arrow())?.fields,
                 &spec_schema(output_schema)?.fields,

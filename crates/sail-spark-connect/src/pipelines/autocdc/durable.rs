@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::ipc::reader::FileReader;
 use datafusion::arrow::ipc::writer::FileWriter;
 use datafusion::prelude::SessionContext;
@@ -730,28 +730,36 @@ impl<S: Store + 'static> DurableRun<'_, S> {
         )
         .await?;
         let resolver = write.case.resolver();
-        let added: Vec<Field> = output
-            .fields()
-            .iter()
-            .filter(|field| {
-                !current
-                    .fields()
-                    .iter()
-                    .any(|existing| resolver(existing.name(), field.name()))
-            })
-            .map(|field| field.as_ref().clone().with_nullable(true))
-            .collect();
-        if added.is_empty() {
+        let mut changed = vec![];
+        let mut fields = Vec::with_capacity(current.fields().len());
+        for existing in current.fields() {
+            let incoming = output
+                .fields()
+                .iter()
+                .find(|field| resolver(existing.name(), field.name()));
+            let merged = incoming.map_or_else(
+                || existing.data_type().clone(),
+                |field| evolved_type(existing.data_type(), field.data_type(), resolver),
+            );
+            if &merged != existing.data_type() {
+                changed.push(existing.name().clone());
+            }
+            fields.push(existing.as_ref().clone().with_data_type(merged));
+        }
+        for field in output.fields() {
+            if !current
+                .fields()
+                .iter()
+                .any(|x| resolver(x.name(), field.name()))
+            {
+                changed.push(field.name().clone());
+                fields.push(field.as_ref().clone().with_nullable(true));
+            }
+        }
+        if changed.is_empty() {
             return Ok(None);
         }
-        let names = added.iter().map(|field| field.name().clone()).collect();
-        let fields: Vec<Field> = current
-            .fields()
-            .iter()
-            .map(|field| field.as_ref().clone())
-            .chain(added)
-            .collect();
-        Ok(Some((Arc::new(Schema::new(fields)), names)))
+        Ok(Some((Arc::new(Schema::new(fields)), changed)))
     }
 
     /// Finish an initialization, repeating only what has no receipt. It
@@ -927,6 +935,40 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             .map_err(control_error)?;
         ensure_checkpoint(control, &enrolled.target, guard.generation, &enrolled.flow).await?;
         Ok(guard.generation)
+    }
+}
+
+/// `current` with the struct fields of `incoming` it lacks, at any depth.
+fn evolved_type(
+    current: &DataType,
+    incoming: &DataType,
+    resolver: fn(&str, &str) -> bool,
+) -> DataType {
+    match (current, incoming) {
+        (DataType::Struct(current), DataType::Struct(incoming)) => {
+            let mut fields: Vec<Field> = current
+                .iter()
+                .map(|field| {
+                    let other = incoming.iter().find(|x| resolver(x.name(), field.name()));
+                    let data_type = other.map_or_else(
+                        || field.data_type().clone(),
+                        |other| evolved_type(field.data_type(), other.data_type(), resolver),
+                    );
+                    field.as_ref().clone().with_data_type(data_type)
+                })
+                .collect();
+            for field in incoming.iter() {
+                if !current.iter().any(|x| resolver(x.name(), field.name())) {
+                    fields.push(field.as_ref().clone().with_nullable(true));
+                }
+            }
+            DataType::Struct(fields.into())
+        }
+        (DataType::List(current), DataType::List(incoming)) => {
+            let item = evolved_type(current.data_type(), incoming.data_type(), resolver);
+            DataType::List(Arc::new(current.as_ref().clone().with_data_type(item)))
+        }
+        _ => current.clone(),
     }
 }
 
