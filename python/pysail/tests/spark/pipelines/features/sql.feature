@@ -160,7 +160,7 @@ Feature: Declarative pipeline SQL
     Then pipeline dataset output is not published
 
   Scenario: Nonidentity partitioning is rejected during registration
-    Given pipeline SQL file partition.sql fails with Only identity partition columns
+    Given pipeline SQL file partition.sql fails with Invalid partitioning transform
       """
       CREATE MATERIALIZED VIEW output PARTITIONED BY (year(id)) AS SELECT id FROM range(2);
       """

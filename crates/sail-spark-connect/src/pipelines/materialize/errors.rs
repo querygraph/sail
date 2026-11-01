@@ -92,6 +92,17 @@ pub(super) fn missing_cluster_column(column: &str, table: &[String]) -> SparkErr
     ))
 }
 
+pub(super) fn all_partition_columns() -> SparkError {
+    Box::new(StructuredSparkError {
+        class: "org.apache.spark.sql.AnalysisException".into(),
+        condition: "ALL_PARTITION_COLUMNS_NOT_ALLOWED".into(),
+        sql_state: "KD005".into(),
+        message: "Cannot use all columns for partition columns.".into(),
+        parameters: HashMap::new(),
+    })
+    .into()
+}
+
 /// Reported by the flow, on each attempt, as Spark's table write does.
 pub(in crate::pipelines) fn missing_partition_column(
     column: &str,

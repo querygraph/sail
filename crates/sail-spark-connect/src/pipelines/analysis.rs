@@ -12,7 +12,7 @@ use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_plan::error::{PlanError, PlanResult};
 use sail_plan::resolver::scope::RelationScope;
 
-use super::graph::{Flow, GraphDefinition, Name, analysis, quoted};
+use super::graph::{Flow, GraphDefinition, Name, quoted};
 use super::schema::VirtualTableSchema;
 use crate::config::{EncoderSchemaSettings, INCOMPATIBLE_VIEW_CHECK};
 use crate::error::{SparkError, SparkResult, StructuredSparkError};
@@ -430,7 +430,9 @@ async fn analyze_queries(
                 && !plans.is_empty()
             {
                 if plans.len() != 1 {
-                    return Err(analysis("MULTIPLE_QUERIES_FOR_VIEW", quoted(&output.name)));
+                    return Err(SparkError::invalid(
+                        "requirement failed: Found multiple flows to view",
+                    ));
                 }
                 resolved.insert(output.name.clone(), plans.remove(0));
                 let streaming = graph

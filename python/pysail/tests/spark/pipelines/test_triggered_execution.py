@@ -267,11 +267,6 @@ def test_user_specified_schema_is_applied_to_table(suite):
         assert [(column.name, column.dataType, column.nullable) for column in columns] == [("x", "int", True)]
 
 
-@pytest.mark.skip(reason="calls graphExecution.stop(); a client has no stop request, and closing a session ends events")
-def test_stopping_a_pipeline_mid_execution():
-    pass
-
-
 def test_two_hop_pipeline_with_partitioned_graph(suite):
     messages = suite.run(
         """
@@ -420,11 +415,6 @@ def retry_test():
     assert error is not None
     failures = [message for message in suite.events(messages, "retry_test") if "FAILED" in message]
     assert len(failures) == 3, ("\n".join(messages), str(error))
-
-
-@pytest.mark.skip(reason="unit test of TriggeredGraphExecution.chooseRunTerminationReason over hand-built failures")
-def test_choose_run_termination_reason_surfaces_the_earliest_failure():
-    pass
 
 
 @pytest.mark.skip(reason="unit test of TriggeredGraphExecution.chooseRunTerminationReason over hand-built failures")

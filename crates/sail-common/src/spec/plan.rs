@@ -571,6 +571,10 @@ pub enum CommandNode {
         partition: Vec<(Identifier, Option<Expr>)>,
         column: Option<ObjectName>,
     },
+    ShowCreateTable {
+        table: ObjectName,
+        as_serde: bool,
+    },
     CommentOnCatalog {
         catalog: ObjectName,
         value: Option<String>,

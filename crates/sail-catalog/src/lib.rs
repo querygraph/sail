@@ -5,5 +5,6 @@ pub mod hive_format;
 pub mod lakehouse;
 pub mod manager;
 pub mod provider;
+pub mod show_create;
 pub mod temp_view;
 pub mod utils;

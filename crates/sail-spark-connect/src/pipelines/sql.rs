@@ -212,11 +212,7 @@ fn register_statement(graph: &mut PipelineGraph, statement: PipelineStatement) -
                     }) if name.parts().len() == 1 => {
                         partition_cols.push(name.parts()[0].as_ref().to_string())
                     }
-                    _ => {
-                        return Err(SparkError::invalid(
-                            "Only identity partition columns are supported in pipelines",
-                        ));
-                    }
+                    other => return Err(invalid_partition_transform(&other)),
                 }
             }
             let format = match definition.file_format {
@@ -393,6 +389,41 @@ fn with_view_columns(
         }),
         None => query,
     }
+}
+
+/// `SqlGraphRegistrationContext`, which names the transform.
+fn invalid_partition_transform(partition: &spec::PartitionColumn) -> SparkError {
+    let dotted = |parts: &[spec::Identifier]| {
+        parts
+            .iter()
+            .map(|part| part.as_ref())
+            .collect::<Vec<&str>>()
+            .join(".")
+    };
+    let attribute = |expr: &spec::Expr| match expr {
+        spec::Expr::UnresolvedAttribute { name, .. } => Some(dotted(name.parts())),
+        _ => None,
+    };
+    let transform = match partition {
+        spec::PartitionColumn::Expression(spec::Expr::UnresolvedFunction(function)) => function
+            .arguments
+            .iter()
+            .map(attribute)
+            .collect::<Option<Vec<_>>>()
+            .map(|arguments| {
+                format!(
+                    "{}({})",
+                    dotted(function.function_name.parts()),
+                    arguments.join(", ")
+                )
+            }),
+        _ => None,
+    };
+    let message = match transform {
+        Some(transform) => format!("Invalid partitioning transform ({transform})"),
+        None => "Invalid partitioning transform".to_string(),
+    };
+    SparkError::invalid(message)
 }
 
 #[cfg(test)]
