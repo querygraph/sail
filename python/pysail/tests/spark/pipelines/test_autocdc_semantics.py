@@ -266,3 +266,33 @@ def test_two_flows_in_one_pipeline_and_a_selective_full_refresh(pipeline_spark, 
     assert read("t_a") == [(1, 5)]
     assert read("t_b") == [(1, 10)]
     clean(spark)
+
+
+def test_a_mis_cased_key_fails_when_names_are_case_sensitive(cdc):
+    cdc.spark.conf.set("spark.sql.caseSensitive", "true")
+    cdc.keys = ["ID"]
+    cdc.send((1, "alice", 1, False))
+    with pytest.raises(FAILURE):
+        cdc.run()
+
+
+def test_an_upper_case_flow_runs_when_names_are_case_insensitive(cdc):
+    cdc.keys = ["ID"]
+    cdc.sequence = "SEQ"
+    cdc.arguments = {"apply_as_deletes": sf.expr("IS_DELETE"), "except_column_list": ["IS_DELETE"]}
+    cdc.send((1, "alice", 1, False), (2, "bob", 1, False))
+    cdc.run()
+    cdc.send((1, "unused", 2, True))
+    cdc.run()
+    assert cdc.target("id", "name") == [(2, "bob")]
+    assert cdc.tombstones() == [(1, 2)]
+
+
+def test_a_string_sequence_orders_as_a_string(cdc):
+    cdc.sequence = sf.col("name")
+    cdc.arguments = {"apply_as_deletes": sf.expr("is_delete"), "except_column_list": ["is_delete"]}
+    cdc.send((1, "b", 1, False))
+    cdc.run()
+    cdc.send((1, "a", 2, False))
+    cdc.run()
+    assert cdc.target("id", "name") == [(1, "b")]
