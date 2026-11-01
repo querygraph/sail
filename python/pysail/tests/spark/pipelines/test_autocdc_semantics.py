@@ -8,6 +8,8 @@ here needs a broker.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from pyspark.errors.exceptions.base import PySparkException
 from pyspark.errors.exceptions.connect import SparkConnectGrpcException
@@ -21,7 +23,13 @@ except ImportError:
 
 FAILURE = (PySparkException, SparkConnectGrpcException)
 SCHEMA = "id INT, name STRING, seq BIGINT, is_delete BOOLEAN"
-AUXILIARY = "__spark_autocdc_aux_state_target"
+# Spark 4.2.1 refuses a Delta target, whose table has no row-level operations.
+# As an oracle it runs this file over its test catalog: set this to `cat.ns1`.
+ORACLE = os.environ.get("AUTOCDC_ORACLE_NAMESPACE")
+PREFIX = f"{ORACLE}." if ORACLE else ""
+FORMAT = {} if ORACLE else {"format": "delta"}
+TARGET = f"{PREFIX}target"
+AUXILIARY = f"{PREFIX}__spark_autocdc_aux_state_target"
 
 
 class Cdc:
@@ -47,27 +55,33 @@ class Cdc:
             def changes():
                 return spark.readStream.format("parquet").schema(schema).load(landing)
 
-            dp.create_streaming_table("target", format="delta")
+            dp.create_streaming_table(TARGET, **FORMAT)
             dp.create_auto_cdc_flow(
-                target="target", source="changes", keys=self.keys, sequence_by=self.sequence, **self.arguments
+                target=TARGET, source="changes", keys=self.keys, sequence_by=self.sequence, **self.arguments
             )
         start(**options)
 
     def target(self, *columns):
-        return sorted(tuple(row) for row in self.spark.table("target").select(*columns).collect())
+        return sorted(tuple(row) for row in self.spark.table(TARGET).select(*columns).collect())
 
     def tombstones(self):
         frame = self.spark.table(AUXILIARY)
         return sorted((row["id"], row["__spark_autocdc_metadata"]["deleteSequence"]) for row in frame.collect())
 
 
+def clean(spark):
+    if ORACLE:
+        spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {ORACLE}")
+    for name in ["target", "t_a", "t_b"]:
+        spark.sql(f"DROP TABLE IF EXISTS {PREFIX}{name}")
+        spark.sql(f"DROP TABLE IF EXISTS {PREFIX}__spark_autocdc_aux_state_{name}")
+
+
 @pytest.fixture
 def cdc(pipeline_spark, pipeline_factory, tmp_path):
-    pipeline_spark.sql("DROP TABLE IF EXISTS target")
-    pipeline_spark.sql(f"DROP TABLE IF EXISTS {AUXILIARY}")
+    clean(pipeline_spark)
     yield Cdc(pipeline_spark, pipeline_factory, tmp_path)
-    pipeline_spark.sql("DROP TABLE IF EXISTS target")
-    pipeline_spark.sql(f"DROP TABLE IF EXISTS {AUXILIARY}")
+    clean(pipeline_spark)
 
 
 def test_a_tombstone_drops_a_stale_row_and_a_fresh_upsert_is_written(cdc):
@@ -135,7 +149,7 @@ def test_out_of_order_batches_converge_with_the_sequence_excluded(cdc):
         cdc.send(*batch)
         cdc.run()
     assert cdc.target("id", "name") == [(1, "v6"), (3, "c1")]
-    assert "seq" not in cdc.spark.table("target").columns
+    assert "seq" not in cdc.spark.table(TARGET).columns
 
 
 def test_a_null_sequence_fails_before_any_merge(cdc):
@@ -170,13 +184,12 @@ def test_a_sequence_expression_types_the_metadata(cdc):
     cdc.sequence = sf.col("seq").cast("int")
     cdc.send((1, "alice", 1, False))
     cdc.run()
-    metadata = cdc.spark.table("target").schema["__spark_autocdc_metadata"].dataType
+    metadata = cdc.spark.table(TARGET).schema["__spark_autocdc_metadata"].dataType
     assert metadata["upsertSequence"].dataType.simpleString() == "int"
 
 
 def test_reordering_composite_keys_is_not_drift(pipeline_spark, pipeline_factory, tmp_path):
-    pipeline_spark.sql("DROP TABLE IF EXISTS target")
-    pipeline_spark.sql(f"DROP TABLE IF EXISTS {AUXILIARY}")
+    clean(pipeline_spark)
     cdc = Cdc(pipeline_spark, pipeline_factory, tmp_path, "region STRING, id INT, name STRING, seq BIGINT")
     cdc.arguments = {}
     cdc.keys = ["id", "region"]
@@ -189,8 +202,7 @@ def test_reordering_composite_keys_is_not_drift(pipeline_spark, pipeline_factory
 
 
 def test_the_auxiliary_table_records_keys_in_declared_order(pipeline_spark, pipeline_factory, tmp_path):
-    pipeline_spark.sql("DROP TABLE IF EXISTS target")
-    pipeline_spark.sql(f"DROP TABLE IF EXISTS {AUXILIARY}")
+    clean(pipeline_spark)
     cdc = Cdc(pipeline_spark, pipeline_factory, tmp_path, "id INT, region STRING, seq BIGINT")
     cdc.arguments = {}
     cdc.keys = ["region", "id"]
@@ -200,8 +212,7 @@ def test_the_auxiliary_table_records_keys_in_declared_order(pipeline_spark, pipe
 
 
 def test_special_characters_in_key_names_survive_two_runs(pipeline_spark, pipeline_factory, tmp_path):
-    pipeline_spark.sql("DROP TABLE IF EXISTS target")
-    pipeline_spark.sql(f"DROP TABLE IF EXISTS {AUXILIARY}")
+    clean(pipeline_spark)
     schema = "`it's` INT, `name with spaces` INT, seq BIGINT"
     cdc = Cdc(pipeline_spark, pipeline_factory, tmp_path, schema)
     cdc.arguments = {}
@@ -210,7 +221,7 @@ def test_special_characters_in_key_names_survive_two_runs(pipeline_spark, pipeli
     cdc.run()
     cdc.send((1, 2, 2))
     cdc.run()
-    assert [row.seq for row in pipeline_spark.table("target").collect()] == [2]
+    assert [row.seq for row in pipeline_spark.table(TARGET).collect()] == [2]
 
 
 def two_targets(spark, factory, left, right, **options):
@@ -225,31 +236,33 @@ def two_targets(spark, factory, left, right, **options):
         def right_changes():
             return spark.readStream.format("parquet").schema("id INT, seq BIGINT").load(right)
 
-        dp.create_streaming_table("t_a", format="delta")
-        dp.create_streaming_table("t_b", format="delta")
-        dp.create_auto_cdc_flow(target="t_a", source="left_changes", keys=["id"], sequence_by="seq", name="flow_a")
-        dp.create_auto_cdc_flow(target="t_b", source="right_changes", keys=["id"], sequence_by="seq", name="flow_b")
+        dp.create_streaming_table(f"{PREFIX}t_a", **FORMAT)
+        dp.create_streaming_table(f"{PREFIX}t_b", **FORMAT)
+        dp.create_auto_cdc_flow(
+            target=f"{PREFIX}t_a", source="left_changes", keys=["id"], sequence_by="seq", name="flow_a"
+        )
+        dp.create_auto_cdc_flow(
+            target=f"{PREFIX}t_b", source="right_changes", keys=["id"], sequence_by="seq", name="flow_b"
+        )
     start(**options)
 
 
 def test_two_flows_in_one_pipeline_and_a_selective_full_refresh(pipeline_spark, pipeline_factory, tmp_path):
     spark = pipeline_spark
-    for table in ["t_a", "t_b"]:
-        spark.sql(f"DROP TABLE IF EXISTS {table}")
+    clean(spark)
     left, right = str(tmp_path / "left"), str(tmp_path / "right")
     write = lambda path, *rows: spark.createDataFrame(list(rows), "id INT, seq BIGINT").write.mode("append").parquet(path)  # noqa: E501
     write(left, (1, 10))
     write(right, (1, 10))
     two_targets(spark, pipeline_factory, left, right)
-    read = lambda table: sorted(tuple(row) for row in spark.table(table).select("id", "seq").collect())
+    read = lambda table: sorted(tuple(row) for row in spark.table(f"{PREFIX}{table}").select("id", "seq").collect())
     assert (read("t_a"), read("t_b")) == ([(1, 10)], [(1, 10)])
 
     # Only the refreshed target forgets the watermark of 10.
     fresh = str(tmp_path / "fresh")
     write(fresh, (1, 5))
     write(right, (1, 5))
-    two_targets(spark, pipeline_factory, fresh, right, full_refresh=["t_a"], refresh=["t_b"])
+    two_targets(spark, pipeline_factory, fresh, right, full_refresh=[f"{PREFIX}t_a"], refresh=[f"{PREFIX}t_b"])
     assert read("t_a") == [(1, 5)]
     assert read("t_b") == [(1, 10)]
-    for table in ["t_a", "t_b"]:
-        spark.sql(f"DROP TABLE IF EXISTS {table}")
+    clean(spark)
