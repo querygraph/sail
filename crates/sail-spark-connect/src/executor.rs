@@ -3,7 +3,8 @@ use std::io::Cursor;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use datafusion::arrow::array::RecordBatch;
@@ -13,14 +14,14 @@ use datafusion::execution::SendableRecordBatchStream;
 use fastrace::Span;
 use fastrace::future::FutureExt;
 use futures::stream::StreamExt;
-use futures::{Stream, stream};
+use futures::{Stream, future, stream};
 use sail_common_datafusion::schema::{normalize_record_batch, record_batch_has_views};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-use crate::error::{SparkError, SparkResult};
+use crate::error::{SparkError, SparkResult, session_closed_error};
 use crate::schema::to_spark_schema;
 use crate::spark::connect::execute_plan_response::{ArrowBatch, SqlCommandResult};
 use crate::spark::connect::{
@@ -115,6 +116,7 @@ pub(crate) struct Executor {
     /// Closed when the most recently started task has finished. Unlike the task handle, this
     /// is not moved out while pausing, so it cannot be lost with a caller that was canceled.
     finished: Mutex<Option<watch::Receiver<()>>>,
+    closure: Arc<ExecutorClosure>,
 }
 
 enum ExecutorState {
@@ -140,8 +142,39 @@ enum ExecutorState {
 enum ExecutorSignal {
     /// Keep the task context, since the client may reattach.
     Pause,
-    /// Discard the task context, and tell the client that the session was closed.
-    Close(SparkError),
+    /// Discard the task context, since the session was closed.
+    Close,
+}
+
+/// How a client learns that its operation was stopped by closing the session.
+///
+/// This does not go through the output channel: that channel can be full, and closing the
+/// session must not wait for a client to read it. The client receives this after the outputs
+/// that were already sent. Without this, it would see the end of the stream, as if the
+/// operation had finished.
+#[derive(Default)]
+struct ExecutorClosure {
+    /// The session, which is set when closing is requested.
+    session_id: OnceLock<String>,
+    /// Whether the task stopped before finishing. A task that finished is not affected.
+    interrupted: AtomicBool,
+}
+
+impl ExecutorClosure {
+    fn is_requested(&self) -> bool {
+        self.session_id.get().is_some()
+    }
+
+    fn interrupt(&self) {
+        self.interrupted.store(true, Ordering::Release);
+    }
+
+    fn error(&self) -> Option<SparkError> {
+        if !self.interrupted.load(Ordering::Acquire) {
+            return None;
+        }
+        self.session_id.get().map(|x| session_closed_error(x))
+    }
 }
 
 struct ExecutorTask {
@@ -257,6 +290,7 @@ impl Executor {
         Self {
             metadata,
             finished: Mutex::new(None),
+            closure: Default::default(),
             state: Mutex::new(ExecutorState::Pending {
                 context: ExecutorTaskContext {
                     stream,
@@ -277,6 +311,7 @@ impl Executor {
         Self {
             metadata,
             finished: Mutex::new(None),
+            closure: Default::default(),
             state: Mutex::new(ExecutorState::Completed {
                 buffer: Arc::new(Mutex::new(buffer)),
             }),
@@ -421,15 +456,15 @@ impl Executor {
         listener: oneshot::Receiver<ExecutorSignal>,
         tx: mpsc::Sender<SparkResult<ExecutorOutput>>,
         reattachable: bool,
+        closure: Arc<ExecutorClosure>,
     ) -> ExecutorTaskResult {
         let out = tokio::select! {
             x = Executor::run_internal(&mut context, &tx, reattachable) => x,
             signal = listener => {
                 return match signal {
-                    Ok(ExecutorSignal::Close(error)) => {
+                    Ok(ExecutorSignal::Close) => {
                         drop(context);
-                        // The client may not be reading, and closing must not wait for it.
-                        let _ = tx.try_send(Err(error));
+                        closure.interrupt();
                         ExecutorTaskResult::Completed
                     }
                     Ok(ExecutorSignal::Pause) | Err(_) => ExecutorTaskResult::Paused(context),
@@ -438,6 +473,12 @@ impl Executor {
         };
         match out {
             Ok(()) => ExecutorTaskResult::Completed,
+            // Closing the session cancels the job, so this is a consequence of that.
+            Err(_) if closure.is_requested() => {
+                drop(context);
+                closure.interrupt();
+                ExecutorTaskResult::Completed
+            }
             Err(SparkError::SendError(_)) => ExecutorTaskResult::Paused(context),
             Err(e) => {
                 let _ = tx.send(Err(e)).await;
@@ -487,11 +528,12 @@ impl Executor {
         let reattachable = self.metadata.reattachable;
         let (finished_tx, finished) = watch::channel(());
         *self.finished.lock()? = Some(finished);
+        let closure = self.closure.clone();
         let handle = {
             let span = { Span::enter_with_parent("Executor::run", &span) };
             tokio::spawn(async move {
                 let _finished = finished_tx;
-                Executor::run(context, listener, tx, reattachable)
+                Executor::run(context, listener, tx, reattachable, closure)
                     .in_span(span)
                     .await
             })
@@ -504,7 +546,10 @@ impl Executor {
             },
             span,
         };
-        Ok(Box::pin(ReceiverStream::new(rx)))
+        let closure = self.closure.clone();
+        let closed =
+            stream::once(async move { closure.error().map(Err) }).filter_map(future::ready);
+        Ok(Box::pin(ReceiverStream::new(rx).chain(closed)))
     }
 
     pub(crate) async fn pause_if_running(&self) -> SparkResult<()> {
@@ -537,8 +582,8 @@ impl Executor {
     }
 
     /// Stop the executor permanently, without waiting for its task. See [`Self::closed`].
-    /// `error` is sent to the client that is receiving the output, if there is one.
-    pub(crate) fn request_close(&self, error: SparkError) -> SparkResult<()> {
+    pub(crate) fn request_close(&self, session_id: &str) -> SparkResult<()> {
+        let _ = self.closure.session_id.set(session_id.to_string());
         let previous = {
             let mut state = self.state.lock()?;
             mem::replace(state.deref_mut(), ExecutorState::Closed)
@@ -546,7 +591,7 @@ impl Executor {
         match previous {
             ExecutorState::Running { task, .. } => {
                 // Dropping the handle does not cancel the task, and `finished` tracks it.
-                let _ = task.notifier.send(ExecutorSignal::Close(error));
+                let _ = task.notifier.send(ExecutorSignal::Close);
             }
             // Dropping a pending context here disposes of its stream outside of the lock.
             ExecutorState::Pending { .. }

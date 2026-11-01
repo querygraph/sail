@@ -17,6 +17,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 const BOUND: Duration = Duration::from_secs(10);
 
 fn session() -> SparkResult<Arc<SparkSession>> {
+    pyo3::Python::initialize();
     Ok(Arc::new(SparkSession::try_new(
         "s".to_string(),
         "u".to_string(),
@@ -96,6 +97,50 @@ async fn closing_stops_a_running_executor_and_tells_its_client() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_client_behind_a_full_channel_still_learns_that_the_session_closed() -> TestResult {
+    let spark = session()?;
+    // The first output fills the channel, and nothing reads it until after the close.
+    let outputs = stream::once(async { Ok(ExecutorOutput::complete()) }).chain(stream::pending());
+    let executor = Executor::with_outputs(
+        ExecutorMetadata {
+            operation_id: "op".to_string(),
+            tags: vec![],
+            reattachable: false,
+        },
+        Box::pin(outputs),
+        Duration::from_secs(3600),
+    );
+    let mut output = spark.add_executor(executor)?.start()?;
+    tokio::task::yield_now().await;
+    spark.begin_close_operations()?;
+    timeout(BOUND, spark.wait_operations_closed()).await??;
+    assert!(output.next().await.ok_or("no output")?.is_ok());
+    assert_closed(output.next().await.ok_or("the stream ended silently")?);
+    assert!(output.next().await.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_operation_that_finished_is_not_reported_as_closed() -> TestResult {
+    let spark = session()?;
+    let executor = Executor::with_outputs(
+        ExecutorMetadata {
+            operation_id: "op".to_string(),
+            tags: vec![],
+            reattachable: false,
+        },
+        Box::pin(stream::once(async { Ok(ExecutorOutput::complete()) })),
+        Duration::from_secs(3600),
+    );
+    let mut output = spark.add_executor(executor)?.start()?;
+    assert!(output.next().await.ok_or("no output")?.is_ok());
+    assert!(output.next().await.is_none());
+    spark.begin_close_operations()?;
+    timeout(BOUND, spark.wait_operations_closed()).await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn closing_does_not_depend_on_a_client_reading_the_output() -> TestResult {
     let spark = session()?;
     // The output of this executor can never be sent, since nothing reads it.
@@ -108,7 +153,7 @@ async fn closing_does_not_depend_on_a_client_reading_the_output() -> TestResult 
 #[tokio::test]
 async fn a_closed_executor_cannot_be_reattached() -> TestResult {
     let executor = pending_executor(true);
-    executor.request_close(session_closed_error("s"))?;
+    executor.request_close("s")?;
     assert!(executor.start().is_err());
     Ok(())
 }
