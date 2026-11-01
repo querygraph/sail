@@ -3,14 +3,17 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::execution::TaskContext;
 use datafusion::execution::cache::TableScopedPath;
+use datafusion_common::DataFusionError;
 use sail_common_datafusion::array::serde::ArrowSerializer;
 use sail_common_datafusion::catalog::{FunctionStatus, LakehouseOperation, TableKind};
 use sail_common_datafusion::datasource::{DataSourceRegistry, is_lakehouse_format};
+use sail_common_datafusion::error::CommitStateUnknownError;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::lakesource::{
     LakeSourceCreateTableColumn, LakeSourceCreateTableInfo, LakeSourceCreateTableResult,
 };
 use sail_common_datafusion::session::plan::PlanService;
+use sail_common_datafusion::task_resources::TaskResourceScope;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CatalogError, CatalogObject, CatalogResult};
@@ -173,6 +176,19 @@ pub enum CatalogCommand {
 pub enum CatalogTableFunction {
     // We do not support any kind of table functions yet.
     // PySpark UDTF is registered as a scalar UDF.
+}
+
+/// An interrupted owner means that the truncation may have happened: do not report it as a
+/// failure that can be retried. A refused admission is an ordinary error, since nothing ran.
+fn truncate_owner_error(error: DataFusionError) -> CatalogError {
+    let unknown = matches!(&error, DataFusionError::Collection(errors) if errors.iter().any(|x| {
+        matches!(x, DataFusionError::External(e) if e.is::<CommitStateUnknownError>())
+    }));
+    if unknown {
+        CatalogError::CommitStateUnknown(CommitStateUnknownError(error.to_string()))
+    } else {
+        CatalogError::External(error.to_string())
+    }
 }
 
 impl CatalogCommand {
@@ -880,7 +896,7 @@ impl CatalogCommand {
                         )));
                     }
                     let listing_dir = dir.clone();
-                    tokio::task::spawn_blocking(move || -> CatalogResult<()> {
+                    let truncate = move || -> CatalogResult<()> {
                         // Like Spark, recreate the directory if it is gone.
                         if !dir.exists() {
                             return std::fs::create_dir_all(&dir).map_err(|e| {
@@ -920,11 +936,21 @@ impl CatalogCommand {
                                 dir.display()
                             ))
                         })
-                    })
-                    .await
-                    .map_err(|e| {
-                        CatalogError::External(format!("TRUNCATE TABLE task failed: {e}"))
-                    })??;
+                    };
+                    let run = async move {
+                        tokio::task::spawn_blocking(truncate).await.map_err(|e| {
+                            CatalogError::External(format!("TRUNCATE TABLE task failed: {e}"))
+                        })?
+                    };
+                    // Blocking work cannot be canceled, so it must be owned by the job:
+                    // stopping the job has to wait for it, even if the command is dropped.
+                    match ctx.extension::<TaskResourceScope>() {
+                        Ok(resources) => resources
+                            .run_mutation(move |_| async move { Ok(run.await) })
+                            .await
+                            .map_err(truncate_owner_error)??,
+                        Err(_) => run.await?,
+                    }
                     // Spark's `TruncateTableCommand` refreshes the table after the
                     // data is gone. Sail serves directory listings from the runtime's
                     // list-files cache, so drop this directory's entry; otherwise a

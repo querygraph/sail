@@ -7,10 +7,12 @@ use datafusion::execution::object_store::{
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::TryStreamExt;
+use sail_common_datafusion::session::job::JobRunner;
 use sail_common_datafusion::task_resources::ScopedTaskContext;
 use sail_physical_plan::remote_checkpoint::RemoteCheckpointWriteExec;
 
 use super::*;
+use crate::job_runner::LocalJobRunner;
 
 async fn checkpoint_writer_loss(parallel: bool) -> TestResult {
     let raw = Arc::new(Provider::default());
@@ -173,5 +175,91 @@ async fn checkpoint_capacity_refusal_joins_abort_without_publication() -> TestRe
                 .is_empty()
         );
     }
+    Ok(())
+}
+
+/// The whole path: a real checkpoint writer in a real local job, whose caller goes away while
+/// the provider holds the commit. Removing the prefix after stop must be safe.
+#[tokio::test]
+async fn local_stop_waits_for_a_checkpoint_commit_whose_caller_is_gone() -> TestResult {
+    let raw = Arc::new(Provider::default());
+    let mut config = SessionConfig::new();
+    config
+        .options_mut()
+        .execution
+        .objectstore_writer_buffer_size = 256;
+    let session = SessionContext::new_with_config(config);
+    let url = ObjectStoreUrl::parse("memory://local-checkpoint")?;
+    session
+        .runtime_env()
+        .register_object_store(url.as_ref(), raw.clone());
+    let (complete, completing, release_complete) = Gate::new();
+    raw.gates.lock().map_err(|_| "gates")?.complete = Some(complete);
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "value",
+        DataType::Int32,
+        false,
+    )]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1, 2]))])?;
+    let input = MemorySourceConfig::try_new_exec(&[vec![batch]], schema.clone(), None)?;
+    let prefix = Path::from("checkpoint/local");
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(RemoteCheckpointWriteExec::try_new(
+        input,
+        url,
+        prefix.clone(),
+        schema,
+        None,
+    )?);
+    let runner = Arc::new(LocalJobRunner::default());
+    let stream = JobRunner::execute(runner.as_ref(), &session, plan).await?;
+    let caller = tokio::spawn(stream.try_collect::<Vec<_>>());
+    if let Err(error) = timeout(Duration::from_secs(10), completing).await? {
+        return Err(format!("completion not reached: {error}; {:?}", caller.await?).into());
+    }
+    caller.abort();
+    assert!(caller.await.is_err_and(|e| e.is_cancelled()));
+
+    let mut stop = Box::pin(JobRunner::stop(runner.as_ref()));
+    let pending = timeout(Duration::from_millis(50), stop.as_mut()).await;
+    assert!(pending.is_err(), "stop finished before the held commit");
+    assert!(
+        raw.inner
+            .list(Some(&prefix))
+            .try_collect::<Vec<_>>()
+            .await?
+            .is_empty()
+    );
+    release_complete.send(()).map_err(|_| "completion lost")?;
+    timeout(Duration::from_secs(10), stop).await??;
+    // The object is visible now, so a prefix deletion from here finds it.
+    let files = raw
+        .inner
+        .list(Some(&prefix))
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert_eq!(files.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_job_reads_and_unrelated_stores_are_not_routed_through_the_owner() -> TestResult {
+    let raw = Arc::new(Provider::default());
+    let session = SessionContext::new();
+    let url = ObjectStoreUrl::parse("memory://unrelated")?;
+    session
+        .runtime_env()
+        .register_object_store(url.as_ref(), raw.clone());
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "value",
+        DataType::Int32,
+        false,
+    )]));
+    let input = MemorySourceConfig::try_new_exec(&[vec![]], schema, None)?;
+    let runner = LocalJobRunner::default();
+    let stream = JobRunner::execute(&runner, &session, input).await?;
+    stream.try_collect::<Vec<_>>().await?;
+    let resolved = session.runtime_env().object_store(&url)?;
+    let expected: Arc<dyn ObjectStore> = raw.clone();
+    assert!(Arc::ptr_eq(&resolved, &expected));
     Ok(())
 }
