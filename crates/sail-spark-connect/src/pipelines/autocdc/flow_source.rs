@@ -207,7 +207,21 @@ impl FileLeaf {
         let source = self.source()?;
         let (listed, new) = if is_delta(&source.format) {
             let new = self.delta_ranges(ctx, source, &known).await?;
-            (known.iter().chain(&new).cloned().collect(), new)
+            // A vacuum can take the first range's files, and a reset needs them.
+            let origin = known.first().or(new.first());
+            let readable = match origin {
+                Some(entry) => {
+                    let stream = self.delta_stream(ctx, source).await?;
+                    stream.read(Some(&decode_range(entry)?)).await.is_ok()
+                }
+                None => true,
+            };
+            let listed: BTreeSet<String> = if readable {
+                known.iter().chain(&new).cloned().collect()
+            } else {
+                BTreeSet::new()
+            };
+            (listed, new)
         } else {
             let listed = data_files(ctx, &source.location).await?;
             let seen: BTreeSet<&String> = known.iter().collect();

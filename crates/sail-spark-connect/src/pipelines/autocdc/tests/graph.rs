@@ -166,7 +166,6 @@ fn auto_cdc_flow_targeting_a_materialized_view_is_rejected() -> SparkResult<()> 
 fn auto_cdc_flow_targeting_a_persisted_view_is_rejected() -> SparkResult<()> {
     // Spark registers a persisted view without a query; Sail's SQL path is
     // the only producer of persisted views, so the output is adjusted here.
-    // Parameters are not checked: Sail's existing arm reports the condition only.
     let mut graph = graph();
     define_output(&mut graph, "target_view", OutputType::MaterializedView)?;
     let query = definition(details("events", &["id"], "seq"))?.query();
@@ -183,10 +182,15 @@ fn auto_cdc_flow_targeting_a_persisted_view_is_rejected() -> SparkResult<()> {
     }
     define_cdc_flow(&mut graph, "target_view", "target_view", "events")?;
     let message = format!("{:?}", post_resolution_checks(&graph));
-    assert!(
-        message.contains("INVALID_FLOW_QUERY_TYPE.STREAMING_RELATION_FOR_PERSISTED_VIEW"),
-        "{message}"
-    );
+    for expected in [
+        "INVALID_FLOW_QUERY_TYPE.STREAMING_RELATION_FOR_PERSISTED_VIEW",
+        "42000",
+        "flowIdentifier",
+        "viewIdentifier",
+        "target_view",
+    ] {
+        assert!(message.contains(expected), "{expected} in {message}");
+    }
     Ok(())
 }
 

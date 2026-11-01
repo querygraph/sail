@@ -243,7 +243,6 @@ async fn extend_casts_the_sequence_fields_to_the_resolved_type() -> TestResult {
 // Spark condition. Pinned as a diagnostic gap, not a behaviour difference.
 #[tokio::test]
 async fn extend_fails_when_the_sequencing_column_cannot_be_cast() -> TestResult {
-    let ctx = SessionContext::new();
     let batch = scan(
         "batch",
         vec![
@@ -251,11 +250,15 @@ async fn extend_fails_when_the_sequencing_column_cannot_be_cast() -> TestResult 
             ("seq", metadata(&[(Some(1), Some(0))])),
         ],
     )?;
-    let outcome = match extend_with_metadata(batch, col("seq"), None, &DataType::Int64) {
-        Ok(plan) => answer(&ctx, plan).await.map(|_| ()),
-        Err(error) => Err(error),
-    };
-    assert!(outcome.is_err());
+    let message = format!(
+        "{:?}",
+        extend_with_metadata(batch, col("seq"), None, &DataType::Int64)
+    );
+    assert!(
+        message.contains("DATATYPE_MISMATCH.CAST_WITHOUT_SUGGESTION"),
+        "{message}"
+    );
+    assert!(message.contains("42K09"), "{message}");
     Ok(())
 }
 

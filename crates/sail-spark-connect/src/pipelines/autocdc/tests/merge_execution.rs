@@ -792,6 +792,39 @@ async fn target_key_comparison_respects_case_sensitivity() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_mis_cased_key_fails_a_case_sensitive_merge() -> TestResult {
+    let (ctx, config) = context()?;
+    create_seeded(
+        &ctx,
+        config.clone(),
+        &target_name(),
+        target_columns(),
+        Some(valued(&[(1, "old", (None, Some(10)))])?),
+    )
+    .await?;
+    let sensitive = Arc::new(PlanConfig {
+        case_sensitive: true,
+        ..config.as_ref().clone()
+    });
+    let refused = merge_target(
+        &ctx,
+        sensitive,
+        &[key("ID")?],
+        valued(&[(1, "new", (None, Some(20)))])?,
+        Case::Sensitive,
+    )
+    .await;
+    let message = format!("{:?}", refused.err().ok_or("the merge must fail")?);
+    assert!(message.contains("UNRESOLVED_COLUMN"), "{message}");
+    assert_eq!(
+        rows(&ctx, config.clone(), &target_name()).await?,
+        vec![row(&["1", "old", &meta("NULL", "10")])]
+    );
+    finish(&ctx).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn target_merge_is_idempotent_across_a_microbatch() -> TestResult {
     let (ctx, config) = context()?;
     create_seeded(

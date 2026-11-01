@@ -17,6 +17,7 @@
 //! filtered before the pick. The struct is Sail's `StructFunction`, which
 //! names fields exactly, so literal-dot column names survive the round trip.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::functions::core::expr_fn::get_field;
@@ -27,7 +28,7 @@ use datafusion::logical_expr::{
 use sail_function::aggregate::max_min_by::MaxByFunction;
 use sail_function::scalar::struct_function::StructFunction;
 
-use crate::error::SparkResult;
+use crate::error::{SparkResult, StructuredSparkError};
 
 /// `Scd1BatchProcessor.winningRowColName`: the temporary column holding the
 /// packed winning row. Spark reports `AMBIGUOUS_REFERENCE` when a key column
@@ -52,6 +53,21 @@ pub(super) fn deduplicate(
         .iter()
         .map(|field| field.name().clone())
         .collect();
+    // A client cannot reach this: the reserved prefix is refused first.
+    if names.iter().any(|name| name == WINNING_ROW_COLUMN) {
+        let name = format!("`{WINNING_ROW_COLUMN}`");
+        return Err(Box::new(StructuredSparkError {
+            class: "org.apache.spark.sql.AnalysisException".into(),
+            condition: "AMBIGUOUS_REFERENCE".into(),
+            sql_state: "42704".into(),
+            message: format!("Reference {name} is ambiguous, could be: [{name}, {name}]."),
+            parameters: HashMap::from([
+                ("name".into(), name.clone()),
+                ("referenceNames".into(), format!("[{name}, {name}]")),
+            ]),
+        })
+        .into());
+    }
     let group: Vec<Expr> = keys.iter().map(|&index| column(index)).collect();
     let row = Expr::ScalarFunction(ScalarFunction {
         func: Arc::new(ScalarUDF::from(StructFunction::new(names.clone()))),
