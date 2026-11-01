@@ -139,6 +139,12 @@ impl BoundedSource for IggyBoundedSource {
         self.call(async move { Ok(cursor(earliest(broker.as_ref(), &partition).await?)) })
     }
 
+    fn retains_origin(&self, partition: &PartitionId) -> Result<bool, SourceError> {
+        let broker = self.broker.clone();
+        let partition = partition.clone();
+        self.call(async move { Ok(earliest(broker.as_ref(), &partition).await? == 0) })
+    }
+
     fn frontier(&self, partition: &PartitionId) -> Result<Cursor, SourceError> {
         let broker = self.broker.clone();
         let partition = partition.clone();

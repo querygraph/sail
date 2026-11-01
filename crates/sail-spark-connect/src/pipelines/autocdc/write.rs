@@ -498,6 +498,19 @@ pub(super) async fn merge_auxiliary(
     run_command(ctx, config, spec::CommandNode::MergeInto(merge), None).await
 }
 
+/// Delete every row of `table` under a fence. The caller has published an
+/// empty reconciled view.
+pub(super) async fn truncate_fenced(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    table: &Name,
+    fenced_write: spec::FencedWrite,
+) -> SparkResult<()> {
+    let mut merge = merge::reset_merge(table, RECONCILED_VIEW);
+    merge.fenced_write = Some(fenced_write);
+    run_command(ctx, config, spec::CommandNode::MergeInto(merge), None).await
+}
+
 pub(super) async fn merge_destination(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,

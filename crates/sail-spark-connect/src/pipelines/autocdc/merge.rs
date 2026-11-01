@@ -166,6 +166,39 @@ pub(super) fn auxiliary_merge(
     }
 }
 
+/// A fenced truncate: an empty source matches nothing, so every row of the
+/// table is deleted. A plain truncate cannot carry a fence.
+pub(super) fn reset_merge(table: &[String], empty_view: &str) -> spec::MergeInto {
+    spec::MergeInto {
+        target: spec::ObjectName::from(table.to_vec()),
+        target_alias: Some(DESTINATION.into()),
+        source: spec::MergeSource::Query {
+            input: Box::new(spec::QueryPlan::new(spec::QueryNode::Read {
+                read_type: spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
+                    name: spec::ObjectName::bare(empty_view),
+                    temporal: None,
+                    sample: None,
+                    options: vec![],
+                })),
+                is_streaming: false,
+            })),
+            alias: Some(MICROBATCH.into()),
+        },
+        on_condition: spec::ExprWithSource {
+            expr: spec::Expr::Literal(spec::Literal::Boolean { value: Some(false) }),
+            source: None,
+        },
+        clauses: vec![spec::MergeClause::NotMatchedBySource(
+            spec::MergeNotMatchedBySourceClause {
+                condition: None,
+                action: spec::MergeNotMatchedBySourceAction::Delete,
+            },
+        )],
+        with_schema_evolution: false,
+        fenced_write: None,
+    }
+}
+
 /// `mergeMicrobatchOntoTarget`: the reconciled view merged into the
 /// destination on the keys; a delete newer than the target's upsert deletes,
 /// an upsert at or above it updates every non-key column, and an unmatched

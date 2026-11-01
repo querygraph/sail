@@ -30,7 +30,7 @@ use sail_sdp_control::identity::{
 };
 use sail_sdp_control::records::{FlowCheckpoint, Intent, IntentKind, ReceiptKind};
 use sail_sdp_control::store::Store;
-use sail_sdp_control::transitions::Outcome;
+use sail_sdp_control::transitions::{Outcome, ResetIdentities};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use url::Url;
@@ -39,13 +39,14 @@ use super::authority::{ControlCommits, effect_step_name};
 use super::run::{FlowRun, flow_schema};
 use super::write::{
     PreparedBatch, ensure_auxiliary_table, merge_auxiliary, merge_destination, prepare_microbatch,
-    publish_prepared, read_table,
+    publish_prepared, read_table, truncate_fenced,
 };
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::graph::Name;
 use crate::pipelines::streaming::binding::SourceBinding;
 use crate::pipelines::streaming::intent::{BatchIntent, Progress, RunFrontier, next_intent};
 use crate::pipelines::streaming::lower::{Inputs, lower};
+use crate::pipelines::streaming::source::BoundedSource;
 
 /// Where a run stands, for the crash tests. Production runs pass no hook.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +56,10 @@ pub(super) enum Stage {
     AuxiliaryDone,
     TargetDone,
     Completed,
+    /// `BeginReset` is durable and neither reset effect has run.
+    ResetBegun,
+    /// The target is truncated and the auxiliary table is not.
+    ResetTargetDone,
 }
 
 type StageHook<'a> = &'a (dyn Fn(Stage, u64) -> SparkResult<()> + Send + Sync);
@@ -64,6 +69,8 @@ pub(super) struct DurableRun<'a, S> {
     pub control: Arc<Control<S>>,
     pub owner: &'a str,
     pub lease_ms: i64,
+    /// Rebuild the target from the source's origin before reading it.
+    pub reset: bool,
     pub stage_hook: Option<StageHook<'a>>,
 }
 
@@ -73,6 +80,8 @@ pub(in crate::pipelines) struct DurableOutcome {
     pub batches: u64,
     /// The unfinished batch it found and finished, if any.
     pub recovered: Option<u64>,
+    /// The generation a reset finished by this run enabled, if any.
+    pub reset: Option<u64>,
 }
 
 fn control_error(outcome: Outcome) -> SparkError {
@@ -83,8 +92,11 @@ fn encoding_error(error: impl std::fmt::Display) -> SparkError {
     SparkError::internal(format!("control record encoding: {error}"))
 }
 
-fn prepared_path(checkpoint: &Path, sequence: u64) -> PathBuf {
+/// `checkpoint` is a `<flow>/<n>` directory. The authority owns `n`, so a
+/// reset moves to the number it reserved, not the highest found on disk.
+fn prepared_path(checkpoint: &Path, index: u64, sequence: u64) -> PathBuf {
     checkpoint
+        .with_file_name(index.to_string())
         .join("prepared")
         .join(format!("{sequence}.arrow"))
 }
@@ -268,25 +280,7 @@ async fn enroll<S: Store>(
         .await
         .map_err(control_error)?
         .ok_or_else(|| SparkError::internal("enrolled target has no guard"))?;
-    let existing = control
-        .checkpoint(&target, guard.generation, &flow)
-        .await
-        .map_err(control_error)?;
-    if existing.is_none() {
-        let progress = Progress::default();
-        control
-            .put_checkpoint(&FlowCheckpoint {
-                target: target.clone(),
-                generation: guard.generation,
-                flow: flow.clone(),
-                definition_digest: digest("flow", &flow.0).map_err(encoding_error)?,
-                next_batch_sequence: 0,
-                progress_digest: digest("progress", &progress).map_err(encoding_error)?,
-                progress: serde_json::to_value(&progress).map_err(encoding_error)?,
-            })
-            .await
-            .map_err(control_error)?;
-    }
+    ensure_checkpoint(control, &target, guard.generation, &flow).await?;
     Ok(Enrolled {
         target,
         flow,
@@ -302,6 +296,78 @@ async fn enroll<S: Store>(
             url: sink_url,
         },
     })
+}
+
+/// Give the flow a checkpoint at the start of the source in `generation`,
+/// unless it has one.
+async fn ensure_checkpoint<S: Store>(
+    control: &Control<S>,
+    target: &TargetKey,
+    generation: u64,
+    flow: &FlowKey,
+) -> SparkResult<()> {
+    let existing = control
+        .checkpoint(target, generation, flow)
+        .await
+        .map_err(control_error)?;
+    if existing.is_some() {
+        return Ok(());
+    }
+    let progress = Progress::default();
+    control
+        .put_checkpoint(&FlowCheckpoint {
+            target: target.clone(),
+            generation,
+            flow: flow.clone(),
+            definition_digest: digest("flow", &flow.0).map_err(encoding_error)?,
+            next_batch_sequence: 0,
+            progress_digest: digest("progress", &progress).map_err(encoding_error)?,
+            progress: serde_json::to_value(&progress).map_err(encoding_error)?,
+        })
+        .await
+        .map_err(control_error)
+}
+
+/// Refuse a reset the source cannot serve, before anything is fenced or
+/// truncated: a new checkpoint is not permission to start at whatever the
+/// source still retains.
+fn check_reset_origin(source: &dyn BoundedSource) -> SparkResult<()> {
+    for partition in source.describe()?.partitions {
+        if !source.retains_origin(&partition.id)? {
+            return Err(SparkError::invalid(format!(
+                "full refresh needs the whole history of the source, and partition {} no longer \
+                 retains its first position",
+                partition.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn reset_intent(enrolled: &Enrolled, generation: u64) -> SparkResult<Intent> {
+    let id = IntentId::reset(&enrolled.target, generation);
+    let request = json!({"reset": id.0});
+    Ok(Intent {
+        kind: IntentKind::Reset,
+        target: enrolled.target.clone(),
+        generation,
+        flow: enrolled.flow.clone(),
+        batch_sequence: 0,
+        request_digest: digest("reset-intent", &request).map_err(encoding_error)?,
+        request,
+        start_progress_digest: String::new(),
+        end_progress: Value::Null,
+        end_progress_digest: String::new(),
+        prepared_digest: None,
+        id,
+    })
+}
+
+fn batch_tables(enrolled: &Enrolled) -> [(&EffectTable, EffectStep); 2] {
+    [
+        (&enrolled.auxiliary, EffectStep::Auxiliary),
+        (&enrolled.destination, EffectStep::Target),
+    ]
 }
 
 fn sealed_intent(
@@ -370,13 +436,10 @@ async fn publish_receipts<S: Store>(
     ctx: &SessionContext,
     control: &Control<S>,
     intent: &IntentId,
-    tables: [&EffectTable; 2],
+    tables: [(&EffectTable, EffectStep); 2],
 ) -> SparkResult<()> {
-    for table in tables {
-        let receipt = control
-            .receipt(intent, table.step)
-            .await
-            .map_err(control_error)?;
+    for (table, step) in tables {
+        let receipt = control.receipt(intent, step).await.map_err(control_error)?;
         let Some(ReceiptKind::Data { ratified_version }) = receipt.map(|receipt| receipt.kind)
         else {
             continue;
@@ -432,7 +495,17 @@ impl<S: Store> DurableRun<'_, S> {
         enrolled: &Enrolled,
         intent: &Intent,
     ) -> SparkResult<(PreparedBatch, String)> {
-        let path = prepared_path(self.run.checkpoint, intent.batch_sequence);
+        let guard = self
+            .control
+            .guard(&enrolled.target)
+            .await
+            .map_err(control_error)?
+            .ok_or_else(|| SparkError::internal("enrolled target has no guard"))?;
+        let path = prepared_path(
+            self.run.checkpoint,
+            guard.checkpoint_index,
+            intent.batch_sequence,
+        );
         if let Some(digest) = &intent.prepared_digest {
             return Ok((restore(&path, digest)?, digest.clone()));
         }
@@ -497,7 +570,6 @@ impl<S: Store> DurableRun<'_, S> {
     ) -> SparkResult<()> {
         let control = &self.control;
         let sequence = intent.batch_sequence;
-        let tables = [&enrolled.auxiliary, &enrolled.destination];
         self.reached(Stage::Sealed, sequence)?;
         let (prepared, digest) = self
             .prepared(ctx, config.clone(), scope, token, enrolled, intent)
@@ -536,7 +608,7 @@ impl<S: Store> DurableRun<'_, S> {
             .await?;
         }
         self.reached(Stage::TargetDone, sequence)?;
-        publish_receipts(ctx, control, &intent.id, tables).await?;
+        publish_receipts(ctx, control, &intent.id, batch_tables(enrolled)).await?;
         let request = RequestId {
             id: format!("{}#complete", intent.id.0),
             digest: intent.request_digest.clone(),
@@ -547,10 +619,62 @@ impl<S: Store> DurableRun<'_, S> {
             .map_err(control_error)?;
         self.reached(Stage::Completed, sequence)
     }
+
+    /// Finish a begun reset, repeating only what has no receipt. Truncating
+    /// keeps both tables and their identities, so their schemas carry over.
+    async fn finish_reset(
+        &self,
+        ctx: &SessionContext,
+        config: Arc<PlanConfig>,
+        token: &FenceToken,
+        enrolled: &Enrolled,
+        intent: &Intent,
+    ) -> SparkResult<u64> {
+        let control = &self.control;
+        let destination = self.run.write.destination;
+        let empty = empty_batch(ctx, config.clone(), destination).await?;
+        publish_prepared(ctx, &empty).await?;
+        let digest = digest("reset-prepared", &intent.id.0).map_err(encoding_error)?;
+        let effects = [
+            (EffectStep::ResetTarget, destination),
+            (EffectStep::ResetAuxiliary, &enrolled.auxiliary_name),
+        ];
+        for (step, table) in effects {
+            let done = control
+                .receipt(&intent.id, step)
+                .await
+                .map_err(control_error)?
+                .is_some();
+            if !done {
+                let fenced = fence(token, intent, step, &digest)?;
+                truncate_fenced(ctx, config.clone(), table, fenced).await?;
+            }
+            if step == EffectStep::ResetTarget {
+                self.reached(Stage::ResetTargetDone, 0)?;
+            }
+        }
+        let tables = [
+            (&enrolled.auxiliary, EffectStep::ResetAuxiliary),
+            (&enrolled.destination, EffectStep::ResetTarget),
+        ];
+        publish_receipts(ctx, control, &intent.id, tables).await?;
+        let identities = ResetIdentities {
+            sink: enrolled.destination.sink.clone(),
+            auxiliary: enrolled.auxiliary.sink.clone(),
+        };
+        let guard = control
+            .finalize_reset(token, &identities)
+            .await
+            .map_err(control_error)?;
+        ensure_checkpoint(control, &enrolled.target, guard.generation, &enrolled.flow).await?;
+        Ok(guard.generation)
+    }
 }
 
 /// Run one SCD1 flow to the frontier captured now, finishing any unfinished
-/// batch first. One failure stops the run; the next run recovers.
+/// batch or reset first. A requested reset replaces an unfinished batch: what
+/// that batch already ratified is published, and its source progress is not
+/// advanced. One failure stops the run; the next run recovers.
 pub(super) async fn run_durable_flow<S: Store + 'static>(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
@@ -573,6 +697,7 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
         .acquire(&enrolled.target, durable.owner, durable.lease_ms)
         .await
         .map_err(control_error)?;
+    let mut reset = durable.reset;
     if let Some(id) = &acquired.recovery_only {
         let intent = control
             .intent(id)
@@ -583,23 +708,51 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
                     reason: format!("unfinished intent {} is not sealed", id.0),
                 })
             })?;
-        if intent.kind != IntentKind::Batch {
-            return Err(control_error(Outcome::UnsupportedCapability {
-                reason: format!("unfinished {:?} intent", intent.kind),
-            }));
+        match intent.kind {
+            IntentKind::Reset => {
+                let generation = durable
+                    .finish_reset(ctx, config.clone(), &acquired.token, &enrolled, &intent)
+                    .await?;
+                outcome.reset = Some(generation);
+                reset = false;
+            }
+            IntentKind::Batch if reset => {
+                check_reset_origin(run.source)?;
+                publish_receipts(ctx, control, id, batch_tables(&enrolled)).await?;
+            }
+            IntentKind::Batch => {
+                durable
+                    .process(
+                        ctx,
+                        config.clone(),
+                        scope,
+                        &acquired.token,
+                        &enrolled,
+                        &intent,
+                    )
+                    .await?;
+                outcome.batches += 1;
+                outcome.recovered = Some(intent.batch_sequence);
+            }
+            kind => {
+                return Err(control_error(Outcome::UnsupportedCapability {
+                    reason: format!("unfinished {kind:?} intent"),
+                }));
+            }
         }
-        durable
-            .process(
-                ctx,
-                config.clone(),
-                scope,
-                &acquired.token,
-                &enrolled,
-                &intent,
-            )
+    }
+    if reset {
+        check_reset_origin(run.source)?;
+        let intent = reset_intent(&enrolled, acquired.token.generation + 1)?;
+        let token = control
+            .begin_reset(&acquired.token, &intent)
+            .await
+            .map_err(control_error)?;
+        durable.reached(Stage::ResetBegun, 0)?;
+        let generation = durable
+            .finish_reset(ctx, config.clone(), &token, &enrolled, &intent)
             .await?;
-        outcome.batches += 1;
-        outcome.recovered = Some(intent.batch_sequence);
+        outcome.reset = Some(generation);
     }
     let frontier = RunFrontier::capture(run.source)?;
     loop {
