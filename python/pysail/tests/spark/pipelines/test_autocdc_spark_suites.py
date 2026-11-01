@@ -592,3 +592,30 @@ def test_a_composite_key_merges_on_every_key(space, pipeline_factory, broker):  
     broker.send({"region": "eu", "id": 1, "name": "c", "seq": 2})
     run(space, pipeline_factory, broker.url, schema, keys=["region", "id"])
     assert rows(space, "region", "id", "name") == [("eu", 1, "c"), ("us", 1, "b")]
+
+
+def test_a_flow_reads_a_delta_table_incrementally(space, pipeline_factory):
+    space.sql("DROP TABLE IF EXISTS bronze")
+    space.sql("CREATE TABLE bronze (id INT, name STRING, seq BIGINT) USING delta")
+    space.sql("INSERT INTO bronze VALUES (1, 'alice', 1), (2, 'bob', 1)")
+
+    def go():
+        _, registry, start = pipeline_factory()
+        with graph_element_registration_context(registry):
+
+            @dp.temporary_view
+            def changes():
+                return space.readStream.table("bronze").where("name <> 'skip'")
+
+            dp.create_streaming_table("target", format="delta")
+            dp.create_auto_cdc_flow(target="target", source="changes", keys=["id"], sequence_by="seq")
+        start()
+
+    go()
+    assert rows(space, "id", "name") == [(1, "alice"), (2, "bob")]
+    space.sql("INSERT INTO bronze VALUES (1, 'alicia', 2), (2, 'skip', 2)")
+    go()
+    assert rows(space, "id", "name") == [(1, "alicia"), (2, "bob")]
+    go()
+    assert rows(space, "id", "name") == [(1, "alicia"), (2, "bob")]
+    space.sql("DROP TABLE IF EXISTS bronze")

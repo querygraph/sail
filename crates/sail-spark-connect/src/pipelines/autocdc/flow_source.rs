@@ -14,6 +14,7 @@ use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
 use datafusion::prelude::SessionContext;
 use sail_common::spec;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
+use sail_delta_lake::stream::{DeltaStream, DeltaStreamRange};
 use sail_iggy_bounded::{FORMAT as IGGY_FORMAT, IggyBoundedConfig, IggyBoundedSource};
 use sail_plan::config::PlanConfig;
 use sail_plan::error::{PlanError, PlanResult};
@@ -24,8 +25,8 @@ use sha2::{Digest, Sha256};
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
 use crate::pipelines::append::{
-    SOURCE_ALIAS, TableSource, check_stateless, data_files, partition_plan, partition_values,
-    qualified, spec_schema, table_source, view_flow,
+    SOURCE_ALIAS, TableSource, check_stateless, data_files, delta_error, is_delta, partition_plan,
+    partition_values, qualified, spec_schema, table_source, view_flow,
 };
 use crate::pipelines::graph::{Flow, GraphDefinition, Name};
 use crate::pipelines::streaming::intent::BatchIntent;
@@ -168,6 +169,7 @@ impl RelationScope for BatchScope<'_> {
 /// Files in the order they were first seen. The list is kept beside the flow's
 /// checkpoints and only grows, so a position in it never changes meaning.
 struct FileLeaf {
+    flow: Flow,
     /// A table the pipeline itself writes may not exist until its flow runs.
     table: Option<Name>,
     schema: SchemaRef,
@@ -200,13 +202,20 @@ impl FileLeaf {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => vec![],
             Err(error) => return Err(SparkError::internal(format!("read manifest: {error}"))),
         };
-        let listed = data_files(ctx, &self.source()?.location).await?;
-        let seen: BTreeSet<&String> = known.iter().collect();
-        let new: Vec<String> = listed
-            .iter()
-            .filter(|file| !seen.contains(file))
-            .cloned()
-            .collect();
+        let source = self.source()?;
+        let (listed, new) = if is_delta(&source.format) {
+            let new = self.delta_ranges(ctx, source, &known).await?;
+            (known.iter().chain(&new).cloned().collect(), new)
+        } else {
+            let listed = data_files(ctx, &source.location).await?;
+            let seen: BTreeSet<&String> = known.iter().collect();
+            let new: Vec<String> = listed
+                .iter()
+                .filter(|file| !seen.contains(file))
+                .cloned()
+                .collect();
+            (listed, new)
+        };
         if !new.is_empty() {
             known.extend(new);
             write_manifest(&self.manifest, &known)?;
@@ -220,6 +229,44 @@ impl FileLeaf {
             .lock()
             .map_err(|e| SparkError::internal(e.to_string()))? = listed;
         Ok(())
+    }
+
+    /// The ranges of the table's log past those already listed, each encoded
+    /// as one entry. A range reads the same files whenever it is read.
+    async fn delta_ranges(
+        &self,
+        ctx: &SessionContext,
+        source: &TableSource,
+        known: &[String],
+    ) -> SparkResult<Vec<String>> {
+        let stream = self.delta_stream(ctx, source).await?;
+        let mut offset = match known.last() {
+            Some(last) => Some(decode_range(last)?.next_offset()),
+            None => None,
+        };
+        let mut new = vec![];
+        while let Some(range) = stream
+            .next_range(offset.as_ref())
+            .await
+            .map_err(|error| delta_error(&self.flow, error))?
+        {
+            offset = Some(range.next_offset());
+            new.push(
+                serde_json::to_string(&range)
+                    .map_err(|e| SparkError::internal(format!("encode Delta range: {e}")))?,
+            );
+        }
+        Ok(new)
+    }
+
+    async fn delta_stream(
+        &self,
+        ctx: &SessionContext,
+        source: &TableSource,
+    ) -> SparkResult<DeltaStream> {
+        DeltaStream::open(&ctx.state(), vec![source.location.clone()], &source.options)
+            .await
+            .map_err(|error| delta_error(&self.flow, error))
     }
 
     fn len(&self) -> Result<usize, SourceError> {
@@ -244,6 +291,18 @@ impl FileLeaf {
                 .ok_or_else(|| SparkError::internal("file range is past the manifest"))?
                 .to_vec()
         };
+        if is_delta(&source.format) {
+            let stream = self.delta_stream(ctx, source).await?;
+            let mut plans = Vec::with_capacity(selected.len());
+            for entry in &selected {
+                let read = stream
+                    .read(Some(&decode_range(entry)?))
+                    .await
+                    .map_err(|error| delta_error(&self.flow, error))?;
+                plans.push(LogicalPlanBuilder::scan(SOURCE_ALIAS, read.source, None)?.build()?);
+            }
+            return union(plans, &source.empty);
+        }
         let mut groups: BTreeMap<Vec<(String, Option<String>)>, Vec<String>> = BTreeMap::new();
         for file in selected {
             let values = partition_values(&file, source);
@@ -259,6 +318,10 @@ impl FileLeaf {
         }
         union(plans, &source.empty)
     }
+}
+
+fn decode_range(entry: &str) -> SparkResult<DeltaStreamRange> {
+    serde_json::from_str(entry).map_err(|e| SparkError::internal(format!("read Delta range: {e}")))
 }
 
 fn write_manifest(path: &Path, files: &[String]) -> SparkResult<()> {
@@ -399,7 +462,7 @@ impl FlowSource {
             let leaf = match (output, scope.resolve_read(&name, false)?) {
                 (Some(_), Some(plan)) => {
                     let schema = Arc::new(plan.schema().as_arrow().clone());
-                    file_leaf(None, Some(name), schema, root, &key)
+                    file_leaf(flow, None, Some(name), schema, root, &key)
                 }
                 _ => {
                     let source = table_source(ctx, &name).await.map_err(|error| {
@@ -408,7 +471,7 @@ impl FlowSource {
                             name.join(".")
                         ))
                     })?;
-                    file_leaf(Some(source), None, schema.clone(), root, &key)
+                    file_leaf(flow, Some(source), None, schema.clone(), root, &key)
                 }
             };
             leaves.insert(key, leaf);
@@ -416,7 +479,7 @@ impl FlowSource {
         let sources = std::mem::take(&mut *recording.sources.lock().map_err(lock_error)?);
         for source in sources {
             let key = source_key(&source)?;
-            let leaf = source_leaf(ctx, config, &source, root, &key).await?;
+            let leaf = source_leaf(ctx, config, flow, &source, root, &key).await?;
             leaves.insert(key, leaf);
         }
         if leaves.is_empty() {
@@ -543,6 +606,7 @@ impl FlowSource {
 }
 
 fn file_leaf(
+    flow: &Flow,
     source: Option<TableSource>,
     table: Option<Name>,
     fallback: SchemaRef,
@@ -557,6 +621,7 @@ fn file_leaf(
         let _ = cell.set(source);
     }
     Leaf::Files(Box::new(FileLeaf {
+        flow: flow.clone(),
         table,
         schema,
         source: cell,
@@ -570,6 +635,7 @@ fn file_leaf(
 async fn source_leaf(
     ctx: &SessionContext,
     config: &Arc<PlanConfig>,
+    flow: &Flow,
     source: &spec::ReadDataSource,
     root: &Path,
     key: &str,
@@ -601,7 +667,7 @@ async fn source_leaf(
     };
     if !matches!(
         format.to_ascii_lowercase().as_str(),
-        "parquet" | "json" | "csv" | "orc" | "avro" | "text"
+        "parquet" | "json" | "csv" | "orc" | "avro" | "text" | "delta"
     ) {
         return Err(SparkError::unsupported(format!(
             "incremental pipeline execution of a streaming {format} read"
@@ -615,7 +681,7 @@ async fn source_leaf(
         partitions: BTreeSet::new(),
         options: source.options.clone(),
     };
-    Ok(file_leaf(Some(table), None, schema, root, key))
+    Ok(file_leaf(flow, Some(table), None, schema, root, key))
 }
 
 impl BoundedSource for FlowSource {

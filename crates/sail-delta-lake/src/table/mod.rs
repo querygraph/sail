@@ -1012,7 +1012,7 @@ async fn load_table_by_options(table: &mut DeltaTable, options: &DeltaReadOption
 }
 
 /// Finds the latest version of the table that was committed at or before a given timestamp.
-async fn find_version_for_timestamp(
+pub(crate) async fn find_version_for_timestamp(
     table: &mut DeltaTable,
     datetime: DateTime<Utc>,
 ) -> DeltaResult<i64> {

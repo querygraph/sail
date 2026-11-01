@@ -1630,7 +1630,7 @@ fn merge_protocol_for_upgrade(
 }
 
 /// Parse a location string into a [`Url`]. Accepts both fully-qualified URLs and
-/// local absolute file system paths.
+/// local file system paths.
 pub(crate) fn parse_location_to_url(path: &str) -> Result<Url> {
     if let Ok(url) = Url::parse(path) {
         // Reject "scheme-like" strings on Windows such as `c:/foo` that `Url::parse`
@@ -1643,9 +1643,12 @@ pub(crate) fn parse_location_to_url(path: &str) -> Result<Url> {
         return Url::from_file_path(path)
             .map_err(|_| DataFusionError::Plan(format!("invalid file path: {path}")));
     }
-    Err(DataFusionError::Plan(format!(
-        "table location must be an absolute path or URL: {path}"
-    )))
+    // A relative location is relative to the working directory, as a relative
+    // warehouse directory is.
+    let absolute = std::path::absolute(path)
+        .map_err(|e| DataFusionError::Plan(format!("invalid table location {path}: {e}")))?;
+    Url::from_file_path(&absolute)
+        .map_err(|_| DataFusionError::Plan(format!("invalid file path: {path}")))
 }
 
 impl DeltaLakeSource {

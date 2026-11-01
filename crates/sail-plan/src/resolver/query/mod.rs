@@ -83,7 +83,7 @@ impl PlanResolver<'_> {
                         .await?
                 }
                 spec::ReadType::Udtf(udtf) => self.resolve_query_read_udtf(*udtf, state).await?,
-                spec::ReadType::DataSource(source) => {
+                spec::ReadType::DataSource(mut source) => {
                     if let Some(scope) = self.relation_scope {
                         scope.observe_source_read(is_streaming);
                     }
@@ -98,7 +98,28 @@ impl PlanResolver<'_> {
                             state.register_missing_input_boundary(&plan);
                             plan
                         }
-                        None => self.resolve_query_read_data_source(*source, state).await?,
+                        None => {
+                            // Under a scope, the scope reads the stream and checks its
+                            // options. This resolves the schema, which needs no range.
+                            if is_streaming
+                                && self.relation_scope.is_some()
+                                && source
+                                    .format
+                                    .as_deref()
+                                    .is_some_and(|x| x.eq_ignore_ascii_case("delta"))
+                            {
+                                let feed = source.options.iter().any(|(key, value)| {
+                                    (key.eq_ignore_ascii_case("readChangeFeed")
+                                        || key.eq_ignore_ascii_case("readChangeData"))
+                                        && value.eq_ignore_ascii_case("true")
+                                });
+                                source.options = vec![
+                                    ("__sail_stream_schema_only".into(), "true".into()),
+                                    ("readChangeFeed".into(), feed.to_string()),
+                                ];
+                            }
+                            self.resolve_query_read_data_source(*source, state).await?
+                        }
                     }
                 }
                 spec::ReadType::DynamicTable(table) => {

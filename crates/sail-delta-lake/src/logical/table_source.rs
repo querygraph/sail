@@ -9,7 +9,7 @@ use crate::DeltaResult;
 use crate::datasource::{DeltaScanConfig, df_logical_schema, get_pushdown_filters};
 use crate::delta_log::LogStoreRef;
 use crate::schema::attach_column_mapping_metadata;
-use crate::spec::ColumnMappingMode;
+use crate::spec::{Add, ColumnMappingMode};
 use crate::table::DeltaSnapshot;
 
 #[derive(Clone, Default)]
@@ -17,6 +17,8 @@ pub(crate) enum DeltaFileSelection {
     #[default]
     Snapshot,
     Selected(Arc<[usize]>),
+    /// Files that are not the snapshot's, such as the commits of a stream.
+    Files(Arc<Vec<Add>>),
 }
 
 impl std::fmt::Debug for DeltaFileSelection {
@@ -26,6 +28,10 @@ impl std::fmt::Debug for DeltaFileSelection {
             Self::Selected(indices) => f
                 .debug_struct("Selected")
                 .field("file_count", &indices.len())
+                .finish(),
+            Self::Files(files) => f
+                .debug_struct("Files")
+                .field("file_count", &files.len())
                 .finish(),
         }
     }
@@ -124,6 +130,12 @@ impl DeltaTableSource {
 
     pub(crate) fn file_selection(&self) -> &DeltaFileSelection {
         &self.file_selection
+    }
+
+    /// Read these files instead of the snapshot's.
+    pub(crate) fn with_files(mut self, files: Vec<Add>) -> Self {
+        self.file_selection = DeltaFileSelection::Files(Arc::new(files));
+        self
     }
 
     pub(crate) fn try_select_files(&self, indices: Vec<usize>) -> DeltaResult<Self> {

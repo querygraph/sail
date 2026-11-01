@@ -166,6 +166,7 @@ fn metadata_file_indices(
     let indices = match source.file_selection() {
         DeltaFileSelection::Snapshot => (0..snapshot.adds().len()).collect::<Vec<_>>(),
         DeltaFileSelection::Selected(indices) => indices.to_vec(),
+        DeltaFileSelection::Files(_) => return Ok(None),
     };
     let Some(predicate) = conjunction(unnormalize_cols(scan.filters.clone())) else {
         return Ok(Some(indices));

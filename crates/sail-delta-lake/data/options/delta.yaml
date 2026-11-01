@@ -58,6 +58,23 @@
         - readChangeFeed
       parser: crate::options::parsers::parse_bool
 
+- key: stream_schema_only
+  description: |
+    Resolve only the schema of a streaming read, which takes its range from
+    the stream's own progress. This is internal.
+  default:
+    value: "false"
+    parser: crate::options::parsers::parse_bool
+  supported: true
+  rust_type: "bool"
+  scopes:
+    - read
+  origins:
+    - type: option
+      keys:
+        - __sail_stream_schema_only
+      parser: crate::options::parsers::parse_bool
+
 - key: starting_version
   description: |
     The inclusive starting version for a batch CDF read.
