@@ -1235,7 +1235,7 @@
       "input": "REPLACE TABLE my_tab (id bigint) SKEWED BY (id) ON (1,2,3)",
       "exception": "\n[INVALID_STATEMENT_OR_CLAUSE] The statement or clause: CREATE TABLE ... SKEWED BY is not valid. SQLSTATE: 42601\n== SQL (line 1, position 1) ==\nREPLACE TABLE my_tab (id bigint) SKEWED BY (id) ON (1,2,3)\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n",
       "output": {
-        "failure": "invalid argument: found SKEWED at 33:39 expected 'USING', 'PARTITIONED', 'CLUSTERED', 'DISTRIBUTED', 'CLUSTER', 'ROW', 'STORED', 'LOCATION', 'COMMENT', 'OPTIONS', 'TBLPROPERTIES', 'AS', query, ';', or end of input"
+        "failure": "invalid argument: found SKEWED at 33:39 expected 'USING', 'PARTITIONED', 'CLUSTERED', 'DISTRIBUTED', 'DEFAULT', 'CLUSTER', 'ROW', 'STORED', 'LOCATION', 'COMMENT', 'OPTIONS', 'TBLPROPERTIES', 'AS', query, ';', or end of input"
       }
     },
     {
@@ -4143,43 +4143,43 @@
     {
       "input": "REPLACE TABLE t (c STRING) USING parquet DEFAULT COLLATION sr",
       "output": {
-        "failure": "invalid argument: found DEFAULT at 41:48 expected 'PARTITIONED', 'CLUSTERED', 'DISTRIBUTED', 'CLUSTER', 'ROW', 'STORED', 'LOCATION', 'COMMENT', 'OPTIONS', 'TBLPROPERTIES', 'AS', query, ';', or end of input"
+        "failure": "not implemented: DEFAULT COLLATION on a table"
       }
     },
     {
       "input": "REPLACE TABLE t (c STRING) USING parquet DEFAULT COLLATION sr_ci_ai",
       "output": {
-        "failure": "invalid argument: found DEFAULT at 41:48 expected 'PARTITIONED', 'CLUSTERED', 'DISTRIBUTED', 'CLUSTER', 'ROW', 'STORED', 'LOCATION', 'COMMENT', 'OPTIONS', 'TBLPROPERTIES', 'AS', query, ';', or end of input"
+        "failure": "not implemented: DEFAULT COLLATION on a table"
       }
     },
     {
       "input": "REPLACE TABLE t (c STRING) USING parquet DEFAULT COLLATION unicode",
       "output": {
-        "failure": "invalid argument: found DEFAULT at 41:48 expected 'PARTITIONED', 'CLUSTERED', 'DISTRIBUTED', 'CLUSTER', 'ROW', 'STORED', 'LOCATION', 'COMMENT', 'OPTIONS', 'TBLPROPERTIES', 'AS', query, ';', or end of input"
+        "failure": "not implemented: DEFAULT COLLATION on a table"
       }
     },
     {
       "input": "REPLACE TABLE t (c STRING) USING parquet DEFAULT COLLATION unicode_ci",
       "output": {
-        "failure": "invalid argument: found DEFAULT at 41:48 expected 'PARTITIONED', 'CLUSTERED', 'DISTRIBUTED', 'CLUSTER', 'ROW', 'STORED', 'LOCATION', 'COMMENT', 'OPTIONS', 'TBLPROPERTIES', 'AS', query, ';', or end of input"
+        "failure": "not implemented: DEFAULT COLLATION on a table"
       }
     },
     {
       "input": "REPLACE TABLE t (c STRING) USING parquet DEFAULT COLLATION unicode_ci_rtrim",
       "output": {
-        "failure": "invalid argument: found DEFAULT at 41:48 expected 'PARTITIONED', 'CLUSTERED', 'DISTRIBUTED', 'CLUSTER', 'ROW', 'STORED', 'LOCATION', 'COMMENT', 'OPTIONS', 'TBLPROPERTIES', 'AS', query, ';', or end of input"
+        "failure": "not implemented: DEFAULT COLLATION on a table"
       }
     },
     {
       "input": "REPLACE TABLE t (c STRING) USING parquet DEFAULT COLLATION utf8_binary",
       "output": {
-        "failure": "invalid argument: found DEFAULT at 41:48 expected 'PARTITIONED', 'CLUSTERED', 'DISTRIBUTED', 'CLUSTER', 'ROW', 'STORED', 'LOCATION', 'COMMENT', 'OPTIONS', 'TBLPROPERTIES', 'AS', query, ';', or end of input"
+        "failure": "not implemented: DEFAULT COLLATION on a table"
       }
     },
     {
       "input": "REPLACE TABLE t (c STRING) USING parquet DEFAULT COLLATION utf8_lcase",
       "output": {
-        "failure": "invalid argument: found DEFAULT at 41:48 expected 'PARTITIONED', 'CLUSTERED', 'DISTRIBUTED', 'CLUSTER', 'ROW', 'STORED', 'LOCATION', 'COMMENT', 'OPTIONS', 'TBLPROPERTIES', 'AS', query, ';', or end of input"
+        "failure": "not implemented: DEFAULT COLLATION on a table"
       }
     }
   ]

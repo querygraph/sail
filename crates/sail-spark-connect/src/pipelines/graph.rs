@@ -462,10 +462,24 @@ impl GraphDefinition {
                 .into());
             };
             if output.kind == sc::OutputType::MaterializedView && flows.len() != 1 {
-                return Err(analysis(
-                    "MATERIALIZED_VIEW_WITH_MULTIPLE_QUERIES",
-                    quoted(&output.name),
-                ));
+                let table = output.name.join(".");
+                let mut names = flows
+                    .iter()
+                    .map(|flow| flow.name.join("."))
+                    .collect::<Vec<_>>();
+                names.sort();
+                let names = names.join(", ");
+                return Err(Box::new(StructuredSparkError {
+                    class: "org.apache.spark.sql.AnalysisException".into(),
+                    condition: "MATERIALIZED_VIEW_WITH_MULTIPLE_QUERIES".into(),
+                    sql_state: "42000".into(),
+                    message: format!("Invalid destination {table} with multiple flows: {names}."),
+                    parameters: HashMap::from([
+                        ("tableName".into(), table),
+                        ("flows".into(), names),
+                    ]),
+                })
+                .into());
             }
             for flow in flows {
                 let streaming = flow_streaming.get(&flow.name).copied().ok_or_else(|| {

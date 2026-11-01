@@ -6,7 +6,7 @@ pub(crate) use dataset::validate as validate_dataset;
 use either::Either;
 use sail_common::spec;
 use sail_sql_parser::ast::keywords::Table;
-use sail_sql_parser::ast::statement::Statement;
+use sail_sql_parser::ast::statement::{CreateTableClause, Statement};
 
 use crate::error::{SqlError, SqlResult};
 use crate::expression::from_ast_object_name;
@@ -83,7 +83,12 @@ fn from_ast_pipeline_statement_impl(
                 columns: dataset.columns,
                 like: None,
                 using: dataset.using,
-                clauses: dataset.clauses,
+                // `DatasetManager` creates every table without a collation.
+                clauses: dataset
+                    .clauses
+                    .into_iter()
+                    .filter(|clause| !matches!(clause, CreateTableClause::DefaultCollation(..)))
+                    .collect(),
                 r#as: dataset.r#as,
             })?;
             match command {

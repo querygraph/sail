@@ -405,11 +405,11 @@ impl CatalogProvider for MemoryCatalogProvider {
         let mut db = self.databases.get_mut(database).ok_or_else(|| {
             CatalogError::NotFound(CatalogObject::Database, quote_namespace_if_needed(database))
         })?;
-        if let Some(status) = db.tables.get(table) {
+        if let Some(status) = db.tables.get(&object_key(table)) {
             match mode {
                 CreateTableMode::CreateIfNotExists => return Ok(status.clone()),
                 CreateTableMode::CreateOrReplace | CreateTableMode::Replace => {
-                    db.tables.remove(table);
+                    db.tables.remove(&object_key(table));
                 }
                 CreateTableMode::Create => {
                     return Err(CatalogError::AlreadyExists(
@@ -473,7 +473,7 @@ impl CatalogProvider for MemoryCatalogProvider {
                 is_external,
             },
         };
-        db.tables.insert(table.to_string(), status.clone());
+        db.tables.insert(object_key(table), status.clone());
         Ok(status)
     }
 
@@ -487,7 +487,7 @@ impl CatalogProvider for MemoryCatalogProvider {
 
     async fn get_table(&self, database: &Namespace, table: &str) -> CatalogResult<TableStatus> {
         if let Some(db) = self.databases.get(database)
-            && let Some(status) = db.tables.get(table)
+            && let Some(status) = db.tables.get(&object_key(table))
         {
             return Ok(status.clone());
         }
@@ -522,7 +522,7 @@ impl CatalogProvider for MemoryCatalogProvider {
         } = options;
         match self.databases.get_mut(database) {
             Some(mut db) => {
-                if db.tables.remove(table).is_some() || if_exists {
+                if db.tables.remove(&object_key(table)).is_some() || if_exists {
                     Ok(())
                 } else {
                     Err(CatalogError::NotFound(
@@ -559,10 +559,12 @@ impl CatalogProvider for MemoryCatalogProvider {
         let mut db = self.databases.get_mut(database).ok_or_else(|| {
             CatalogError::NotFound(CatalogObject::Database, quote_namespace_if_needed(database))
         })?;
-        if !db.tables.contains_key(table) {
+        if !db.tables.contains_key(&object_key(table)) {
             return Err(CatalogError::NotFound(CatalogObject::Table, table.into()));
         }
-        if db.tables.contains_key(destination_table) || db.views.contains_key(destination_table) {
+        if db.tables.contains_key(&object_key(destination_table))
+            || db.views.contains_key(&object_key(destination_table))
+        {
             return Err(CatalogError::AlreadyExists(
                 CatalogObject::Table,
                 destination_table.into(),
@@ -573,7 +575,7 @@ impl CatalogProvider for MemoryCatalogProvider {
             .remove(table)
             .ok_or_else(|| CatalogError::NotFound(CatalogObject::Table, table.into()))?;
         status.name = destination_table.into();
-        db.tables.insert(destination_table.into(), status);
+        db.tables.insert(object_key(destination_table), status);
         Ok(())
     }
 
@@ -623,11 +625,11 @@ impl CatalogProvider for MemoryCatalogProvider {
         let mut db = self.databases.get_mut(database).ok_or_else(|| {
             CatalogError::NotFound(CatalogObject::Database, quote_namespace_if_needed(database))
         })?;
-        if let Some(status) = db.views.get(view) {
+        if let Some(status) = db.views.get(&object_key(view)) {
             if if_not_exists {
                 return Ok(status.clone());
             } else if replace {
-                db.views.remove(view);
+                db.views.remove(&object_key(view));
             } else {
                 return Err(CatalogError::AlreadyExists(
                     CatalogObject::View,
@@ -669,13 +671,13 @@ impl CatalogProvider for MemoryCatalogProvider {
                 properties: properties.into_iter().collect(),
             },
         };
-        db.views.insert(view.to_string(), status.clone());
+        db.views.insert(object_key(view), status.clone());
         Ok(status)
     }
 
     async fn get_view(&self, database: &Namespace, view: &str) -> CatalogResult<TableStatus> {
         if let Some(db) = self.databases.get(database)
-            && let Some(status) = db.views.get(view)
+            && let Some(status) = db.views.get(&object_key(view))
         {
             return Ok(status.clone());
         }
@@ -704,7 +706,7 @@ impl CatalogProvider for MemoryCatalogProvider {
         let DropViewOptions { if_exists } = options;
         match self.databases.get_mut(database) {
             Some(mut db) => {
-                if db.views.remove(view).is_some() || if_exists {
+                if db.views.remove(&object_key(view)).is_some() || if_exists {
                     Ok(())
                 } else {
                     Err(CatalogError::NotFound(
@@ -725,4 +727,10 @@ impl CatalogProvider for MemoryCatalogProvider {
             }
         }
     }
+}
+
+/// Table and view names match case-insensitively, as in Spark's session
+/// catalog. A status keeps the name it was created with.
+fn object_key(name: &str) -> String {
+    name.to_ascii_lowercase()
 }

@@ -114,6 +114,9 @@ impl PlanResolver<'_> {
         }
 
         let reference: Vec<String> = name.clone().into();
+        if let (Some(scope), false) = (self.relation_scope, options.is_empty()) {
+            scope.observe_read_options(&reference, &options);
+        }
         let scoped = match self.relation_scope {
             Some(scope) if late_bound => scope.resolve_late_bound_read(&reference, is_streaming)?,
             Some(scope) => scope.resolve_read(&reference, is_streaming)?,

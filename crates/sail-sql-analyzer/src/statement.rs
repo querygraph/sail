@@ -2080,6 +2080,9 @@ impl TryFrom<Vec<CreateTableClause>> for CreateTableClauses {
                         return Err(SqlError::invalid("duplicate CLUSTERED BY clause"));
                     }
                 }
+                CreateTableClause::DefaultCollation(..) => {
+                    return Err(SqlError::todo("DEFAULT COLLATION on a table"));
+                }
                 CreateTableClause::ClusterBy(_, _, _, cluster_by, _) => {
                     let cluster_by = cluster_by.into_items().collect();
                     if output.cluster_by.replace(cluster_by).is_some() {

@@ -143,6 +143,25 @@ pub(super) fn reads_failed_output(
     false
 }
 
+impl FlowRun<'_> {
+    async fn publish_memory_sink(&self, config: Arc<PlanConfig>, flow: &Flow) -> SparkResult<()> {
+        let name = flow
+            .name
+            .last()
+            .ok_or_else(|| SparkError::internal("flow without a name"))?;
+        let path = memory_sink_path(self.storage, flow)?;
+        let sql = format!(
+            "CREATE OR REPLACE TEMPORARY VIEW `{name}` USING parquet OPTIONS (path '{path}')"
+        );
+        let statement = sail_sql_analyzer::parser::parse_one_statement(&sql)?;
+        let plan = sail_sql_analyzer::statement::from_ast_statement(statement)?;
+        let spec::Plan::Command(command) = plan else {
+            return Err(SparkError::internal("a view definition is not a command"));
+        };
+        run_command(self.ctx, config, command.node, None).await
+    }
+}
+
 struct FlowRun<'a> {
     ctx: &'a SessionContext,
     graph: &'a GraphDefinition,
@@ -241,7 +260,7 @@ impl FlowRun<'_> {
         )
         .await?;
         let write = match output.kind {
-            OutputType::Sink => sink_write_command(output, flow)?,
+            OutputType::Sink => sink_write_command(output, flow, self.storage)?,
             _ => table_write_command(output, flow),
         };
         if output.kind != OutputType::MaterializedView {
@@ -254,7 +273,11 @@ impl FlowRun<'_> {
                 storage: self.storage,
                 reset: super::materialize::resets(output, self.selection),
             };
-            return super::append::run(self.ctx, config, run).await;
+            super::append::run(self.ctx, config.clone(), run).await?;
+            if is_memory_sink(output) {
+                self.publish_memory_sink(config, flow).await?;
+            }
+            return Ok(());
         }
         // A failed attempt may have left files behind.
         if truncate {
@@ -306,8 +329,33 @@ async fn execute_command_plan(
     Ok(())
 }
 
+/// Where a memory sink keeps its rows. The session reads them through a
+/// temporary view named after the flow, as it reads Spark's memory sink.
+fn memory_sink_path(storage: &str, flow: &Flow) -> SparkResult<String> {
+    let name = flow
+        .name
+        .last()
+        .ok_or_else(|| SparkError::internal("flow without a name"))?;
+    Ok(format!(
+        "{}/_memory_sinks/{name}",
+        storage.trim_end_matches('/')
+    ))
+}
+
+fn is_memory_sink(output: &Output) -> bool {
+    matches!(
+        &output.definition.details,
+        Some(pc::define_output::Details::SinkDetails(details))
+            if details.format.as_deref() == Some("memory") && !details.options.contains_key("path")
+    )
+}
+
 /// A streaming write to a sink's path, in the sink's format.
-fn sink_write_command(output: &Output, flow: &Flow) -> SparkResult<spec::CommandNode> {
+fn sink_write_command(
+    output: &Output,
+    flow: &Flow,
+    storage: &str,
+) -> SparkResult<spec::CommandNode> {
     let Some(pc::define_output::Details::SinkDetails(details)) = &output.definition.details else {
         return Err(SparkError::internal("sink output without sink details"));
     };
@@ -315,15 +363,25 @@ fn sink_write_command(output: &Output, flow: &Flow) -> SparkResult<spec::Command
         .format
         .clone()
         .ok_or_else(|| SparkError::invalid("a pipeline sink needs a format"))?;
-    let path = details
-        .options
-        .get("path")
-        .cloned()
-        .ok_or_else(|| SparkError::unsupported(format!("a {format} sink without a path")))?;
+    let (format, save_type) = match (format.as_str(), details.options.get("path")) {
+        (_, Some(path)) => (format, spec::SaveType::Path(path.clone())),
+        // One bounded batch has no console stream to print to; its rows are
+        // read and discarded.
+        ("console", None) => ("noop".to_string(), spec::SaveType::Sink),
+        ("memory", None) => (
+            "parquet".to_string(),
+            spec::SaveType::Path(memory_sink_path(storage, flow)?),
+        ),
+        (_, None) => {
+            return Err(SparkError::unsupported(format!(
+                "a {format} sink without a path"
+            )));
+        }
+    };
     Ok(spec::CommandNode::Write(spec::Write {
         input: Box::new(flow.query.clone()),
         source: Some(format),
-        save_type: spec::SaveType::Path(path),
+        save_type,
         mode: Some(spec::SaveMode::Append),
         sort_columns: vec![],
         partitioning_columns: vec![],

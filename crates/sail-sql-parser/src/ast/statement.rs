@@ -15,19 +15,19 @@ use crate::ast::expression::{
 use crate::ast::identifier::{Ident, ObjectName, table_ident};
 use crate::ast::keywords::{
     Add, After, All, Alter, Always, Analyze, And, As, Buckets, By, Cache, Call, Cascade, Catalog,
-    Catalogs, Change, Check, Clear, Cluster, Clustered, Codegen, Collection, Column, Columns,
-    Comment, Compute, Constraint, Cost, Create, Data, Database, Databases, Dbproperties, Default,
-    Defined, Delete, Delimited, Desc, Describe, Detail, Directory, Distributed, Drop, Dry, Escaped,
-    Evolution, Exists, Explain, Extended, External, Fields, Fileformat, First, For, Format,
-    Formatted, From, Full, Function, Functions, Generated, Global, History, Hours, Identity, If,
-    In, Increment, Inpath, Inputformat, Insert, Interval, Into, Is, Items, Keys, Lazy, Like, Limit,
-    Lines, Lite, Load, Local, Location, Map, Matched, Merge, Name, Namespace, Namespaces, Noscan,
-    Not, Null, On, Optimize, Options, Or, Outputformat, Overwrite, Partition, Partitioned,
-    Partitions, Properties, Purge, Recover, Refresh, Rename, Replace, Reset, Restrict, Retain, Row,
-    Run, Schema, Schemas, Serde, Serdeproperties, Set, Show, Sorted, Source, Start, Statistics,
-    Stored, System, Table, Tables, Target, Tblproperties, Temp, Temporary, Terminated, Then, Time,
-    To, Truncate, Type, Uncache, Unset, Update, Use, User, Using, Vacuum, Values, Verbose, View,
-    Views, When, Where, With, Zone, Zorder,
+    Catalogs, Change, Check, Clear, Cluster, Clustered, Codegen, Collation, Collection, Column,
+    Columns, Comment, Compute, Constraint, Cost, Create, Data, Database, Databases, Dbproperties,
+    Default, Defined, Delete, Delimited, Desc, Describe, Detail, Directory, Distributed, Drop, Dry,
+    Escaped, Evolution, Exists, Explain, Extended, External, Fields, Fileformat, First, For,
+    Format, Formatted, From, Full, Function, Functions, Generated, Global, History, Hours,
+    Identity, If, In, Increment, Inpath, Inputformat, Insert, Interval, Into, Is, Items, Keys,
+    Lazy, Like, Limit, Lines, Lite, Load, Local, Location, Map, Matched, Merge, Name, Namespace,
+    Namespaces, Noscan, Not, Null, On, Optimize, Options, Or, Outputformat, Overwrite, Partition,
+    Partitioned, Partitions, Properties, Purge, Recover, Refresh, Rename, Replace, Reset, Restrict,
+    Retain, Row, Run, Schema, Schemas, Serde, Serdeproperties, Set, Show, Sorted, Source, Start,
+    Statistics, Stored, System, Table, Tables, Target, Tblproperties, Temp, Temporary, Terminated,
+    Then, Time, To, Truncate, Type, Uncache, Unset, Update, Use, User, Using, Vacuum, Values,
+    Verbose, View, Views, When, Where, With, Zone, Zorder,
 };
 use crate::ast::literal::{IntegerLiteral, NumberLiteral, StringLiteral};
 use crate::ast::operator::{
@@ -745,6 +745,8 @@ pub enum CreateTableClause {
         IntegerLiteral,
         Buckets,
     ),
+    /// The `DEFAULT COLLATION ...` clause. Only pipeline datasets accept it.
+    DefaultCollation(Default, Collation, Ident),
     /// The `CLUSTER BY ...` clause introduced in Spark 4.0.
     ClusterBy(
         Cluster,

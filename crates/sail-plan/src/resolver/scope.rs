@@ -43,6 +43,9 @@ pub trait RelationScope: Send + Sync {
     /// resolve, but its mode still matters to a caller classifying a query.
     fn observe_source_read(&self, _is_streaming: bool) {}
 
+    /// Observe the options of a named read, before it is resolved.
+    fn observe_read_options(&self, _name: &[String], _options: &[(String, String)]) {}
+
     /// Answer a streaming read of a data source with a plan of its own. On
     /// `None` the read resolves as usual. Returned plans follow the same
     /// naming contract as [`RelationScope::resolve`].
@@ -119,6 +122,12 @@ impl<'a> ViewScope<'a> {
 }
 
 impl RelationScope for ViewScope<'_> {
+    fn observe_read_options(&self, name: &[String], options: &[(String, String)]) {
+        if let (Some(parent), Ok(name)) = (self.parent, self.qualify(name)) {
+            parent.observe_read_options(&name, options);
+        }
+    }
+
     fn observe_source_read(&self, is_streaming: bool) {
         if let Some(parent) = self.parent {
             parent.observe_source_read(is_streaming);

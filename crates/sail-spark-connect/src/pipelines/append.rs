@@ -173,11 +173,18 @@ struct RecordingScope<'a> {
     graph: &'a GraphScope<'a>,
     streaming: Mutex<BTreeSet<Name>>,
     sources: Mutex<Vec<spec::ReadDataSource>>,
+    options: Mutex<BTreeMap<Name, Vec<(String, String)>>>,
 }
 
 impl RelationScope for RecordingScope<'_> {
     fn resolve(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>> {
         self.graph.resolve(name)
+    }
+
+    fn observe_read_options(&self, name: &[String], options: &[(String, String)]) {
+        if let (Ok(name), Ok(mut recorded)) = (qualified(self.graph, name), self.options.lock()) {
+            recorded.insert(name, options.to_vec());
+        }
     }
 
     fn resolve_source_stream(
@@ -296,6 +303,7 @@ async fn streamed_names(
         graph: scope,
         streaming: Mutex::default(),
         sources: Mutex::default(),
+        options: Mutex::default(),
     };
     PlanResolver::new(ctx, config.clone())
         .with_relation_scope(&recording)
@@ -310,6 +318,10 @@ async fn streamed_names(
             .sources
             .into_inner()
             .map_err(|e| SparkError::internal(e.to_string()))?,
+        options: recording
+            .options
+            .into_inner()
+            .map_err(|e| SparkError::internal(e.to_string()))?,
     })
 }
 
@@ -317,6 +329,7 @@ async fn streamed_names(
 struct Streamed {
     names: BTreeSet<Name>,
     sources: Vec<spec::ReadDataSource>,
+    options: BTreeMap<Name, Vec<(String, String)>>,
 }
 
 /// A streaming data source's name in the stream map, which is also its key in
@@ -616,6 +629,19 @@ fn check_stateless(plan: &LogicalPlan, windowed: bool) -> SparkResult<()> {
     failure.map_or(Ok(()), Err)
 }
 
+/// Only Spark's rate limit options apply to a whole stream, and one batch is
+/// always within them, but a value that cannot be parsed still fails the flow.
+fn check_stream_options(options: &[(String, String)]) -> SparkResult<()> {
+    for (key, value) in options {
+        if key.eq_ignore_ascii_case("maxFilesPerTrigger") && value.parse::<u64>().is_err() {
+            return Err(SparkError::invalid(format!(
+                "Invalid value '{value}' for option '{key}', must be a positive integer"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The rows of a source that this flow has not read, or of the replayed batch.
 async fn unread_plan(
     ctx: &SessionContext,
@@ -884,6 +910,7 @@ fn bind_streams<'a>(
                 continue;
             }
             let source = file_source(ctx, config, source).await?;
+            check_stream_options(&source.options)?;
             let plan = unread_plan(ctx, config, &source, &name, state, batch).await?;
             streams.insert(name, plan);
         }
@@ -920,7 +947,9 @@ fn bind_streams<'a>(
                 streams.insert(name, plan);
                 continue;
             }
-            let source = table_source(ctx, &name).await?;
+            let mut source = table_source(ctx, &name).await?;
+            source.options = read.options.get(&name).cloned().unwrap_or_default();
+            check_stream_options(&source.options)?;
             let plan = unread_plan(ctx, config, &source, &name, state, batch).await?;
             streams.insert(name, plan);
         }
@@ -997,7 +1026,7 @@ pub(super) async fn run(
     }
     state.sources = sources;
     let windowed = windowed_aggregate(&scope, &run.flow.query)?;
-    {
+    let outputs = {
         let bound = BatchScope {
             graph: &scope,
             streams: &streams,
@@ -1007,10 +1036,15 @@ pub(super) async fn run(
             .resolve_named_plan(spec::Plan::Query(run.flow.query.clone()))
             .await?;
         check_stateless(&planned.plan, windowed.is_some())?;
-    }
+        planned.fields.unwrap_or_else(|| {
+            let fields = planned.plan.schema().fields();
+            fields.iter().map(|field| field.name().clone()).collect()
+        })
+    };
     if !replay && batch.values().all(Vec::is_empty) {
         return Ok(());
     }
+    let write = pad_dropped_columns(ctx, run.destination, run.write, &outputs).await?;
     state.pending = Some(batch);
     checkpoint.store(&state).await?;
     match windowed {
@@ -1018,7 +1052,7 @@ pub(super) async fn run(
             run_windowed(
                 ctx,
                 config,
-                &run,
+                write,
                 &scope,
                 &checkpoint,
                 &mut state,
@@ -1032,7 +1066,7 @@ pub(super) async fn run(
                 graph: &scope,
                 streams: &streams,
             };
-            run_command(ctx, config, run.write, Some(&bound)).await?;
+            run_command(ctx, config, write, Some(&bound)).await?;
         }
     }
     for (source, files) in state.pending.take().unwrap_or_default() {
@@ -1042,12 +1076,64 @@ pub(super) async fn run(
     checkpoint.store(&state).await
 }
 
+/// A streaming table keeps a column its query no longer produces, so new rows
+/// write null there. A sink has no columns to keep.
+async fn pad_dropped_columns(
+    ctx: &SessionContext,
+    destination: &Name,
+    write: spec::CommandNode,
+    outputs: &[String],
+) -> SparkResult<spec::CommandNode> {
+    let spec::CommandNode::WriteTo(mut target) = write else {
+        return Ok(write);
+    };
+    let manager = ctx.extension::<CatalogManager>()?;
+    let status = manager
+        .get_table_or_view(destination)
+        .await
+        .map_err(PlanError::from)?;
+    let columns = status.kind.columns();
+    let produced = |name: &str| outputs.iter().any(|x| x.eq_ignore_ascii_case(name));
+    if columns.iter().all(|column| produced(&column.name)) {
+        return Ok(spec::CommandNode::WriteTo(target));
+    }
+    let expressions = columns
+        .iter()
+        .map(|column| {
+            if produced(&column.name) {
+                return Ok(spec::Expr::UnresolvedAttribute {
+                    name: spec::ObjectName::bare(column.name.clone()),
+                    plan_id: None,
+                    is_metadata_column: false,
+                });
+            }
+            let cast_to_type: spec::DataType =
+                crate::spark::connect::DataType::try_from(column.data_type.clone())?.try_into()?;
+            Ok(spec::Expr::Alias {
+                expr: Box::new(spec::Expr::Cast {
+                    expr: Box::new(spec::Expr::Literal(spec::Literal::Null)),
+                    cast_to_type,
+                    rename: false,
+                    is_try: false,
+                }),
+                name: vec![column.name.clone().into()],
+                metadata: None,
+            })
+        })
+        .collect::<SparkResult<Vec<_>>>()?;
+    target.input = Box::new(spec::QueryPlan::new(spec::QueryNode::Project {
+        input: Some(target.input),
+        expressions,
+    }));
+    Ok(spec::CommandNode::WriteTo(target))
+}
+
 /// One batch of a watermarked aggregate. The closed windows are written to the
 /// target, and the open ones are written back to the checkpoint.
 async fn run_windowed(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
-    run: &AppendFlow<'_>,
+    write: spec::CommandNode,
     scope: &GraphScope<'_>,
     checkpoint: &Checkpoint,
     state: &mut FlowState,
@@ -1108,7 +1194,7 @@ async fn run_windowed(
             graph: scope,
             streams: &streams,
         };
-        run_command(ctx, config.clone(), run.write.clone(), Some(&bound)).await?;
+        run_command(ctx, config.clone(), write, Some(&bound)).await?;
     }
     // Written under the next batch's name, so a replay starts from the last
     // committed files.

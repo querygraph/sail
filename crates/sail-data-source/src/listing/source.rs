@@ -248,7 +248,7 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
     ) -> Result<Arc<dyn TableSource>> {
         let SourceInfo {
             paths,
-            lakehouse_table: _,
+            lakehouse_table,
             schema,
             constraints,
             partition_by,
@@ -263,6 +263,9 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
             .path_glob_filter()
             .map(PathGlobFilter::parse)
             .transpose()?;
+        if lakehouse_table.is_none() {
+            check_local_paths_exist(&paths)?;
+        }
         let urls = resolve_listing_urls(ctx, paths).await?;
         let inference_files = select_listing_files(
             ctx,
@@ -404,6 +407,22 @@ impl<T: FormatFactory> DataSource for ListingDataSource<T> {
         }))
     }
 }
+/// A direct read of a local path that does not exist is an error. A catalog
+/// table's location, or a glob that matches nothing, can simply be empty.
+fn check_local_paths_exist(paths: &[String]) -> Result<()> {
+    for path in paths {
+        let local = path
+            .strip_prefix("file://")
+            .or_else(|| path.strip_prefix("file:"))
+            .unwrap_or(path);
+        let has_glob = local.contains(['*', '?', '[', '{']);
+        if local.starts_with('/') && !has_glob && !std::path::Path::new(local).exists() {
+            return plan_err!("[PATH_NOT_FOUND] Path does not exist: file:{local}");
+        }
+    }
+    Ok(())
+}
+
 async fn listing_target_exists(ctx: &dyn Session, url: &Url) -> Result<bool> {
     // For file systems, treat the target as existing even if it is an empty directory.
     if url.scheme() == "file"

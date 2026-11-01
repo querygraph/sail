@@ -204,7 +204,8 @@ pub(super) async fn tables(
                         )
                         .await?;
                     }
-                    if old.nullable != column.nullable {
+                    // A column is never tightened: its rows may already hold nulls.
+                    if column.nullable && !old.nullable {
                         changes.push(spec::ColumnChange::Nullability {
                             path: vec![column.name.clone()],
                             nullable: column.nullable,
