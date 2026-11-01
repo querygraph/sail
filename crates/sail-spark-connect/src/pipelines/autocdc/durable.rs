@@ -208,7 +208,6 @@ async fn empty_batch(
 
 /// One effect's table.
 struct EffectTable {
-    step: EffectStep,
     sink: SinkIdentity,
     url: Url,
 }
@@ -286,12 +285,10 @@ async fn enroll<S: Store>(
         flow,
         auxiliary_name,
         auxiliary: EffectTable {
-            step: EffectStep::Auxiliary,
             sink: auxiliary,
             url: auxiliary_url,
         },
         destination: EffectTable {
-            step: EffectStep::Target,
             sink,
             url: sink_url,
         },
@@ -671,6 +668,27 @@ impl<S: Store> DurableRun<'_, S> {
     }
 }
 
+/// Hand the target back when the source stops a run, so that the next run,
+/// perhaps the full refresh that error asks for, need not wait out the lease.
+/// A release failure leaves the lease to expire; the source's error is the
+/// one to report.
+async fn released_on_error<S: Store, T>(
+    durable: &DurableRun<'_, S>,
+    enrolled: &Enrolled,
+    result: SparkResult<T>,
+) -> SparkResult<T> {
+    if result.is_err() {
+        let control = &durable.control;
+        if let Ok(acquired) = control
+            .acquire(&enrolled.target, durable.owner, durable.lease_ms)
+            .await
+        {
+            let _ = control.release(&acquired.token).await;
+        }
+    }
+    result
+}
+
 /// Run one SCD1 flow to the frontier captured now, finishing any unfinished
 /// batch or reset first. A requested reset replaces an unfinished batch: what
 /// that batch already ratified is published, and its source progress is not
@@ -717,7 +735,7 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
                 reset = false;
             }
             IntentKind::Batch if reset => {
-                check_reset_origin(run.source)?;
+                released_on_error(durable, &enrolled, check_reset_origin(run.source)).await?;
                 publish_receipts(ctx, control, id, batch_tables(&enrolled)).await?;
             }
             IntentKind::Batch => {
@@ -742,7 +760,7 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
         }
     }
     if reset {
-        check_reset_origin(run.source)?;
+        released_on_error(durable, &enrolled, check_reset_origin(run.source)).await?;
         let intent = reset_intent(&enrolled, acquired.token.generation + 1)?;
         let token = control
             .begin_reset(&acquired.token, &intent)
@@ -754,7 +772,8 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
             .await?;
         outcome.reset = Some(generation);
     }
-    let frontier = RunFrontier::capture(run.source)?;
+    let frontier = RunFrontier::capture(run.source).map_err(SparkError::from);
+    let frontier = released_on_error(durable, &enrolled, frontier).await?;
     loop {
         let token = control
             .acquire(&enrolled.target, durable.owner, durable.lease_ms)
@@ -772,9 +791,9 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
             })?;
         let progress: Progress =
             serde_json::from_value(checkpoint.progress.clone()).map_err(encoding_error)?;
-        let Some(batch) =
-            next_intent(run.source, &frontier, &progress, run.max_rows_per_partition)?
-        else {
+        let planned = next_intent(run.source, &frontier, &progress, run.max_rows_per_partition)
+            .map_err(SparkError::from);
+        let Some(batch) = released_on_error(durable, &enrolled, planned).await? else {
             control.release(&token).await.map_err(control_error)?;
             return Ok(outcome);
         };

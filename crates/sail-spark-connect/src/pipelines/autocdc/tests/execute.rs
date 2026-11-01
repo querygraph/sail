@@ -159,18 +159,24 @@ async fn an_admitted_graph_runs_through_materialization() -> TestResult {
     Ok(())
 }
 
-/// A full refresh must not run the unfenced truncate.
+/// A full refresh runs through the authority, not the unfenced truncate.
 #[tokio::test]
-async fn a_full_refresh_is_refused_before_any_write() -> TestResult {
+async fn a_full_refresh_is_a_reset_of_the_enrolled_target() -> TestResult {
     let (ctx, _) = context()?;
+    let config = ctx
+        .extension::<crate::session::SparkSession>()?
+        .plan_config()?;
     register(&ctx, events());
     let flow = cdc_flow()?;
     let analyzed = analyzed(&flow);
     let graph = graph_of(vec![flow], vec![output()]);
-    let refused = execute_graph(&ctx, &graph, &analyzed, &selection(true)).await;
-    let message = format!("{:?}", refused.err().ok_or("must be refused")?);
-    assert!(message.contains("full refresh"), "{message}");
-    assert!(!warehouse(&ctx)?.join("_control").exists());
+    let first = execute_graph(&ctx, &graph, &analyzed, &selection(false)).await?;
+    assert_eq!(first[0].reset, None);
+    let before = rows(&ctx, config.clone(), &target()).await?;
+    let refreshed = execute_graph(&ctx, &graph, &analyzed, &selection(true)).await?;
+    assert_eq!(refreshed[0].reset, Some(1));
+    assert_eq!(refreshed[0].batches, first[0].batches);
+    assert_eq!(rows(&ctx, config, &target()).await?, before);
     finish(&ctx).await?;
     Ok(())
 }

@@ -591,3 +591,31 @@ async fn a_reset_replaces_an_unfinished_batch_and_keeps_its_ratified_commit() ->
     finish(&case.ctx).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn a_run_stopped_by_its_source_leaves_the_target_free_for_a_reset() -> TestResult {
+    let case = setup().await?;
+    let control = Arc::new(Control::new(
+        UnfencedMemoryStore::new(),
+        Arc::new(ManualClock::default()),
+    ));
+    let source = source();
+    case.run(&source, &control, "w1", None).await?;
+    source.create_partition("p0");
+    assert!(case.run(&source, &control, "w2", None).await.is_err());
+    // The clock has not moved, so w2's lease would still block this.
+    let outcome = case.run_with(&source, &control, "w3", None, true).await?;
+    assert_eq!((outcome.batches, outcome.reset), (0, Some(1)));
+    assert!(
+        rows(&case.ctx, case.config.clone(), &target())
+            .await?
+            .is_empty()
+    );
+    assert!(
+        rows(&case.ctx, case.config.clone(), &aux())
+            .await?
+            .is_empty()
+    );
+    finish(&case.ctx).await?;
+    Ok(())
+}
