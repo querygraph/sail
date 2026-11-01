@@ -14,6 +14,7 @@ use datafusion::prelude::SessionContext;
 use sail_catalog::error::CatalogError;
 use sail_catalog::manager::CatalogManager;
 use sail_common::spec;
+use sail_common_datafusion::catalog::TableKind;
 use sail_common_datafusion::extension::{SessionExtension, SessionExtensionAccessor};
 use sail_common_datafusion::task_resources::TaskResourceScope;
 use sail_plan::config::PlanConfig;
@@ -26,7 +27,7 @@ use tokio::runtime::Handle;
 use super::ScdType;
 use super::durable::{DurableOutcome, DurableRun, run_durable_flow};
 use super::flow_source::FlowSource;
-use super::run::{FlowRun, checkpoint_dir};
+use super::run::{FlowRun, checkpoint_dir, run_plain_flow};
 use super::schema::{Case, METADATA_COLUMN};
 use super::write::{IN_COMMIT_TIMESTAMPS_PROPERTY, Scd1Write, flow_output_schema, read_table};
 use crate::error::{SparkError, SparkResult, StructuredSparkError};
@@ -89,6 +90,19 @@ pub(in crate::pipelines) fn admitted(
         }
     }
     Ok(true)
+}
+
+/// The format of a target as the catalog records it.
+async fn target_format(ctx: &SessionContext, name: &Name) -> SparkResult<String> {
+    let table = ctx
+        .extension::<CatalogManager>()?
+        .get_table_or_view(name)
+        .await
+        .map_err(PlanError::from)?;
+    match table.kind {
+        TableKind::Table { format, .. } => Ok(format),
+        _ => Err(SparkError::internal("AutoCDC target is not a table")),
+    }
 }
 
 /// The graph inputs of a flow, resolved now.
@@ -355,6 +369,10 @@ fn with_commit_timestamps(graph: &GraphDefinition) -> GraphDefinition {
     for output in &mut graph.outputs {
         if let Some(pc::define_output::Details::TableDetails(details)) =
             &mut output.definition.details
+            && details
+                .format
+                .as_deref()
+                .is_none_or(|format| format.eq_ignore_ascii_case("delta"))
         {
             details.table_properties.insert(
                 IN_COMMIT_TIMESTAMPS_PROPERTY.to_string(),
@@ -522,7 +540,11 @@ impl CdcRun {
             sequencing_type: &sequencing,
             case: case_of(&config),
         };
-        let checkpoint = checkpoint_dir(&self.warehouse, name, &flow.name, false)?;
+        let resets = crate::pipelines::materialize::resets(output, selection);
+        let plain = !target_format(ctx, name)
+            .await?
+            .eq_ignore_ascii_case("delta");
+        let checkpoint = checkpoint_dir(&self.warehouse, name, &flow.name, plain && resets)?;
         let relations = flow_relations(ctx, graph, analyzed, flow, config.clone()).await?;
         let run = FlowRun {
             graph,
@@ -535,6 +557,17 @@ impl CdcRun {
             max_rows_per_partition: MAX_ROWS_PER_PARTITION,
             flow_source: self.sources.1.get(&flow.name).map(Arc::as_ref),
         };
+        let reset = crate::pipelines::materialize::resets(output, selection);
+        // Fenced commits are Delta's. Spark's row-level rule admits others.
+        let format = target_format(ctx, name).await?;
+        if !format.eq_ignore_ascii_case("delta") {
+            let outcome = run_plain_flow(ctx, config, &self.scope, &run, &format, reset).await?;
+            return Ok(DurableOutcome {
+                batches: outcome.batches,
+                recovered: None,
+                reset: reset.then_some(0),
+            });
+        }
         run_durable_flow(
             ctx,
             config,
@@ -544,7 +577,7 @@ impl CdcRun {
                 control: self.control.clone(),
                 owner: &self.owner,
                 lease_ms: LEASE_MS,
-                reset: crate::pipelines::materialize::resets(output, selection),
+                reset,
                 stage_hook: None,
             },
         )

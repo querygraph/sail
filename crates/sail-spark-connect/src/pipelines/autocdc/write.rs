@@ -515,6 +515,7 @@ pub(super) async fn replace_with_view(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
     table: &Name,
+    format: &str,
 ) -> SparkResult<()> {
     let input = spec::QueryPlan::new(spec::QueryNode::Read {
         read_type: spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
@@ -527,7 +528,7 @@ pub(super) async fn replace_with_view(
     });
     let write = spec::Write {
         input: Box::new(input),
-        source: Some("delta".to_string()),
+        source: Some(format.to_string()),
         save_type: spec::SaveType::Table {
             table: spec::ObjectName::from(table.to_vec()),
             save_method: spec::TableSaveMethod::SaveAsTable,

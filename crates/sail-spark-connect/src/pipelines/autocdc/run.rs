@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use sail_common::spec;
@@ -32,9 +33,17 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::auxiliary;
-use super::write::{Scd1Write, ensure_auxiliary_table, handle_microbatch};
+use super::durable::evolved_schema;
+use super::write::{
+    PreparedBatch, Scd1Write, drop_table, ensure_auxiliary_table, flow_output_schema,
+    handle_microbatch, publish_prepared, replace_with_view,
+};
 use crate::error::{SparkError, SparkResult};
+use crate::pipelines::analysis::GraphScope;
+use crate::pipelines::append::spec_schema;
+use crate::pipelines::execution::run_command;
 use crate::pipelines::graph::{Flow, GraphDefinition, Name};
+use crate::pipelines::schema_merge::quoted_type;
 use crate::pipelines::streaming::binding::SourceBinding;
 use crate::pipelines::streaming::intent::{Progress, RunFrontier, next_intent};
 use crate::pipelines::streaming::lower::{Inputs, lower};
@@ -205,42 +214,131 @@ pub(super) async fn run_flow(
         &record.progress,
         run.max_rows_per_partition,
     )? {
-        let scans = intent
-            .ranges
-            .iter()
-            .map(|range| run.source.scan(range))
-            .collect::<Result<Vec<_>, _>>()?;
-        let binding = SourceBinding {
-            name: run.source_name.clone(),
-            schema: run.source.schema(),
-            descriptor: descriptor.clone(),
-            intent: intent.clone(),
-            scans,
+        let plan = if let Some(flow_source) = run.flow_source {
+            let graph_scope = GraphScope::new(run.graph, run.relations, run.flow);
+            flow_source
+                .batch_plan(ctx, &config, &graph_scope, run.graph, run.flow, &intent)
+                .await?
+        } else {
+            let scans = intent
+                .ranges
+                .iter()
+                .map(|range| run.source.scan(range))
+                .collect::<Result<Vec<_>, _>>()?;
+            let binding = SourceBinding {
+                name: run.source_name.clone(),
+                schema: run.source.schema(),
+                descriptor: descriptor.clone(),
+                intent: intent.clone(),
+                scans,
+            };
+            let lowered = lower(
+                ctx,
+                config.clone(),
+                scope,
+                &Inputs {
+                    graph: run.graph,
+                    flow: run.flow,
+                    relations: run.relations,
+                    sources: std::slice::from_ref(&binding),
+                    statics: &[],
+                    locals: &[],
+                },
+            )
+            .await
+            .map_err(|error| SparkError::invalid(error.to_string()))?;
+            lowered.plan
         };
-        let lowered = lower(
-            ctx,
-            config.clone(),
-            scope,
-            &Inputs {
-                graph: run.graph,
-                flow: run.flow,
-                relations: run.relations,
-                sources: std::slice::from_ref(&binding),
-                statics: &[],
-                locals: &[],
-            },
-        )
-        .await
-        .map_err(|error| SparkError::invalid(error.to_string()))?;
         let batch_id = i64::try_from(record.completed_batches)
             .map_err(|_| SparkError::internal("batch id overflow"))?;
-        handle_microbatch(ctx, config.clone(), run.write, &aux, lowered.plan, batch_id).await?;
+        handle_microbatch(ctx, config.clone(), run.write, &aux, plan, batch_id).await?;
         record.progress = record.progress.advance(&intent);
         record.completed_batches += 1;
         batches += 1;
         record.store(run.checkpoint)?;
     }
     Ok(RunOutcome { batches, record })
+}
+
+/// A flow whose target has no fenced commits, such as an Iceberg table. Progress
+/// is the checkpoint, as in Spark, so a crash replays the last batch, and the
+/// merges are safe to repeat because rows only win by sequence.
+pub(super) async fn run_plain_flow(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    scope: &TaskResourceScope,
+    run: &FlowRun<'_>,
+    format: &str,
+    reset: bool,
+) -> SparkResult<RunOutcome> {
+    if let Some(flow_source) = run.flow_source {
+        flow_source.refresh(ctx).await?;
+    }
+    if reset {
+        let output = flow_output_schema(
+            ctx,
+            config.clone(),
+            run.write.args,
+            run.write.case,
+            &run.source.schema(),
+        )
+        .await?;
+        drop_table(
+            ctx,
+            config.clone(),
+            &auxiliary::table_name(run.write.destination),
+        )
+        .await?;
+        publish_empty(ctx, output).await?;
+        replace_with_view(ctx, config.clone(), run.write.destination, format).await?;
+    } else if let Some((schema, added)) = evolved_schema(ctx, config.clone(), run).await? {
+        add_columns(ctx, config.clone(), run.write.destination, &schema, &added).await?;
+    }
+    run_flow(ctx, config, scope, run).await
+}
+
+/// Iceberg's MERGE has no schema evolution, and no fence needs one here.
+async fn add_columns(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    table: &Name,
+    schema: &SchemaRef,
+    added: &[String],
+) -> SparkResult<()> {
+    let name = table
+        .iter()
+        .map(|part| format!("`{part}`"))
+        .collect::<Vec<_>>()
+        .join(".");
+    let fields = spec_schema(schema)?.fields;
+    for column in added {
+        let field = fields
+            .iter()
+            .find(|field| &field.name == column)
+            .ok_or_else(|| SparkError::internal("evolved column missing"))?;
+        let data_type = quoted_type(&field.data_type)?;
+        let sql = format!(
+            "ALTER TABLE {name} ADD COLUMNS (`{column}` {})",
+            data_type.trim_matches('"')
+        );
+        let statement = sail_sql_analyzer::parser::parse_one_statement(&sql)?;
+        let plan = sail_sql_analyzer::statement::from_ast_statement(statement)?;
+        let spec::Plan::Command(command) = plan else {
+            return Err(SparkError::internal("ALTER TABLE is not a command"));
+        };
+        run_command(ctx, config.clone(), command.node, None).await?;
+    }
+    Ok(())
+}
+
+async fn publish_empty(ctx: &SessionContext, schema: SchemaRef) -> SparkResult<()> {
+    let columns = schema.fields().iter().map(|x| x.name().clone()).collect();
+    let empty = PreparedBatch {
+        schema,
+        batches: vec![],
+        columns,
+    };
+    publish_prepared(ctx, &empty).await
 }
 
 /// `TriggeredGraphExecution`: the flows of a run start in the given

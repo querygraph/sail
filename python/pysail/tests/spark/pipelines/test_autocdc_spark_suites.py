@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 
 import pytest
@@ -416,10 +417,10 @@ def test_an_unknown_streaming_format_is_refused(space, pipeline_factory):
 
         @dp.temporary_view
         def changes():
-            return space.readStream.format("rate").load()
+            return space.readStream.format("socket").option("host", "localhost").option("port", "1").load()
 
         dp.create_streaming_table(TARGET, **FORMAT)
-        dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["value"], sequence_by="timestamp")
+        dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["value"], sequence_by="value")
     with pytest.raises(FAILURE, match="incremental pipeline execution"):
         start()
 
@@ -637,3 +638,51 @@ def test_a_flow_reads_a_delta_table_incrementally(space, pipeline_factory):
     assert rows(space, "id", "name") == [(1, "alicia"), (2, "bob")]
     go()
     assert rows(space, "id", "name") == [(1, "alicia"), (2, "bob")]
+
+
+@sail_only
+def test_an_iceberg_target_merges_evolves_and_refreshes(space, pipeline_factory, broker):  # noqa: F811
+    def go(schema, keys="id", **options):
+        _, registry, start = pipeline_factory()
+        with graph_element_registration_context(registry):
+
+            @dp.temporary_view
+            def changes():
+                return space.readStream.format("json").schema(schema).load(broker.url)
+
+            dp.create_streaming_table("target", format="iceberg")
+            dp.create_auto_cdc_flow(target="target", source="changes", keys=[keys], sequence_by="seq")
+        start(**options)
+
+    space.sql("DROP TABLE IF EXISTS target")
+    broker.send({"id": 1, "name": "alice", "seq": 1}, {"id": 2, "name": "bob", "seq": 1})
+    go(BASE)
+    assert rows(space, "id", "name") == [(1, "alice"), (2, "bob")]
+    broker.send({"id": 1, "name": "alicia", "seq": 2, "age": 30})
+    go("id INT, name STRING, seq BIGINT, age INT")
+    assert rows(space, "id", "name", "age") == [(1, "alicia", 30), (2, "bob", None)]
+    go("id BIGINT, name STRING, seq BIGINT", keys="name", full_refresh_all=True)
+    assert rows(space, "id", "name") == [(1, "alice"), (1, "alicia"), (2, "bob")]
+    assert space.table("target").schema["id"].dataType.simpleString() == "bigint"
+
+
+def test_a_rate_source_feeds_a_flow(space, pipeline_factory):
+    def go():
+        _, registry, start = pipeline_factory()
+        with graph_element_registration_context(registry):
+
+            @dp.temporary_view
+            def changes():
+                return space.readStream.format("rate").option("rowsPerSecond", "5").load()
+
+            dp.create_streaming_table(TARGET, **FORMAT)
+            dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["value"], sequence_by="timestamp")
+        start()
+
+    go()
+    time.sleep(2.2)
+    go()
+    assert space.table(TARGET).columns[:2] == ["timestamp", "value"]
+    values = [row[0] for row in space.table(TARGET).select("value").orderBy("value").collect()]
+    assert len(values) >= 5  # noqa: PLR2004
+    assert values == list(range(values[0], values[0] + len(values)))

@@ -711,57 +711,6 @@ impl<S: Store + 'static> DurableRun<'_, S> {
         self.reached(Stage::Completed, sequence)
     }
 
-    /// The target's schema with the flow's new columns, if it has any. Columns
-    /// the flow no longer emits stay, as `StructType.merge` keeps them.
-    async fn evolved_schema(
-        &self,
-        ctx: &SessionContext,
-        config: Arc<PlanConfig>,
-    ) -> SparkResult<Option<(SchemaRef, Vec<String>)>> {
-        let write = self.run.write;
-        let current = read_table(ctx, config.clone(), write.destination).await?;
-        let current = current.schema().as_arrow().clone();
-        let output = flow_output_schema(
-            ctx,
-            config,
-            write.args,
-            write.case,
-            &self.run.source.schema(),
-        )
-        .await?;
-        let resolver = write.case.resolver();
-        let mut changed = vec![];
-        let mut fields = Vec::with_capacity(current.fields().len());
-        for existing in current.fields() {
-            let incoming = output
-                .fields()
-                .iter()
-                .find(|field| resolver(existing.name(), field.name()));
-            let merged = incoming.map_or_else(
-                || existing.data_type().clone(),
-                |field| evolved_type(existing.data_type(), field.data_type(), resolver),
-            );
-            if &merged != existing.data_type() {
-                changed.push(existing.name().clone());
-            }
-            fields.push(existing.as_ref().clone().with_data_type(merged));
-        }
-        for field in output.fields() {
-            if !current
-                .fields()
-                .iter()
-                .any(|x| resolver(x.name(), field.name()))
-            {
-                changed.push(field.name().clone());
-                fields.push(field.as_ref().clone().with_nullable(true));
-            }
-        }
-        if changed.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some((Arc::new(Schema::new(fields)), changed)))
-    }
-
     /// Finish an initialization, repeating only what has no receipt. It
     /// advances no progress and no batch number.
     async fn finish_initialization(
@@ -780,7 +729,7 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             .await
             .map_err(control_error)?
             .is_some();
-        let evolved = self.evolved_schema(ctx, config.clone()).await?;
+        let evolved = evolved_schema(ctx, config.clone(), self.run).await?;
         let schema = match &evolved {
             Some((schema, _)) => schema.clone(),
             None => Arc::new(
@@ -873,7 +822,7 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             publish_prepared(ctx, &empty).await?;
             let fenced = fence(token, intent, EffectStep::ResetTarget, &digest)?;
             self.install_with(ctx, Some(fenced));
-            let replaced = replace_with_view(ctx, config.clone(), destination).await;
+            let replaced = replace_with_view(ctx, config.clone(), destination, "delta").await;
             self.install(ctx);
             replaced?;
         }
@@ -936,6 +885,51 @@ impl<S: Store + 'static> DurableRun<'_, S> {
         ensure_checkpoint(control, &enrolled.target, guard.generation, &enrolled.flow).await?;
         Ok(guard.generation)
     }
+}
+
+/// The target's schema with the flow's new columns, if it has any. Columns the
+/// flow no longer emits stay, as `StructType.merge` keeps them.
+pub(super) async fn evolved_schema(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    run: &FlowRun<'_>,
+) -> SparkResult<Option<(SchemaRef, Vec<String>)>> {
+    let write = run.write;
+    let current = read_table(ctx, config.clone(), write.destination).await?;
+    let current = current.schema().as_arrow().clone();
+    let output =
+        flow_output_schema(ctx, config, write.args, write.case, &run.source.schema()).await?;
+    let resolver = write.case.resolver();
+    let mut changed = vec![];
+    let mut fields = Vec::with_capacity(current.fields().len());
+    for existing in current.fields() {
+        let incoming = output
+            .fields()
+            .iter()
+            .find(|field| resolver(existing.name(), field.name()));
+        let merged = incoming.map_or_else(
+            || existing.data_type().clone(),
+            |field| evolved_type(existing.data_type(), field.data_type(), resolver),
+        );
+        if &merged != existing.data_type() {
+            changed.push(existing.name().clone());
+        }
+        fields.push(existing.as_ref().clone().with_data_type(merged));
+    }
+    for field in output.fields() {
+        if !current
+            .fields()
+            .iter()
+            .any(|x| resolver(x.name(), field.name()))
+        {
+            changed.push(field.name().clone());
+            fields.push(field.as_ref().clone().with_nullable(true));
+        }
+    }
+    if changed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((Arc::new(Schema::new(fields)), changed)))
 }
 
 /// `current` with the struct fields of `incoming` it lacks, at any depth.
@@ -1113,7 +1107,7 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
         outcome.reset = Some(generation);
         enrolled = enroll(ctx, config.clone(), durable, auxiliary_name).await?;
     }
-    if let Some((_, added)) = durable.evolved_schema(ctx, config.clone()).await? {
+    if let Some((_, added)) = evolved_schema(ctx, config.clone(), durable.run).await? {
         let token = control
             .acquire(&enrolled.target, durable.owner, durable.lease_ms)
             .await

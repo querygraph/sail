@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch, TimestampMicrosecondArray};
+use datafusion::arrow::compute::cast;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datasource::{MemTable, TableProvider, provider_as_source};
 use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
@@ -371,9 +373,82 @@ fn scan_plan(provider: Arc<dyn TableProvider>) -> SparkResult<LogicalPlan> {
     Ok(LogicalPlanBuilder::scan("scan", provider_as_source(provider), None)?.build()?)
 }
 
+/// Spark's rate source: `value` counts rows and `timestamp` is when each was
+/// due. The start is kept beside the flow's checkpoints, so positions are
+/// stable across runs and a replay yields the same rows.
+struct RateLeaf {
+    schema: SchemaRef,
+    rows_per_second: u64,
+    manifest: PathBuf,
+    start_ms: Mutex<u64>,
+}
+
+impl RateLeaf {
+    fn refresh(&self) -> SparkResult<()> {
+        let start = match std::fs::read(&self.manifest) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| SparkError::internal(format!("read rate start: {e}")))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let start = now_ms()?;
+                write_manifest(&self.manifest, &[start.to_string()])?;
+                vec![start.to_string()]
+            }
+            Err(error) => return Err(SparkError::internal(format!("read rate start: {error}"))),
+        };
+        let start: Vec<String> = start;
+        let start = start
+            .first()
+            .and_then(|x| x.parse().ok())
+            .ok_or_else(|| SparkError::internal("rate start is malformed"))?;
+        *self
+            .start_ms
+            .lock()
+            .map_err(|e| SparkError::internal(e.to_string()))? = start;
+        Ok(())
+    }
+
+    fn frontier(&self) -> Result<u64, SourceError> {
+        let start = *self.start_ms.lock().map_err(internal)?;
+        let elapsed = now_ms().map_err(internal)?.saturating_sub(start);
+        Ok(elapsed / 1000 * self.rows_per_second)
+    }
+
+    fn plan(&self, range: &Range) -> SparkResult<LogicalPlan> {
+        let (first, end) = (position(&range.start)? as u64, position(&range.end)? as u64);
+        let start_ms = *self
+            .start_ms
+            .lock()
+            .map_err(|e| SparkError::internal(e.to_string()))?;
+        let values: Vec<i64> = (first..end).map(|x| x as i64).collect();
+        let micros: Vec<i64> = (first..end)
+            .map(|x| ((start_ms + x * 1000 / self.rows_per_second) * 1000) as i64)
+            .collect();
+        let mut columns: Vec<ArrayRef> = vec![];
+        for field in self.schema.fields() {
+            let column: ArrayRef = if field.name() == "value" {
+                Arc::new(Int64Array::from(values.clone()))
+            } else {
+                Arc::new(TimestampMicrosecondArray::from(micros.clone()))
+            };
+            columns.push(cast(&column, field.data_type())?);
+        }
+        let batch = RecordBatch::try_new(self.schema.clone(), columns)?;
+        let table = MemTable::try_new(self.schema.clone(), vec![vec![batch]])?;
+        scan_plan(Arc::new(table))
+    }
+}
+
+fn now_ms() -> SparkResult<u64> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| SparkError::internal(e.to_string()))?;
+    u64::try_from(now.as_millis()).map_err(|e| SparkError::internal(e.to_string()))
+}
+
 enum Leaf {
     Bounded(Arc<dyn BoundedSource + Send + Sync>),
     Files(Box<FileLeaf>),
+    Rate(RateLeaf),
 }
 
 impl Leaf {
@@ -381,6 +456,7 @@ impl Leaf {
         match self {
             Self::Bounded(source) => source.schema(),
             Self::Files(files) => files.schema.clone(),
+            Self::Rate(rate) => rate.schema.clone(),
         }
     }
 }
@@ -494,8 +570,10 @@ impl FlowSource {
     /// its frontier, because listing is asynchronous and the frontier is not.
     pub(in crate::pipelines) async fn refresh(&self, ctx: &SessionContext) -> SparkResult<()> {
         for leaf in self.leaves.values() {
-            if let Leaf::Files(files) = leaf {
-                files.refresh(ctx).await?;
+            match leaf {
+                Leaf::Files(files) => files.refresh(ctx).await?,
+                Leaf::Rate(rate) => rate.refresh()?,
+                Leaf::Bounded(_) => {}
             }
         }
         Ok(())
@@ -546,6 +624,7 @@ impl FlowSource {
                 plans.push(match leaf {
                     Leaf::Bounded(source) => scan_plan(source.scan(&range)?)?,
                     Leaf::Files(files) => files.plan(ctx, config, &range).await?,
+                    Leaf::Rate(rate) => rate.plan(&range)?,
                 });
             }
             streams.insert(key.clone(), union(plans, &leaf.schema())?);
@@ -660,6 +739,27 @@ async fn source_leaf(
         iggy.describe()?;
         return Ok(Leaf::Bounded(Arc::new(iggy)));
     }
+    if format.eq_ignore_ascii_case("rate") {
+        let option = |name: &str| {
+            source
+                .options
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+        };
+        let rows_per_second = option("rowsPerSecond")
+            .map_or(Ok(1), str::parse)
+            .map_err(|e| SparkError::invalid(format!("invalid rowsPerSecond: {e}")))?;
+        if rows_per_second == 0 {
+            return Err(SparkError::invalid("rowsPerSecond must be positive"));
+        }
+        return Ok(Leaf::Rate(RateLeaf {
+            schema,
+            rows_per_second,
+            manifest: root.join("sources").join(format!("{}.json", prefix(key))),
+            start_ms: Mutex::new(0),
+        }));
+    }
     let [location] = source.paths.as_slice() else {
         return Err(SparkError::unsupported(format!(
             "incremental pipeline execution of a streaming {format} read"
@@ -702,7 +802,7 @@ impl BoundedSource for FlowSource {
                         });
                     }
                 }
-                Leaf::Files(_) => partitions.push(Partition {
+                Leaf::Files(_) | Leaf::Rate(_) => partitions.push(Partition {
                     id: PartitionId(format!("{head}/files")),
                     incarnation: Incarnation(FILES_INCARNATION.to_string()),
                 }),
@@ -718,7 +818,7 @@ impl BoundedSource for FlowSource {
     fn earliest(&self, partition: &PartitionId) -> Result<Cursor, SourceError> {
         match self.route(partition)? {
             (Leaf::Bounded(source), inner) => source.earliest(&inner),
-            (Leaf::Files(_), _) => Ok(Cursor("0".to_string())),
+            (Leaf::Files(_) | Leaf::Rate(_), _) => Ok(Cursor("0".to_string())),
         }
     }
 
@@ -730,6 +830,7 @@ impl BoundedSource for FlowSource {
                 let present = files.present.lock().map_err(internal)?;
                 Ok(known.iter().all(|file| present.contains(file)))
             }
+            (Leaf::Rate(_), _) => Ok(true),
         }
     }
 
@@ -737,6 +838,7 @@ impl BoundedSource for FlowSource {
         match self.route(partition)? {
             (Leaf::Bounded(source), inner) => source.frontier(&inner),
             (Leaf::Files(files), _) => Ok(Cursor(files.len()?.to_string())),
+            (Leaf::Rate(rate), _) => Ok(Cursor(rate.frontier()?.to_string())),
         }
     }
 
@@ -749,9 +851,13 @@ impl BoundedSource for FlowSource {
     ) -> Result<Cursor, SourceError> {
         match self.route(partition)? {
             (Leaf::Bounded(source), inner) => source.plan_end(&inner, start, frontier, max_rows),
-            (Leaf::Files(_), _) => {
+            (leaf, _) => {
+                let limit = match leaf {
+                    Leaf::Rate(_) => max_rows,
+                    _ => MAX_FILES_PER_BATCH,
+                };
                 let parse = |cursor: &Cursor| cursor.0.parse::<usize>().map_err(internal);
-                let end = (parse(start)? + MAX_FILES_PER_BATCH).min(parse(frontier)?);
+                let end = (parse(start)? + limit).min(parse(frontier)?);
                 Ok(Cursor(end.to_string()))
             }
         }
