@@ -693,6 +693,22 @@ impl<S: Store> Control<S> {
         })
     }
 
+    pub async fn rebind_auxiliary(
+        &self,
+        token: &FenceToken,
+        auxiliary: &SinkIdentity,
+        head: u64,
+    ) -> Result<TargetGuard, Outcome> {
+        transact!(self, |tx| {
+            let guard = guard_of(&tx, &token.target).await?;
+            let next =
+                transitions::rebind_auxiliary(&guard, token, self.clock.now(), auxiliary.clone())?;
+            ensure_head(&tx, auxiliary, head).await?;
+            put_guard(&tx, &next).await?;
+            Ok::<_, Fail>(next)
+        })
+    }
+
     pub async fn finalize_reset(
         &self,
         token: &FenceToken,
@@ -712,7 +728,7 @@ impl<S: Store> Control<S> {
                 identities.clone(),
             )?;
             ensure_head(&tx, &next.sink, 0).await?;
-            ensure_head(&tx, &next.auxiliary, 0).await?;
+            ensure_head(&tx, &next.auxiliary, identities.auxiliary_head).await?;
             put_guard(&tx, &next).await?;
             Ok::<_, Fail>(next)
         })

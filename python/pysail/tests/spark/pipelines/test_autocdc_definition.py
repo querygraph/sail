@@ -256,7 +256,7 @@ def test_a_multiquery_table_cannot_have_an_auto_cdc_input(pipeline, pipeline_spa
 
 
 @pytest.mark.parametrize("dry", [True, False])
-def test_auto_cdc_flow_resolves_in_a_dry_run_and_execution_is_still_rejected(
+def test_auto_cdc_flow_resolves_in_a_dry_run_and_needs_a_merge_target_to_run(
     pipeline_factory, pipeline_spark, tmp_path, dry
 ):
     # The same arguments as Spark's "registered flow survives graph resolution and validation" case.
@@ -278,10 +278,8 @@ def test_auto_cdc_flow_resolves_in_a_dry_run_and_execution_is_still_rejected(
         run(dry=True)
         assert not pipeline_spark.catalog.tableExists("target")
         return
-    with pytest.raises(errors.SparkConnectGrpcException) as error:
+    with pytest.raises(errors.AnalysisException, match="AUTOCDC_TARGET_DOES_NOT_SUPPORT_MERGE"):
         run()
-    assert "incremental pipeline execution" in str(error.value)
-    assert not pipeline_spark.catalog.tableExists("target")
 
 
 def test_four_part_source_is_rejected_before_key_checks(pipeline):

@@ -442,19 +442,16 @@ async fn analyze_queries(
             } else {
                 // Construct the virtual input, not its schema. An unread output
                 // must not fail inference ahead of another unresolved query.
+                let schemas =
+                    super::autocdc::flow_schemas(ctx, graph, &output.name, &plans).await?;
                 virtual_tables.insert(
                     output.name.clone(),
-                    VirtualTableSchema::new(
-                        output,
-                        plans
-                            .iter()
-                            .map(|plan| Arc::new(plan.schema().as_arrow().clone()))
-                            .collect(),
-                    )
-                    .with_streaming_flow(graph.flows.iter().any(|flow| {
-                        flow.target == output.name
-                            && flow_streaming.get(&flow.name).copied().unwrap_or(false)
-                    })),
+                    VirtualTableSchema::new(output, schemas).with_streaming_flow(
+                        graph.flows.iter().any(|flow| {
+                            flow.target == output.name
+                                && flow_streaming.get(&flow.name).copied().unwrap_or(false)
+                        }),
+                    ),
                 );
             }
             order.push(output.name.clone());

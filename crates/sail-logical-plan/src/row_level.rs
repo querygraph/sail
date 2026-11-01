@@ -133,6 +133,15 @@ pub fn evolve_row_level_field(
         source_type: &DataType,
         case_sensitive: bool,
     ) -> DataType {
+        if let (DataType::List(target_item), DataType::List(source_item)) =
+            (target_type, source_type)
+        {
+            return DataType::List(Arc::new(evolve_row_level_field(
+                target_item,
+                source_item,
+                case_sensitive,
+            )));
+        }
         let (DataType::Struct(target_fields), DataType::Struct(source_fields)) =
             (target_type, source_type)
         else {

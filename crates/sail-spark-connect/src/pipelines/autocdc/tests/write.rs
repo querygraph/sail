@@ -346,7 +346,8 @@ pub(super) async fn an_upsert_event_lands_a_new_row_in_an_empty_target() -> Test
         ("name", Arc::new(StringArray::from(vec!["alice"]))),
         ("version", Arc::new(Int64Array::from(vec![1_i64]))),
     ])?;
-    let aux = ensure_auxiliary_table(&ctx, config.clone(), &write, &flow_schema(&batch)?).await?;
+    let aux =
+        ensure_auxiliary_table(&ctx, config.clone(), &write, &flow_schema(&batch)?, false).await?;
     assert_eq!(aux, auxiliary::table_name(&target));
     handle_microbatch(&ctx, config.clone(), &write, &aux, batch, 0).await?;
     assert_eq!(
@@ -423,7 +424,8 @@ pub(super) async fn consecutive_upsert_delete_and_reupsert_in_one_run() -> TestR
             Arc::new(BooleanArray::from(vec![false, true, false])),
         ),
     ])?;
-    let aux = ensure_auxiliary_table(&ctx, config.clone(), &write, &flow_schema(&batch)?).await?;
+    let aux =
+        ensure_auxiliary_table(&ctx, config.clone(), &write, &flow_schema(&batch)?, false).await?;
     handle_microbatch(&ctx, config.clone(), &write, &aux, batch, 0).await?;
     assert_eq!(
         rows(&ctx, config.clone(), &target).await?,
@@ -502,7 +504,8 @@ pub(super) async fn run(
     batch: LogicalPlan,
     batch_id: i64,
 ) -> SparkResult<Name> {
-    let aux = ensure_auxiliary_table(ctx, config.clone(), write, &flow_schema(&batch)?).await?;
+    let aux =
+        ensure_auxiliary_table(ctx, config.clone(), write, &flow_schema(&batch)?, false).await?;
     handle_microbatch(ctx, config, write, &aux, batch, batch_id).await?;
     Ok(aux)
 }
@@ -714,7 +717,7 @@ pub(super) async fn a_parquet_destination_is_rejected_before_auxiliary_creation(
         case: Case::Insensitive,
     };
     let batch = batch(&[(1, "alice", 1)])?;
-    let error = ensure_auxiliary_table(&ctx, config.clone(), &write, &flow_schema(&batch)?)
+    let error = ensure_auxiliary_table(&ctx, config.clone(), &write, &flow_schema(&batch)?, false)
         .await
         .err()
         .ok_or("parquet destination unexpectedly accepted")?;
@@ -765,7 +768,8 @@ async fn the_reconciled_view_is_a_sealed_scan_not_a_lazy_plan() -> TestResult {
     };
     // Two tied events for one key: the sealed view holds exactly one winner.
     let batch = batch(&[(1, "first-tied", 7), (1, "second-tied", 7)])?;
-    let aux = ensure_auxiliary_table(&ctx, config.clone(), &write, &flow_schema(&batch)?).await?;
+    let aux =
+        ensure_auxiliary_table(&ctx, config.clone(), &write, &flow_schema(&batch)?, false).await?;
     handle_microbatch(&ctx, config.clone(), &write, &aux, batch, 0).await?;
     let view = ctx
         .extension::<CatalogManager>()?

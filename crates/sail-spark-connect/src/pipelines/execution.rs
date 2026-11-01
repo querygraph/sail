@@ -14,6 +14,7 @@ use sail_plan::resolver::scope::RelationScope;
 use tokio::sync::mpsc;
 
 use super::analysis::{AnalyzedGraph, GraphScope};
+use super::autocdc::CdcRun;
 use super::graph::{Flow, GraphDefinition, Name, Output, analysis};
 use super::selection::Selection;
 use crate::error::{SparkError, SparkResult};
@@ -36,15 +37,28 @@ pub(super) async fn execute(
 ) -> SparkResult<()> {
     // Reject unsupported modes before the first write, rather than partially
     // publishing a graph that contains an output this run cannot produce.
-    if graph.flows.iter().any(|flow| flow.auto_cdc.is_some()) {
-        if super::autocdc::admitted(ctx, graph)? {
-            super::autocdc::execute_graph(ctx, graph, &analyzed, &selection).await?;
-            return Ok(());
+    let cdc = if graph.flows.iter().any(|flow| flow.auto_cdc.is_some()) {
+        if !super::autocdc::admitted(ctx, graph)? {
+            return Err(SparkError::unsupported("incremental pipeline execution"));
         }
-        return Err(SparkError::unsupported("incremental pipeline execution"));
-    }
-    let mut deferred =
-        super::materialize::tables(ctx, graph, &analyzed.schemas, &selection).await?;
+        Some(CdcRun::prepare(ctx, graph, &analyzed, &selection).await?)
+    } else {
+        None
+    };
+    let graph = cdc.as_ref().map_or(graph, |cdc| &cdc.graph);
+    // AutoCDC targets are prepared above; their writes go through the
+    // authority, so the batch path must not materialize them.
+    let plain = match &cdc {
+        Some(cdc) => Selection {
+            refresh: &selection.refresh - &cdc.targets,
+            reset: &selection.reset - &cdc.targets,
+        },
+        None => Selection {
+            refresh: selection.refresh.clone(),
+            reset: selection.reset.clone(),
+        },
+    };
+    let mut deferred = super::materialize::tables(ctx, graph, &analyzed.schemas, &plain).await?;
     for (name, column) in &analyzed.duplicate_columns {
         deferred
             .entry(name.clone())
@@ -53,7 +67,9 @@ pub(super) async fn execute(
     super::materialize::views(ctx, graph, &analyzed, events).await?;
     let runnable =
         |output: &Output| output.view.is_none() && output.kind != OutputType::TemporaryView;
-    for name in &analyzed.order {
+    // An Iggy view stays in the analyzed order after it becomes a source.
+    let present = |name: &Name| graph.outputs.iter().any(|output| &output.name == name);
+    for name in analyzed.order.iter().filter(|name| present(name)) {
         let output = find_output(graph, name)?;
         if runnable(output) {
             for flow in flows_of(graph, name) {
@@ -76,13 +92,14 @@ pub(super) async fn execute(
         selection: &selection,
         storage: &storage,
         events,
+        cdc: cdc.as_ref(),
         deferred: &deferred,
     };
     // A failed flow does not stop independent flows, only what reads from it.
     // The first failure is the run's error.
     let mut failed = BTreeSet::new();
     let mut first_failure = None;
-    for name in &analyzed.order {
+    for name in analyzed.order.iter().filter(|name| present(name)) {
         let output = find_output(graph, name)?;
         if !runnable(output) || !selection.runs(name) {
             continue;
@@ -176,6 +193,7 @@ struct FlowRun<'a> {
     selection: &'a Selection,
     storage: &'a str,
     events: &'a RunEvents,
+    cdc: Option<&'a CdcRun>,
     deferred: &'a super::materialize::DeferredFailures,
 }
 
@@ -257,6 +275,11 @@ impl FlowRun<'_> {
     ) -> SparkResult<()> {
         if let Some(failure) = self.deferred.get(&output.name) {
             return Err(Box::new(failure.clone()).into());
+        }
+        if let (true, Some(cdc)) = (flow.auto_cdc.is_some(), self.cdc) {
+            cdc.run_flow(self.ctx, self.analyzed, self.selection, flow)
+                .await?;
+            return Ok(());
         }
         let spark = self.ctx.extension::<SparkSession>()?;
         let config = spark.plan_config_with_overrides(accepted.clone())?;

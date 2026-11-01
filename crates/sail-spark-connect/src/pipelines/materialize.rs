@@ -385,11 +385,10 @@ pub(super) async fn views(
     // A view that cannot be published is a flow failure, not a run failure.
     let mut failed = BTreeSet::new();
     for name in &analyzed.order {
-        let output = graph
-            .outputs
-            .iter()
-            .find(|output| &output.name == name)
-            .ok_or_else(|| SparkError::internal("analyzed output missing"))?;
+        // An Iggy view became a source and left the graph.
+        let Some(output) = graph.outputs.iter().find(|output| &output.name == name) else {
+            continue;
+        };
         if output.view.is_none() {
             continue;
         }

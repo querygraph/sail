@@ -176,6 +176,7 @@ async fn enrolled() -> Result<Enrolled, Box<dyn std::error::Error>> {
         .config_mut()
         .set_extension(Arc::new(FencedCommits(Arc::new(ControlCommits::new(
             control.clone(),
+            None,
         )))));
     let token = control.acquire(&target, "w1", LEASE).await?.token;
     let intent = Intent {

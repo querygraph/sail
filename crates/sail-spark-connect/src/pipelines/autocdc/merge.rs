@@ -166,9 +166,41 @@ pub(super) fn auxiliary_merge(
     }
 }
 
-/// A fenced truncate: an empty source matches nothing, so every row of the
-/// table is deleted. A plain truncate cannot carry a fence.
-pub(super) fn reset_merge(table: &[String], empty_view: &str) -> spec::MergeInto {
+/// A fenced schema change: nothing is inserted, and the commit adds the
+/// columns that the empty source has and the table lacks.
+pub(super) fn evolve_merge(table: &[String], empty_view: &str) -> spec::MergeInto {
+    let insert = spec::MergeClause::NotMatchedByTarget(spec::MergeNotMatchedByTargetClause {
+        condition: None,
+        action: spec::MergeNotMatchedByTargetAction::InsertAll,
+    });
+    empty_source_merge(table, empty_view, vec![insert], true)
+}
+
+/// A fenced effect that changes nothing, for a step that must still have a
+/// receipt.
+pub(super) fn noop_merge(table: &[String], empty_view: &str) -> spec::MergeInto {
+    let never = spec::Expr::Literal(spec::Literal::Boolean { value: Some(false) });
+    empty_source_merge(
+        table,
+        empty_view,
+        vec![delete_unmatched(condition(never))],
+        false,
+    )
+}
+
+fn delete_unmatched(condition: Option<spec::ExprWithSource>) -> spec::MergeClause {
+    spec::MergeClause::NotMatchedBySource(spec::MergeNotMatchedBySourceClause {
+        condition,
+        action: spec::MergeNotMatchedBySourceAction::Delete,
+    })
+}
+
+fn empty_source_merge(
+    table: &[String],
+    empty_view: &str,
+    clauses: Vec<spec::MergeClause>,
+    with_schema_evolution: bool,
+) -> spec::MergeInto {
     spec::MergeInto {
         target: spec::ObjectName::from(table.to_vec()),
         target_alias: Some(DESTINATION.into()),
@@ -188,13 +220,8 @@ pub(super) fn reset_merge(table: &[String], empty_view: &str) -> spec::MergeInto
             expr: spec::Expr::Literal(spec::Literal::Boolean { value: Some(false) }),
             source: None,
         },
-        clauses: vec![spec::MergeClause::NotMatchedBySource(
-            spec::MergeNotMatchedBySourceClause {
-                condition: None,
-                action: spec::MergeNotMatchedBySourceAction::Delete,
-            },
-        )],
-        with_schema_evolution: false,
+        clauses,
+        with_schema_evolution,
         fenced_write: None,
     }
 }
