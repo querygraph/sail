@@ -4,12 +4,16 @@ use std::fmt::{self, Debug, Display};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use arrow::array::{Array, Int64Array, StringArray, StringViewArray};
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::array::{
+    Decimal128Array, Int32Array, Int64Array, ListArray, StringArray, StringViewArray,
+    TimestampMicrosecondArray, TimestampSecondArray,
+};
+use arrow::buffer::{NullBuffer, OffsetBuffer};
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::datasource::physical_plan::{FileGroup, FileOutputMode, FileSinkConfig};
-use datafusion::execution::memory_pool::GreedyMemoryPool;
+use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -23,6 +27,7 @@ use object_store::{
     PutMultipartOptions, PutOptions, PutResult, UploadPart,
 };
 use orc_rust::ArrowReaderBuilder;
+use orc_rust::reader::metadata::read_metadata;
 use tokio::runtime::Handle;
 use tokio::time::timeout;
 use url::Url;
@@ -215,12 +220,72 @@ struct Harness {
     resources: Arc<TaskResourceScope>,
 }
 
-fn harness(store: Arc<FaultStore>, pool_bytes: Option<usize>) -> Result<Harness> {
-    let mut runtime = RuntimeEnvBuilder::new();
-    if let Some(bytes) = pool_bytes {
-        runtime = runtime.with_memory_pool(Arc::new(GreedyMemoryPool::new(bytes)));
+/// A greedy pool that remembers its peak.
+#[derive(Debug)]
+struct PeakPool {
+    inner: GreedyMemoryPool,
+    peak: AtomicUsize,
+}
+
+impl PeakPool {
+    fn new(bytes: usize) -> Self {
+        Self {
+            inner: GreedyMemoryPool::new(bytes),
+            peak: AtomicUsize::new(0),
+        }
     }
-    let runtime = runtime.build_arc()?;
+
+    fn record(&self) {
+        self.peak.fetch_max(self.inner.reserved(), Ordering::SeqCst);
+    }
+
+    fn peak(&self) -> usize {
+        self.peak.load(Ordering::SeqCst)
+    }
+}
+
+impl Display for PeakPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PeakPool")
+    }
+}
+
+impl MemoryPool for PeakPool {
+    fn name(&self) -> &str {
+        "peak"
+    }
+
+    fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+        self.inner.grow(reservation, additional);
+        self.record();
+    }
+
+    fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
+        self.inner.shrink(reservation, shrink);
+    }
+
+    fn try_grow(&self, reservation: &MemoryReservation, additional: usize) -> Result<()> {
+        self.inner.try_grow(reservation, additional)?;
+        self.record();
+        Ok(())
+    }
+
+    fn reserved(&self) -> usize {
+        self.inner.reserved()
+    }
+}
+
+const UNLIMITED: usize = usize::MAX / 2;
+
+fn harness(store: Arc<FaultStore>, pool_bytes: Option<usize>) -> Result<Harness> {
+    let pool = Arc::new(PeakPool::new(pool_bytes.unwrap_or(UNLIMITED)));
+    harness_with_pool(store, pool)
+}
+
+fn harness_with_pool(store: Arc<FaultStore>, pool: Arc<PeakPool>) -> Result<Harness> {
+    let runtime = RuntimeEnvBuilder::new()
+        .with_memory_pool(pool)
+        .build_arc()?;
     runtime.register_object_store(&Url::parse(URL).unwrap(), store);
     let resources = Arc::new(TaskResourceScope::new(Handle::current()));
     // A single output file keeps each scenario's upload count exact.
@@ -326,7 +391,7 @@ fn partition_columns_are_not_stored_in_the_file() -> Result<()> {
 fn an_unsupported_schema_is_refused_before_any_output() {
     let schema = Arc::new(Schema::new(vec![Field::new(
         "d",
-        DataType::Decimal128(10, 2),
+        DataType::Decimal256(40, 2),
         true,
     )]));
     assert!(matches!(
@@ -463,10 +528,19 @@ async fn a_failed_abort_is_context_and_never_the_cause() -> Result<()> {
     Ok(())
 }
 
+fn assert_nothing_reserved(harness: &Harness) {
+    assert_eq!(harness.context.memory_pool().reserved(), 0);
+}
+
+/// The bytes of the strings in `large`.
+const LARGE_BYTES: usize = 4 * 8192 * 1024;
+
 #[tokio::test]
 async fn memory_denial_is_a_resource_error_and_aborts() -> Result<()> {
+    // The fixed state fits, and then the first slice of rows does not.
+    let pool_bytes = COMPRESSOR_BYTES + COLUMN_BYTES + 64 * 1024;
     let store = Arc::new(FaultStore::default());
-    let harness = harness(store.clone(), Some(64 * 1024))?;
+    let harness = harness(store.clone(), Some(pool_bytes))?;
     let sink = sink(string_schema(), &[])?;
     let error = FileSink::write_all(&sink, input(string_schema(), large()?), &harness.context)
         .await
@@ -477,7 +551,308 @@ async fn memory_denial_is_a_resource_error_and_aborts() -> Result<()> {
     );
     assert!(published(&store).await?.is_empty());
     assert_eq!(store.aborts.load(Ordering::SeqCst), 1);
-    assert_eq!(harness.context.memory_pool().reserved(), 0);
+    assert_nothing_reserved(&harness);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_pool_too_small_for_the_writers_fixed_state_refuses_the_file() -> Result<()> {
+    let store = Arc::new(FaultStore::default());
+    let harness = harness(store.clone(), Some(64 * 1024))?;
+    let sink = sink(long_schema(), &[])?;
+    let error = FileSink::write_all(
+        &sink,
+        input(long_schema(), vec![longs(0..3)]),
+        &harness.context,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        format!("{error:?}").contains("ResourcesExhausted"),
+        "{error:?}"
+    );
+    assert!(published(&store).await?.is_empty());
+    assert_eq!(store.parts.load(Ordering::SeqCst), 0);
+    assert_nothing_reserved(&harness);
+    Ok(())
+}
+
+#[tokio::test]
+async fn encoder_buffers_are_reserved_while_nothing_has_been_written() -> Result<()> {
+    let store = Arc::new(FaultStore::default());
+    let harness = harness(store.clone(), None)?;
+    let sink = Arc::new(sink(string_schema(), &[])?);
+    let write = {
+        let (sink, context) = (sink.clone(), harness.context.clone());
+        tokio::spawn(async move {
+            let data = unending(large()?, string_schema());
+            FileSink::write_all(sink.as_ref(), data, &context).await
+        })
+    };
+    // The native encoder keeps every row of a stripe in memory, so before any
+    // output all of the input is held only in buffers that this pool must see.
+    let pool = harness.context.memory_pool().clone();
+    timeout(Duration::from_secs(60), async {
+        while pool.reserved() < LARGE_BYTES {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(store.parts.load(Ordering::SeqCst), 0);
+    harness.resources.cancel()?;
+    let error = timeout(Duration::from_secs(30), write)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("canceled"), "{error}");
+    timeout(Duration::from_secs(30), harness.resources.drain())
+        .await
+        .unwrap()?;
+    assert_eq!(store.aborts.load(Ordering::SeqCst), 1);
+    assert_nothing_reserved(&harness);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_slice_is_reserved_before_it_is_encoded() -> Result<()> {
+    let schema = string_schema();
+    let value = "x".repeat(1024 * 1024);
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(StringArray::from_iter_values([value]))],
+    )?;
+    let pool = Arc::new(PeakPool::new(UNLIMITED));
+    let store = Arc::new(FaultStore::default());
+    let harness = harness_with_pool(store, pool.clone())?;
+    // No compressor, so that the only state this large is the reserved slice: its
+    // single megabyte of output and the fixed state could not explain this peak.
+    let sink = OrcSink::try_new(
+        config(schema.clone(), &[])?,
+        OrcWriterOptions {
+            compression: OrcWriteCompression::None,
+        },
+    )?;
+    FileSink::write_all(&sink, input(schema, vec![Ok(batch)]), &harness.context).await?;
+    assert!(pool.peak() >= 2 * 1024 * 1024, "peak {}", pool.peak());
+    assert_nothing_reserved(&harness);
+    Ok(())
+}
+
+#[tokio::test]
+async fn memory_pressure_flushes_stripes_instead_of_failing() -> Result<()> {
+    // Too small to hold the input in one stripe, as this writer otherwise would.
+    let pool_bytes = LARGE_BYTES;
+    let store = Arc::new(FaultStore::default());
+    let harness = harness(store.clone(), Some(pool_bytes))?;
+    let sink = sink(string_schema(), &[])?;
+    let rows =
+        FileSink::write_all(&sink, input(string_schema(), large()?), &harness.context).await?;
+    assert_eq!(rows, 4 * 8192);
+    let paths = published(&store).await?;
+    let bytes = store.inner.get(&paths[0]).await?.bytes().await?;
+    let metadata = read_metadata(&mut bytes.clone()).map_err(native_error)?;
+    assert!(metadata.stripe_metadatas().len() > 1);
+    let total: usize = rows_of(&store, &paths[0])
+        .await?
+        .iter()
+        .map(RecordBatch::num_rows)
+        .sum();
+    assert_eq!(total, 4 * 8192);
+    assert_nothing_reserved(&harness);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_successful_write_releases_everything() -> Result<()> {
+    let pool = Arc::new(PeakPool::new(UNLIMITED));
+    let store = Arc::new(FaultStore::default());
+    let harness = harness_with_pool(store, pool.clone())?;
+    let sink = sink(string_schema(), &[])?;
+    FileSink::write_all(&sink, input(string_schema(), large()?), &harness.context).await?;
+    assert!(pool.peak() >= LARGE_BYTES, "peak {}", pool.peak());
+    assert_nothing_reserved(&harness);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failed_input_releases_everything() -> Result<()> {
+    let pool = Arc::new(PeakPool::new(UNLIMITED));
+    let store = Arc::new(FaultStore::default());
+    let harness = harness_with_pool(store, pool.clone())?;
+    let sink = sink(long_schema(), &[])?;
+    FileSink::write_all(
+        &sink,
+        input(
+            long_schema(),
+            vec![longs(0..3), exec_err!("the input failed")],
+        ),
+        &harness.context,
+    )
+    .await
+    .unwrap_err();
+    assert!(pool.peak() > 0);
+    assert_nothing_reserved(&harness);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failed_part_releases_everything() -> Result<()> {
+    let store = Arc::new(FaultStore {
+        fail_part: Some(0),
+        ..Default::default()
+    });
+    let harness = harness(store.clone(), None)?;
+    let sink = sink(string_schema(), &[])?;
+    FileSink::write_all(&sink, input(string_schema(), large()?), &harness.context)
+        .await
+        .unwrap_err();
+    assert_nothing_reserved(&harness);
+    Ok(())
+}
+
+fn single_column(name: &str, array: ArrayRef) -> Result<(SchemaRef, RecordBatch)> {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        name,
+        array.data_type().clone(),
+        true,
+    )]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![array])?;
+    Ok((schema, batch))
+}
+
+async fn write_one(schema: SchemaRef, batch: RecordBatch) -> Result<(Arc<FaultStore>, Vec<Path>)> {
+    let store = Arc::new(FaultStore::default());
+    let harness = harness(store.clone(), None)?;
+    let sink = sink(schema.clone(), &[])?;
+    FileSink::write_all(&sink, input(schema, vec![Ok(batch)]), &harness.context).await?;
+    assert_nothing_reserved(&harness);
+    let paths = published(&store).await?;
+    Ok((store, paths))
+}
+
+#[tokio::test]
+async fn an_instant_keeps_its_value_whatever_zone_labels_it() -> Result<()> {
+    let values = vec![Some(1_709_209_801_123_456), None, Some(-1_000_000)];
+    let array = TimestampMicrosecondArray::from(values.clone()).with_timezone("Asia/Tokyo");
+    let (schema, batch) = single_column("t", Arc::new(array))?;
+    let (store, paths) = write_one(schema, batch).await?;
+    let bytes = store.inner.get(&paths[0]).await?.bytes().await?;
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "t",
+        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        true,
+    )]));
+    let batches = ArrowReaderBuilder::try_new(bytes)
+        .map_err(native_error)?
+        .with_schema(schema)
+        .build()
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let column = batches[0]
+        .column(0)
+        .as_primitive::<TimestampMicrosecondType>();
+    assert_eq!(column.iter().collect::<Vec<_>>(), values);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_wall_clock_timestamp_is_stored_as_its_microseconds() -> Result<()> {
+    let values = vec![Some(-30_610_223_999_500_000), None, Some(1)];
+    let array = TimestampMicrosecondArray::from(values.clone());
+    let (schema, batch) = single_column("t", Arc::new(array))?;
+    let (store, paths) = write_one(schema, batch).await?;
+    let batches = rows_of(&store, &paths[0]).await?;
+    let column = batches[0].column(0).as_any().downcast_ref::<Int64Array>();
+    assert_eq!(column.unwrap().iter().collect::<Vec<_>>(), values);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_coarser_timestamp_is_scaled_to_microseconds() -> Result<()> {
+    let array = TimestampSecondArray::from(vec![Some(2), None]);
+    let (schema, batch) = single_column("t", Arc::new(array))?;
+    let (store, paths) = write_one(schema, batch).await?;
+    let batches = rows_of(&store, &paths[0]).await?;
+    let column = batches[0].column(0).as_any().downcast_ref::<Int64Array>();
+    assert_eq!(
+        column.unwrap().iter().collect::<Vec<_>>(),
+        vec![Some(2_000_000), None]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_timestamp_that_overflows_microseconds_fails_and_is_not_null() -> Result<()> {
+    let array = TimestampSecondArray::from(vec![Some(i64::MAX)]);
+    let (schema, batch) = single_column("t", Arc::new(array))?;
+    let error = write_one(schema, batch).await.unwrap_err();
+    assert!(error.to_string().contains("Overflow"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_instant_orc_cannot_represent_fails_and_publishes_nothing() -> Result<()> {
+    // ORC-763: half a second before the epoch reads back half a second after it.
+    let array = TimestampMicrosecondArray::from(vec![Some(-500_000)]).with_timezone("UTC");
+    let (schema, batch) = single_column("t", Arc::new(array))?;
+    let store = Arc::new(FaultStore::default());
+    let harness = harness(store.clone(), None)?;
+    let sink = sink(schema.clone(), &[])?;
+    let error = FileSink::write_all(&sink, input(schema, vec![Ok(batch)]), &harness.context)
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:?}").contains("EncodeTimestamp"),
+        "{error:?}"
+    );
+    assert!(published(&store).await?.is_empty());
+    assert_eq!(store.aborts.load(Ordering::SeqCst), 1);
+    assert_nothing_reserved(&harness);
+    Ok(())
+}
+
+#[tokio::test]
+async fn nested_and_decimal_columns_reach_the_file() -> Result<()> {
+    let decimals = Decimal128Array::from(vec![Some(10_i128.pow(38) - 1), None])
+        .with_precision_and_scale(38, 0)?;
+    let (schema, batch) = single_column("d", Arc::new(decimals.clone()))?;
+    let (store, paths) = write_one(schema, batch).await?;
+    assert_eq!(
+        rows_of(&store, &paths[0]).await?[0].column(0).as_ref(),
+        &decimals
+    );
+
+    // A view, a timestamp and a container all change, and the nulls must not.
+    let views = StringViewArray::from(vec![Some("a"), None, Some("b")]);
+    let field = Arc::new(Field::new("item", DataType::Utf8View, true));
+    let list = ListArray::new(
+        field,
+        OffsetBuffer::new(vec![0, 2, 2, 3].into()),
+        Arc::new(views),
+        Some(NullBuffer::from(vec![true, false, true])),
+    );
+    let (schema, batch) = single_column("l", Arc::new(list))?;
+    let (store, paths) = write_one(schema, batch).await?;
+    let batches = rows_of(&store, &paths[0]).await?;
+    let read = batches[0].column(0).as_list::<i32>();
+    assert_eq!(read.value_offsets(), &[0, 2, 2, 3]);
+    assert!(read.is_null(1));
+    let strings = read.values().as_string::<i32>();
+    assert_eq!(strings.value(0), "a");
+    assert!(strings.is_null(1));
+    assert_eq!(strings.value(2), "b");
+    Ok(())
+}
+
+#[test]
+fn a_slice_bound_counts_only_the_slices_own_child_rows() -> Result<()> {
+    let values = Int32Array::from_iter_values(0..1000);
+    let field = Arc::new(Field::new("item", DataType::Int32, false));
+    let offsets = OffsetBuffer::from_lengths([1, 999]);
+    let list = ListArray::new(field, offsets, Arc::new(values), None);
+    assert_eq!(encoded_bound(&list.slice(0, 1))?, 8 + 4);
+    assert_eq!(encoded_bound(&list)?, 2 * 8 + 4000);
     Ok(())
 }
 
