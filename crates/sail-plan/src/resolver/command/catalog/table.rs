@@ -8,6 +8,7 @@ use sail_catalog::provider::{
     AlterTableOptions, CatalogPartitionField, CreateTableColumnOptions, CreateTableOptions,
 };
 use sail_common::spec;
+use sail_common::utils::string::spark_case_insensitive_name_eq;
 use sail_common_datafusion::catalog::{
     CatalogTableBucketBy, CatalogTableColumnIdentity, CatalogTableConstraint, CatalogTableSort,
 };
@@ -339,7 +340,7 @@ impl PlanResolver<'_> {
                     .find(|column| {
                         column.name == partition.column
                             || (!self.config.case_sensitive
-                                && column.name.eq_ignore_ascii_case(&partition.column))
+                                && spark_case_insensitive_name_eq(&column.name, &partition.column))
                     })
                     .ok_or_else(|| {
                         PlanError::analysis(format!(

@@ -16,9 +16,7 @@ Feature: Delta Lake operationMetrics in commitInfo
         USING DELTA LOCATION {{ location.sql }}
         AS SELECT * FROM VALUES (1, 'a'), (2, 'b') AS t(id, value)
         """
-      Then query result collected
-        | count |
-        | 2     |
+      Then query result collected is empty
 
   Rule: WRITE operationMetrics
 

@@ -316,6 +316,12 @@ def _format_collected_value(value) -> str:
     return str(value)
 
 
+@then("query result collected is empty")
+def query_result_collected_is_empty(query, spark):
+    """Execute the SQL query with collect() and expect no rows."""
+    assert spark.sql(query).collect() == []
+
+
 @then(parsers.re("query result collected(?P<ordered>( ordered)?)"))
 def query_result_collected(datatable, ordered, query, spark):
     """Execute the SQL query with collect() and compare result with expected data table."""

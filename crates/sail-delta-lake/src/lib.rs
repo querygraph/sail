@@ -12,6 +12,7 @@
 
 mod catalog;
 mod catalog_managed;
+pub use catalog_managed::is_catalog_managed;
 mod change_data_feed;
 mod checkpoint;
 pub mod conversion;
