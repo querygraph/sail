@@ -19,7 +19,7 @@ use std::io::Write;
 
 use arrow::{
     array::RecordBatch,
-    datatypes::{DataType as ArrowDataType, SchemaRef},
+    datatypes::{DataType as ArrowDataType, Field, Fields, SchemaRef},
 };
 use prost::Message;
 use snafu::{ensure, ResultExt};
@@ -32,6 +32,10 @@ use crate::{
     writer::stripe::{StripeInformation, StripeWriter},
 };
 
+/// Field metadata under this prefix is written as attributes of the field's
+/// ORC type, without the prefix.
+pub const ORC_TYPE_ATTRIBUTE_PREFIX: &str = "orc.type.attribute.";
+
 /// Construct an [`ArrowWriter`] to encode [`RecordBatch`]es into a single
 /// ORC file.
 pub struct ArrowWriterBuilder<W> {
@@ -41,6 +45,7 @@ pub struct ArrowWriterBuilder<W> {
     stripe_byte_size: usize,
     compression: Option<CompressionType>,
     compression_block_size: Option<usize>,
+    calendar: Option<proto::CalendarKind>,
 }
 
 impl<W: Write> ArrowWriterBuilder<W> {
@@ -55,6 +60,7 @@ impl<W: Write> ArrowWriterBuilder<W> {
             stripe_byte_size: 64 * 1024 * 1024,
             compression: None,
             compression_block_size: None,
+            calendar: None,
         }
     }
 
@@ -83,6 +89,13 @@ impl<W: Write> ArrowWriterBuilder<W> {
         self
     }
 
+    /// Declare the calendar of the file's dates and timestamps in its footer.
+    /// Arrow values are proleptic Gregorian. Default is to declare nothing.
+    pub fn with_calendar(mut self, calendar: proto::CalendarKind) -> Self {
+        self.calendar = Some(calendar);
+        self
+    }
+
     /// Construct an [`ArrowWriter`] ready to encode [`RecordBatch`]es into
     /// an ORC file.
     pub fn try_build(mut self) -> Result<ArrowWriter<W>> {
@@ -93,40 +106,13 @@ impl<W: Write> ArrowWriterBuilder<W> {
             }
         );
         for field in self.schema.fields() {
-            let supported = match field.data_type() {
-                ArrowDataType::Float32
-                | ArrowDataType::Float64
-                | ArrowDataType::Int8
-                | ArrowDataType::Int16
-                | ArrowDataType::Int32
-                | ArrowDataType::Int64
-                | ArrowDataType::Date32
-                | ArrowDataType::Utf8
-                | ArrowDataType::LargeUtf8
-                | ArrowDataType::Binary
-                | ArrowDataType::LargeBinary
-                | ArrowDataType::Boolean => true,
-                ArrowDataType::Timestamp(_, timezone) => {
-                    matches!(timezone.as_deref(), None | Some("UTC"))
-                }
-                _ => false,
-            };
-            ensure!(
-                supported,
-                UnexpectedSnafu {
-                    msg: format!(
-                        "unsupported writer type {:?} for field {:?}",
-                        field.data_type(),
-                        field.name()
-                    )
-                }
-            );
+            check_writer_type(field)?;
         }
         let timezone = self
             .schema
             .fields()
             .iter()
-            .any(|field| matches!(field.data_type(), ArrowDataType::Timestamp(_, None)))
+            .any(|field| has_wall_clock_timestamp(field.data_type()))
             .then(|| "UTC".to_owned());
         let compressor = Compressor::new(self.compression, self.compression_block_size)?;
         // Required magic "ORC" bytes at start of file
@@ -137,6 +123,7 @@ impl<W: Write> ArrowWriterBuilder<W> {
             schema: self.schema,
             batch_size: self.batch_size,
             stripe_byte_size: self.stripe_byte_size,
+            calendar: self.calendar,
             written_stripes: vec![],
             // Accounting for the 3 magic bytes above
             total_bytes_written: 3,
@@ -152,6 +139,7 @@ pub struct ArrowWriter<W> {
     schema: SchemaRef,
     batch_size: usize,
     stripe_byte_size: usize,
+    calendar: Option<proto::CalendarKind>,
     written_stripes: Vec<StripeInformation>,
     /// Used to keep track of progress in file so far (instead of needing Seek on the writer)
     total_bytes_written: u64,
@@ -182,6 +170,16 @@ impl<W: Write> ArrowWriter<W> {
         Ok(())
     }
 
+    /// Estimated bytes buffered for the stripe in progress.
+    pub fn estimate_memory_size(&self) -> usize {
+        self.writer.estimate_memory_size()
+    }
+
+    /// Rows buffered for the stripe in progress.
+    pub fn buffered_rows(&self) -> usize {
+        self.writer.row_count
+    }
+
     /// Flush any buffered data that hasn't been written, and write the stripe
     /// footer metadata.
     pub fn flush_stripe(&mut self) -> Result<()> {
@@ -198,7 +196,8 @@ impl<W: Write> ArrowWriter<W> {
         if self.writer.row_count > 0 {
             self.flush_stripe()?;
         }
-        let footer = serialize_footer(&self.written_stripes, &self.schema).encode_to_vec();
+        let footer =
+            serialize_footer(&self.written_stripes, &self.schema, self.calendar).encode_to_vec();
         let metadata = proto::Metadata::default().encode_to_vec();
 
         let (mut writer, mut compressor) = self.writer.finish();
@@ -225,87 +224,189 @@ impl<W: Write> ArrowWriter<W> {
     }
 }
 
-fn serialize_schema(schema: &SchemaRef) -> Vec<proto::Type> {
-    let mut types = vec![];
-
-    let field_names = schema
-        .fields()
-        .iter()
-        .map(|f| f.name().to_owned())
-        .collect();
-    // TODO: consider nested types
-    let subtypes = (1..(schema.fields().len() as u32 + 1)).collect();
-    let root_type = proto::Type {
-        kind: Some(proto::r#type::Kind::Struct.into()),
-        subtypes,
-        field_names,
-        maximum_length: None,
-        precision: None,
-        scale: None,
-        attributes: vec![],
-    };
-    types.push(root_type);
-    for field in schema.fields() {
-        let t = match field.data_type() {
-            ArrowDataType::Float32 => proto::Type {
-                kind: Some(proto::r#type::Kind::Float.into()),
-                ..Default::default()
-            },
-            ArrowDataType::Float64 => proto::Type {
-                kind: Some(proto::r#type::Kind::Double.into()),
-                ..Default::default()
-            },
-            ArrowDataType::Int8 => proto::Type {
-                kind: Some(proto::r#type::Kind::Byte.into()),
-                ..Default::default()
-            },
-            ArrowDataType::Int16 => proto::Type {
-                kind: Some(proto::r#type::Kind::Short.into()),
-                ..Default::default()
-            },
-            ArrowDataType::Int32 => proto::Type {
-                kind: Some(proto::r#type::Kind::Int.into()),
-                ..Default::default()
-            },
-            ArrowDataType::Int64 => proto::Type {
-                kind: Some(proto::r#type::Kind::Long.into()),
-                ..Default::default()
-            },
-            ArrowDataType::Date32 => proto::Type {
-                kind: Some(proto::r#type::Kind::Date.into()),
-                ..Default::default()
-            },
-            ArrowDataType::Timestamp(_, None) => proto::Type {
-                kind: Some(proto::r#type::Kind::Timestamp.into()),
-                ..Default::default()
-            },
-            ArrowDataType::Timestamp(_, Some(timezone)) if timezone.as_ref() == "UTC" => {
-                proto::Type {
-                    kind: Some(proto::r#type::Kind::TimestampInstant.into()),
-                    ..Default::default()
-                }
+/// Refuse what the encoders and footer cannot represent, before any output.
+fn check_writer_type(field: &Field) -> Result<()> {
+    let data_type = field.data_type();
+    let supported = match data_type {
+        ArrowDataType::Float32
+        | ArrowDataType::Float64
+        | ArrowDataType::Int8
+        | ArrowDataType::Int16
+        | ArrowDataType::Int32
+        | ArrowDataType::Int64
+        | ArrowDataType::Date32
+        | ArrowDataType::Utf8
+        | ArrowDataType::LargeUtf8
+        | ArrowDataType::Binary
+        | ArrowDataType::LargeBinary
+        | ArrowDataType::Boolean => true,
+        ArrowDataType::Timestamp(_, timezone) => {
+            matches!(timezone.as_deref(), None | Some("UTC"))
+        }
+        // ORC declares an unsigned scale, and Decimal128 holds 38 digits.
+        ArrowDataType::Decimal128(precision, scale) => (1..=38).contains(precision) && *scale >= 0,
+        ArrowDataType::Struct(fields) => {
+            for child in fields {
+                check_writer_type(child)?;
             }
-            ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => proto::Type {
-                kind: Some(proto::r#type::Kind::String.into()),
-                ..Default::default()
-            },
-            ArrowDataType::Binary | ArrowDataType::LargeBinary => proto::Type {
-                kind: Some(proto::r#type::Kind::Binary.into()),
-                ..Default::default()
-            },
-            ArrowDataType::Boolean => proto::Type {
-                kind: Some(proto::r#type::Kind::Boolean.into()),
-                ..Default::default()
-            },
-            // TODO: support more types
-            _ => unimplemented!("unsupported datatype"),
-        };
-        types.push(t);
+            true
+        }
+        ArrowDataType::List(child) | ArrowDataType::LargeList(child) => {
+            check_writer_type(child)?;
+            true
+        }
+        ArrowDataType::Map(entries, _) => match entries.data_type() {
+            ArrowDataType::Struct(fields) if fields.len() == 2 => {
+                check_writer_type(&fields[0])?;
+                check_writer_type(&fields[1])?;
+                true
+            }
+            _ => false,
+        },
+        _ => false,
+    };
+    ensure!(
+        supported,
+        UnexpectedSnafu {
+            msg: format!(
+                "unsupported writer type {:?} for field {:?}",
+                data_type,
+                field.name()
+            )
+        }
+    );
+    Ok(())
+}
+
+/// Whether this type holds a timestamp relative to the stripe's writer timezone.
+fn has_wall_clock_timestamp(data_type: &ArrowDataType) -> bool {
+    match data_type {
+        ArrowDataType::Timestamp(_, None) => true,
+        ArrowDataType::Struct(fields) => fields
+            .iter()
+            .any(|field| has_wall_clock_timestamp(field.data_type())),
+        ArrowDataType::List(child) | ArrowDataType::LargeList(child) => {
+            has_wall_clock_timestamp(child.data_type())
+        }
+        ArrowDataType::Map(entries, _) => has_wall_clock_timestamp(entries.data_type()),
+        _ => false,
     }
+}
+
+fn serialize_schema(schema: &SchemaRef) -> Vec<proto::Type> {
+    let mut types = vec![proto::Type::default()];
+    types[0] = serialize_struct(schema.fields(), &mut types);
     types
 }
 
-fn serialize_footer(stripes: &[StripeInformation], schema: &SchemaRef) -> proto::Footer {
+fn serialize_struct(fields: &Fields, types: &mut Vec<proto::Type>) -> proto::Type {
+    let field_names = fields.iter().map(|f| f.name().to_owned()).collect();
+    let subtypes = fields.iter().map(|f| serialize_type(f, types)).collect();
+    proto::Type {
+        kind: Some(proto::r#type::Kind::Struct.into()),
+        subtypes,
+        field_names,
+        ..Default::default()
+    }
+}
+
+/// Append a field's type and then its children's, so that a type's position
+/// is its column ID. Returns that ID.
+fn serialize_type(field: &Field, types: &mut Vec<proto::Type>) -> u32 {
+    let id = types.len();
+    types.push(proto::Type::default());
+    let t = match field.data_type() {
+        ArrowDataType::Float32 => proto::Type {
+            kind: Some(proto::r#type::Kind::Float.into()),
+            ..Default::default()
+        },
+        ArrowDataType::Float64 => proto::Type {
+            kind: Some(proto::r#type::Kind::Double.into()),
+            ..Default::default()
+        },
+        ArrowDataType::Int8 => proto::Type {
+            kind: Some(proto::r#type::Kind::Byte.into()),
+            ..Default::default()
+        },
+        ArrowDataType::Int16 => proto::Type {
+            kind: Some(proto::r#type::Kind::Short.into()),
+            ..Default::default()
+        },
+        ArrowDataType::Int32 => proto::Type {
+            kind: Some(proto::r#type::Kind::Int.into()),
+            ..Default::default()
+        },
+        ArrowDataType::Int64 => proto::Type {
+            kind: Some(proto::r#type::Kind::Long.into()),
+            ..Default::default()
+        },
+        ArrowDataType::Date32 => proto::Type {
+            kind: Some(proto::r#type::Kind::Date.into()),
+            ..Default::default()
+        },
+        ArrowDataType::Timestamp(_, None) => proto::Type {
+            kind: Some(proto::r#type::Kind::Timestamp.into()),
+            ..Default::default()
+        },
+        ArrowDataType::Timestamp(_, Some(timezone)) if timezone.as_ref() == "UTC" => proto::Type {
+            kind: Some(proto::r#type::Kind::TimestampInstant.into()),
+            ..Default::default()
+        },
+        ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => proto::Type {
+            kind: Some(proto::r#type::Kind::String.into()),
+            ..Default::default()
+        },
+        ArrowDataType::Binary | ArrowDataType::LargeBinary => proto::Type {
+            kind: Some(proto::r#type::Kind::Binary.into()),
+            ..Default::default()
+        },
+        ArrowDataType::Boolean => proto::Type {
+            kind: Some(proto::r#type::Kind::Boolean.into()),
+            ..Default::default()
+        },
+        ArrowDataType::Decimal128(precision, scale) => proto::Type {
+            kind: Some(proto::r#type::Kind::Decimal.into()),
+            precision: Some(u32::from(*precision)),
+            scale: Some(*scale as u32),
+            ..Default::default()
+        },
+        ArrowDataType::Struct(fields) => serialize_struct(fields, types),
+        ArrowDataType::List(child) | ArrowDataType::LargeList(child) => proto::Type {
+            kind: Some(proto::r#type::Kind::List.into()),
+            subtypes: vec![serialize_type(child, types)],
+            ..Default::default()
+        },
+        ArrowDataType::Map(entries, _) => match entries.data_type() {
+            ArrowDataType::Struct(fields) if fields.len() == 2 => proto::Type {
+                kind: Some(proto::r#type::Kind::Map.into()),
+                subtypes: fields.iter().map(|f| serialize_type(f, types)).collect(),
+                ..Default::default()
+            },
+            _ => unimplemented!("unsupported datatype"),
+        },
+        // TODO: support more types
+        _ => unimplemented!("unsupported datatype"),
+    };
+    let mut attributes = field
+        .metadata()
+        .iter()
+        .filter_map(|(key, value)| {
+            Some(proto::StringPair {
+                key: Some(key.strip_prefix(ORC_TYPE_ATTRIBUTE_PREFIX)?.to_owned()),
+                value: Some(value.clone()),
+            })
+        })
+        .collect::<Vec<_>>();
+    attributes.sort_by(|a, b| a.key.cmp(&b.key));
+    types[id] = proto::Type { attributes, ..t };
+    id as u32
+}
+
+fn serialize_footer(
+    stripes: &[StripeInformation],
+    schema: &SchemaRef,
+    calendar: Option<proto::CalendarKind>,
+) -> proto::Footer {
     let body_length = stripes
         .iter()
         .map(|s| s.index_length + s.data_length + s.footer_length)
@@ -324,7 +425,7 @@ fn serialize_footer(stripes: &[StripeInformation], schema: &SchemaRef) -> proto:
         row_index_stride: None,
         writer: Some(u32::MAX),
         encryption: None,
-        calendar: None,
+        calendar: calendar.map(Into::into),
         software_version: None,
     }
 }

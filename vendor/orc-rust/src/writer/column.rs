@@ -18,14 +18,17 @@
 use std::marker::PhantomData;
 
 use arrow::{
-    array::{Array, ArrayRef, AsArray},
+    array::{Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, OffsetSizeTrait},
+    buffer::NullBuffer,
+    compute::filter,
     datatypes::{
-        ArrowPrimitiveType, ArrowTimestampType, ByteArrayType, Date32Type, Float32Type,
-        Float64Type, GenericBinaryType, GenericStringType, Int16Type, Int32Type, Int64Type,
-        Int8Type,
+        ArrowPrimitiveType, ArrowTimestampType, ByteArrayType, Date32Type, Decimal128Type,
+        Float32Type, Float64Type, GenericBinaryType, GenericStringType, Int16Type, Int32Type,
+        Int64Type, Int8Type,
     },
 };
 use bytes::{BufMut, BytesMut};
+use snafu::ResultExt;
 
 use crate::{
     encoding::{
@@ -36,7 +39,7 @@ use crate::{
         timestamp::TimestampEncoder,
         PrimitiveValueEncoder,
     },
-    error::Result,
+    error::{ArrowSnafu, Result},
     memory::EstimateMemory,
     writer::StreamType,
 };
@@ -56,6 +59,16 @@ pub trait ColumnStripeEncoder: EstimateMemory {
     /// Emit buffered streams to be written to the writer, and reset state
     /// in preparation for next stripe.
     fn finish(&mut self) -> Vec<Stream>;
+
+    /// Encoders of the child columns, in column ID order.
+    fn children(&self) -> &[Box<dyn ColumnStripeEncoder>] {
+        &[]
+    }
+
+    /// Encoders of the child columns, in column ID order.
+    fn children_mut(&mut self) -> &mut [Box<dyn ColumnStripeEncoder>] {
+        &mut []
+    }
 }
 
 // TODO: simplify these generics, probably overcomplicating things here
@@ -478,6 +491,335 @@ where
             }
             None => vec![data, length],
         }
+    }
+}
+
+/// The PRESENT stream of a column, started at its first [`NullBuffer`], with
+/// a count of the non-null values before that.
+#[derive(Default)]
+struct PresentEncoder {
+    present: Option<BooleanEncoder>,
+    encoded_count: usize,
+}
+
+impl PresentEncoder {
+    fn extend(&mut self, nulls: Option<&NullBuffer>, len: usize) {
+        let encoded_count = self.encoded_count;
+        match (nulls, &mut self.present) {
+            (Some(nulls), Some(present)) => present.extend(nulls),
+            (Some(nulls), present) => {
+                let mut encoder = BooleanEncoder::new();
+                encoder.extend_present(encoded_count);
+                encoder.extend(nulls);
+                *present = Some(encoder);
+            }
+            (None, Some(present)) => present.extend_present(len),
+            (None, None) => {}
+        }
+        self.encoded_count += len - nulls.map_or(0, |nulls| nulls.null_count());
+    }
+
+    fn take_stream(&mut self) -> Option<Stream> {
+        self.encoded_count = 0;
+        self.present.as_mut().map(|present| Stream {
+            kind: StreamType::Present,
+            bytes: present.finish(),
+        })
+    }
+}
+
+impl EstimateMemory for PresentEncoder {
+    fn estimate_memory_size(&self) -> usize {
+        self.present
+            .as_ref()
+            .map_or(0, |present| present.estimate_memory_size())
+    }
+}
+
+fn children_memory_size(children: &[Box<dyn ColumnStripeEncoder>]) -> usize {
+    children.iter().map(|c| c.estimate_memory_size()).sum()
+}
+
+/// A zigzag base 128 varint. Unsigned, as a 38 digit decimal sets the top bit
+/// of its zigzag form, which the signed [`NInt`] shifts would smear.
+fn write_decimal_varint(writer: &mut BytesMut, value: i128) {
+    let mut value = ((value << 1) ^ (value >> 127)) as u128;
+    while value >= 0x80 {
+        writer.put_u8(value as u8 | 0x80);
+        value >>= 7;
+    }
+    writer.put_u8(value as u8);
+}
+
+/// Encodes a decimal as a varint in the DATA stream and its scale in the
+/// SECONDARY stream. The scale is the column's for every value.
+pub struct DecimalColumnEncoder {
+    data: BytesMut,
+    scales: RleV2Encoder<i32, SignedEncoding>,
+    scale: i32,
+    present: PresentEncoder,
+}
+
+impl DecimalColumnEncoder {
+    pub fn new(scale: i32) -> Self {
+        Self {
+            data: BytesMut::new(),
+            scales: RleV2Encoder::new(),
+            scale,
+            present: PresentEncoder::default(),
+        }
+    }
+}
+
+impl EstimateMemory for DecimalColumnEncoder {
+    fn estimate_memory_size(&self) -> usize {
+        self.data.len() + self.scales.estimate_memory_size() + self.present.estimate_memory_size()
+    }
+}
+
+impl ColumnStripeEncoder for DecimalColumnEncoder {
+    fn encode_array(&mut self, array: &ArrayRef) -> Result<()> {
+        let array = array.as_primitive::<Decimal128Type>();
+        self.present.extend(array.nulls(), array.len());
+        for value in array.iter().flatten() {
+            write_decimal_varint(&mut self.data, value);
+            self.scales.write_one(self.scale);
+        }
+        Ok(())
+    }
+
+    fn column_encoding(&self) -> ColumnEncoding {
+        ColumnEncoding::DirectV2
+    }
+
+    fn finish(&mut self) -> Vec<Stream> {
+        let mut streams = vec![
+            Stream {
+                kind: StreamType::Data,
+                bytes: std::mem::take(&mut self.data).into(),
+            },
+            Stream {
+                kind: StreamType::Secondary,
+                bytes: self.scales.take_inner(),
+            },
+        ];
+        streams.extend(self.present.take_stream());
+        streams
+    }
+}
+
+/// Encodes a struct's nulls. A child holds values only for non-null parents.
+pub struct StructColumnEncoder {
+    children: Vec<Box<dyn ColumnStripeEncoder>>,
+    present: PresentEncoder,
+}
+
+impl StructColumnEncoder {
+    pub fn new(children: Vec<Box<dyn ColumnStripeEncoder>>) -> Self {
+        Self {
+            children,
+            present: PresentEncoder::default(),
+        }
+    }
+}
+
+impl EstimateMemory for StructColumnEncoder {
+    fn estimate_memory_size(&self) -> usize {
+        self.present.estimate_memory_size() + children_memory_size(&self.children)
+    }
+}
+
+impl ColumnStripeEncoder for StructColumnEncoder {
+    fn encode_array(&mut self, array: &ArrayRef) -> Result<()> {
+        let array = array.as_struct();
+        self.present.extend(array.nulls(), array.len());
+        let nulls = array.nulls().filter(|nulls| nulls.null_count() > 0);
+        for (column, child) in array.columns().iter().zip(self.children.iter_mut()) {
+            match nulls {
+                Some(nulls) => {
+                    let valid = BooleanArray::new(nulls.inner().clone(), None);
+                    child.encode_array(&filter(column, &valid).context(ArrowSnafu)?)?;
+                }
+                None => child.encode_array(column)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn column_encoding(&self) -> ColumnEncoding {
+        ColumnEncoding::Direct
+    }
+
+    fn finish(&mut self) -> Vec<Stream> {
+        self.present.take_stream().into_iter().collect()
+    }
+
+    fn children(&self) -> &[Box<dyn ColumnStripeEncoder>] {
+        &self.children
+    }
+
+    fn children_mut(&mut self) -> &mut [Box<dyn ColumnStripeEncoder>] {
+        &mut self.children
+    }
+}
+
+/// The child rows of the non-null parents. A null parent can still span child
+/// rows in Arrow, but ORC stores none for it.
+fn present_child_rows<O: OffsetSizeTrait>(
+    rows: &ArrayRef,
+    offsets: &[O],
+    nulls: Option<&NullBuffer>,
+) -> Result<ArrayRef> {
+    let (first, last) = (offsets[0].as_usize(), offsets[offsets.len() - 1].as_usize());
+    let rows = rows.slice(first, last - first);
+    let Some(nulls) = nulls.filter(|nulls| nulls.null_count() > 0) else {
+        return Ok(rows);
+    };
+    let mut keep = BooleanBufferBuilder::new(rows.len());
+    for (parent, range) in offsets.windows(2).enumerate() {
+        keep.append_n((range[1] - range[0]).as_usize(), nulls.is_valid(parent));
+    }
+    filter(&rows, &BooleanArray::new(keep.finish(), None)).context(ArrowSnafu)
+}
+
+/// The LENGTH and PRESENT streams shared by lists and maps.
+#[derive(Default)]
+struct LengthEncoder {
+    lengths: Option<RleV2Encoder<i64, UnsignedEncoding>>,
+    present: PresentEncoder,
+}
+
+impl LengthEncoder {
+    fn encode<O: OffsetSizeTrait>(&mut self, offsets: &[O], nulls: Option<&NullBuffer>) {
+        self.present.extend(nulls, offsets.len() - 1);
+        let lengths = self.lengths.get_or_insert_with(RleV2Encoder::new);
+        for (parent, range) in offsets.windows(2).enumerate() {
+            if nulls.map_or(true, |nulls| nulls.is_valid(parent)) {
+                lengths.write_one((range[1] - range[0]).as_usize() as i64);
+            }
+        }
+    }
+
+    fn take_streams(&mut self) -> Vec<Stream> {
+        let bytes = self
+            .lengths
+            .get_or_insert_with(RleV2Encoder::new)
+            .take_inner();
+        let mut streams = vec![Stream {
+            kind: StreamType::Length,
+            bytes,
+        }];
+        streams.extend(self.present.take_stream());
+        streams
+    }
+}
+
+impl EstimateMemory for LengthEncoder {
+    fn estimate_memory_size(&self) -> usize {
+        self.present.estimate_memory_size()
+            + self
+                .lengths
+                .as_ref()
+                .map_or(0, |lengths| lengths.estimate_memory_size())
+    }
+}
+
+/// Encodes an Arrow list or large list, with a single child column.
+pub struct ListColumnEncoder<O: OffsetSizeTrait> {
+    lengths: LengthEncoder,
+    children: Vec<Box<dyn ColumnStripeEncoder>>,
+    _phantom: PhantomData<O>,
+}
+
+impl<O: OffsetSizeTrait> ListColumnEncoder<O> {
+    pub fn new(child: Box<dyn ColumnStripeEncoder>) -> Self {
+        Self {
+            lengths: LengthEncoder::default(),
+            children: vec![child],
+            _phantom: Default::default(),
+        }
+    }
+}
+
+impl<O: OffsetSizeTrait> EstimateMemory for ListColumnEncoder<O> {
+    fn estimate_memory_size(&self) -> usize {
+        self.lengths.estimate_memory_size() + children_memory_size(&self.children)
+    }
+}
+
+impl<O: OffsetSizeTrait> ColumnStripeEncoder for ListColumnEncoder<O> {
+    fn encode_array(&mut self, array: &ArrayRef) -> Result<()> {
+        let array = array.as_list::<O>();
+        self.lengths.encode(array.value_offsets(), array.nulls());
+        let rows = present_child_rows(array.values(), array.value_offsets(), array.nulls())?;
+        self.children[0].encode_array(&rows)
+    }
+
+    fn column_encoding(&self) -> ColumnEncoding {
+        ColumnEncoding::DirectV2
+    }
+
+    fn finish(&mut self) -> Vec<Stream> {
+        self.lengths.take_streams()
+    }
+
+    fn children(&self) -> &[Box<dyn ColumnStripeEncoder>] {
+        &self.children
+    }
+
+    fn children_mut(&mut self) -> &mut [Box<dyn ColumnStripeEncoder>] {
+        &mut self.children
+    }
+}
+
+/// Encodes an Arrow map as ORC keys and values, each its own child column.
+pub struct MapColumnEncoder {
+    lengths: LengthEncoder,
+    children: Vec<Box<dyn ColumnStripeEncoder>>,
+}
+
+impl MapColumnEncoder {
+    pub fn new(keys: Box<dyn ColumnStripeEncoder>, values: Box<dyn ColumnStripeEncoder>) -> Self {
+        Self {
+            lengths: LengthEncoder::default(),
+            children: vec![keys, values],
+        }
+    }
+}
+
+impl EstimateMemory for MapColumnEncoder {
+    fn estimate_memory_size(&self) -> usize {
+        self.lengths.estimate_memory_size() + children_memory_size(&self.children)
+    }
+}
+
+impl ColumnStripeEncoder for MapColumnEncoder {
+    fn encode_array(&mut self, array: &ArrayRef) -> Result<()> {
+        let array = array.as_map();
+        self.lengths.encode(array.value_offsets(), array.nulls());
+        let entries: ArrayRef = std::sync::Arc::new(array.entries().clone());
+        let entries = present_child_rows(&entries, array.value_offsets(), array.nulls())?;
+        let entries = entries.as_struct();
+        for (column, child) in entries.columns().iter().zip(self.children.iter_mut()) {
+            child.encode_array(column)?;
+        }
+        Ok(())
+    }
+
+    fn column_encoding(&self) -> ColumnEncoding {
+        ColumnEncoding::DirectV2
+    }
+
+    fn finish(&mut self) -> Vec<Stream> {
+        self.lengths.take_streams()
+    }
+
+    fn children(&self) -> &[Box<dyn ColumnStripeEncoder>] {
+        &self.children
+    }
+
+    fn children_mut(&mut self) -> &mut [Box<dyn ColumnStripeEncoder>] {
+        &mut self.children
     }
 }
 

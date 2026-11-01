@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::{BinaryArray, BooleanArray, Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{IntervalUnit, Schema, TimeUnit};
+use arrow::datatypes::{IntervalUnit, Schema};
 use datafusion_common::DataFusionError;
 use orc_rust::{ArrowReaderBuilder, ArrowWriterBuilder};
+use sail_common_datafusion::variant::variant_metadata_field;
 
 use super::*;
 
@@ -76,37 +77,197 @@ fn malformed_spark_metadata_is_a_planning_error_with_field_context() {
     }
 }
 
+fn item(data_type: DataType) -> Arc<Field> {
+    Arc::new(Field::new("item", data_type, true))
+}
+
+fn map_of(key: DataType, value: DataType) -> DataType {
+    let fields = vec![
+        Field::new("key", key, false),
+        Field::new("value", value, true),
+    ];
+    let entries = Field::new("entries", DataType::Struct(fields.into()), false);
+    DataType::Map(Arc::new(entries), false)
+}
+
 #[test]
-fn unsupported_native_and_temporal_types_are_rejected_before_encoding() {
+fn unsupported_types_are_rejected_before_encoding_at_any_depth() {
     for data_type in [
         DataType::Null,
         DataType::UInt8,
         DataType::UInt64,
         DataType::Float16,
-        DataType::Decimal128(20, 4),
+        DataType::Decimal128(10, -2),
+        DataType::Decimal256(40, 2),
         DataType::Date64,
-        DataType::Timestamp(TimeUnit::Microsecond, None),
-        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        // Stored in microseconds, which would drop digits.
+        DataType::Timestamp(TimeUnit::Nanosecond, None),
+        DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
         DataType::Time64(TimeUnit::Nanosecond),
         DataType::Duration(TimeUnit::Microsecond),
         DataType::Interval(IntervalUnit::YearMonth),
-        DataType::Utf8View,
-        DataType::BinaryView,
         DataType::FixedSizeBinary(4),
-        DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
-        DataType::Struct(vec![Field::new("item", DataType::Int64, true)].into()),
+        DataType::FixedSizeList(item(DataType::Int64), 2),
+        DataType::Struct(Fields::empty()),
         DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
     ] {
-        let result = admit_later_field(Field::new("unsupported", data_type.clone(), true));
-        assert!(
-            matches!(result, Err(DataFusionError::NotImplemented(message))
-            if message.contains("unsupported") && message.contains(&format!("{data_type:?}")))
-        );
+        for wrapped in [
+            data_type.clone(),
+            DataType::List(item(data_type.clone())),
+            DataType::LargeList(item(data_type.clone())),
+            DataType::Struct(vec![Field::new("inner", data_type.clone(), true)].into()),
+            map_of(DataType::Utf8, data_type.clone()),
+            map_of(data_type.clone(), DataType::Utf8),
+        ] {
+            let result = admit_later_field(Field::new("unsupported", wrapped, true));
+            assert!(
+                matches!(&result, Err(DataFusionError::NotImplemented(message))
+                if message.contains(&format!("{data_type:?}"))),
+                "{data_type:?}: {result:?}"
+            );
+        }
     }
     assert!(matches!(
         OrcWriteSchema::try_new(Arc::new(Schema::empty())),
         Err(DataFusionError::Plan(_))
     ));
+}
+
+#[test]
+fn logical_metadata_cannot_disappear_inside_a_container() {
+    let time = Field::new("inner", DataType::Int64, true).with_metadata(HashMap::from([(
+        spec::SAIL_SPARK_INTERVAL_METADATA_KEY.into(),
+        "{}".into(),
+    )]));
+    for data_type in [
+        DataType::List(Arc::new(time.clone())),
+        DataType::Struct(vec![time.clone()].into()),
+        map_of(DataType::Utf8, DataType::Struct(vec![time.clone()].into())),
+    ] {
+        let result = admit_later_field(Field::new("outer", data_type, true));
+        assert!(
+            matches!(&result, Err(DataFusionError::NotImplemented(message))
+            if message.contains("inner") && message.contains("logical metadata")),
+            "{result:?}"
+        );
+    }
+}
+
+#[test]
+fn variant_storage_is_refused_without_its_extension_at_any_depth() {
+    let marked = variant_metadata_field(DataType::Binary, false);
+    let storage =
+        DataType::Struct(vec![Field::new("value", DataType::Binary, false), marked].into());
+    for data_type in [
+        storage.clone(),
+        DataType::List(item(storage.clone())),
+        map_of(DataType::Utf8, storage.clone()),
+    ] {
+        let result = admit_later_field(Field::new("outer", data_type, true));
+        assert!(
+            matches!(&result, Err(DataFusionError::NotImplemented(message))
+            if message.contains("VARIANT")),
+            "{result:?}"
+        );
+    }
+}
+
+#[test]
+fn a_struct_shaped_like_a_variant_is_an_ordinary_struct() -> Result<()> {
+    let data_type = DataType::Struct(
+        vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]
+        .into(),
+    );
+    assert_eq!(stored(data_type.clone())?.data_type(), &data_type);
+    Ok(())
+}
+
+fn attribute(field: &Field) -> Option<&str> {
+    let key = format!("{ORC_TYPE_ATTRIBUTE_PREFIX}{CATALYST_TYPE}");
+    field.metadata().get(&key).map(String::as_str)
+}
+
+fn stored(data_type: DataType) -> Result<Field> {
+    let schema = Arc::new(Schema::new(vec![Field::new("value", data_type, true)]));
+    let admitted = OrcWriteSchema::try_new(schema)?;
+    Ok(admitted.file_schema().field(0).clone())
+}
+
+#[test]
+fn timestamps_are_stored_the_way_spark_stores_them() -> Result<()> {
+    for unit in [
+        TimeUnit::Second,
+        TimeUnit::Millisecond,
+        TimeUnit::Microsecond,
+    ] {
+        let instant = stored(DataType::Timestamp(unit, Some("Asia/Tokyo".into())))?;
+        assert_eq!(
+            instant.data_type(),
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+        );
+        assert_eq!(attribute(&instant), Some("timestamp"));
+        let wall_clock = stored(DataType::Timestamp(unit, None))?;
+        assert_eq!(wall_clock.data_type(), &DataType::Int64);
+        assert_eq!(attribute(&wall_clock), Some("timestamp_ntz"));
+    }
+    Ok(())
+}
+
+#[test]
+fn storage_mapping_reaches_inside_containers() -> Result<()> {
+    let ntz = DataType::Timestamp(TimeUnit::Microsecond, None);
+    let list = stored(DataType::List(item(ntz.clone())))?;
+    let DataType::List(child) = list.data_type() else {
+        return plan_err!("expected a list: {list:?}");
+    };
+    assert_eq!(child.data_type(), &DataType::Int64);
+    assert_eq!(attribute(child), Some("timestamp_ntz"));
+
+    let map = stored(map_of(DataType::Utf8View, DataType::BinaryView))?;
+    assert_eq!(
+        map.data_type(),
+        &map_of(DataType::Utf8, DataType::Binary),
+        "views inside a map are stored plainly"
+    );
+
+    let structure = stored(DataType::Struct(vec![Field::new("t", ntz, true)].into()))?;
+    let DataType::Struct(fields) = structure.data_type() else {
+        return plan_err!("expected a struct: {structure:?}");
+    };
+    assert_eq!(attribute(&fields[0]), Some("timestamp_ntz"));
+    Ok(())
+}
+
+#[test]
+fn stored_decimals_keep_their_precision_and_scale() -> Result<()> {
+    for data_type in [
+        DataType::Decimal128(1, 0),
+        DataType::Decimal128(1, 1),
+        DataType::Decimal128(38, 0),
+        DataType::Decimal128(38, 38),
+    ] {
+        assert_eq!(stored(data_type.clone())?.data_type(), &data_type);
+    }
+    Ok(())
+}
+
+#[test]
+fn column_count_includes_every_nested_column() -> Result<()> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Int64, true),
+        Field::new("b", DataType::List(item(DataType::Int32)), true),
+        Field::new("c", map_of(DataType::Utf8, DataType::Int32), true),
+        Field::new(
+            "d",
+            DataType::Struct(vec![Field::new("x", DataType::Int32, true)].into()),
+            true,
+        ),
+    ]));
+    assert_eq!(column_count(schema.fields()), 8);
+    Ok(())
 }
 
 #[test]
