@@ -2,15 +2,7 @@
 //! (`graph/FlowExecution.scala:398–440`) and `Scd1ForeachBatchHandler.execute`
 //! (`autocdc/Scd1ForeachBatchHandler.scala:39–72`), Spark 4.2.1 at `617618396`,
 //! over the pure components: the auxiliary state contract, microbatch
-//! validation, reconciliation and the two merges. Nothing calls this from
-//! the pipeline runner: tests invoke it per microbatch, and activation
-//! (the streaming runner, checkpoints, `execution::execute`) is a later,
-//! user-notified step.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "activated by the streaming runner unit")
-)]
-
+//! validation, reconciliation and the two merges.
 use std::sync::Arc;
 
 use datafusion::arrow::array::RecordBatch;
