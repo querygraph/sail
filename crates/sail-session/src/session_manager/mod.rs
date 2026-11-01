@@ -1,4 +1,5 @@
 mod actor;
+mod serve;
 mod session;
 mod shared;
 
@@ -13,6 +14,7 @@ use sail_common::config::{AppConfig, ExecutionMode};
 use sail_common::runtime::RuntimeHandle;
 use sail_execution::driver::{DriverGateway, DriverGatewayOptions};
 use sail_telemetry::telemetry::global_system_event_reporter;
+pub use serve::{ServerStopError, serve_until_stopped};
 use tokio::sync::oneshot;
 
 use crate::error::{SessionError, SessionResult};
@@ -45,7 +47,7 @@ impl SessionManager {
         components: SessionManagerComponents,
         system: &mut ActorSystem,
     ) -> SessionResult<Self> {
-        let shared = Arc::new(ManagerShared::default());
+        let shared = Arc::new(ManagerShared::new());
         let handle = system.spawn::<SessionManagerActor>((options, components, shared.clone()));
         Ok(Self { handle, shared })
     }
@@ -126,16 +128,26 @@ impl SessionManager {
         }
     }
 
-    /// Shut down the session manager and all resources it owns.
+    /// Shut down the session manager and all resources it owns, and return the outcome.
+    ///
+    /// Every session is cleaned up, and every failure is reported, so that one failure does not
+    /// abandon the other sessions. All callers observe the same outcome. Dropping the returned
+    /// future stops waiting, but it does not affect a shutdown that has started.
+    ///
+    /// Success means that the cleanup of every session succeeded, that each driver and its
+    /// child actors stopped, and that the driver gateway stopped. Failures to stop a driver
+    /// or the gateway are not all observable here, and a stopped driver does not confirm what
+    /// its workers were doing. The caller must still join the actor system.
     pub async fn shutdown(&self) -> SessionResult<()> {
-        let (tx, rx) = oneshot::channel();
-        self.handle
-            .send(SessionManagerMessage::Shutdown { result: tx })
-            .await?;
-        rx.await.map_err(|e| {
-            SessionError::internal(format!("failed to shut down session manager: {e}"))
-        })?;
-        Ok(())
+        if !self.shared.is_shut_down() {
+            // The result is not lost if this fails: the actor has stopped, and has published it.
+            // Nothing is recorded before this returns, so a canceled send can simply be repeated.
+            let _ = self.handle.send(SessionManagerMessage::Shutdown).await;
+        }
+        self.shared
+            .wait_for_shutdown()
+            .await
+            .map_err(|error| SessionError::DataFusionError(DataFusionError::Shared(error)))
     }
 }
 

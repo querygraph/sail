@@ -11,6 +11,7 @@ use tokio::time::Instant;
 
 use crate::error::SessionResult;
 use crate::session_manager::actor::SessionCleanup;
+use crate::session_manager::actor::cleanup::CleanupOutcome;
 
 /// The result of accepting a session release.
 pub enum SessionRelease {
@@ -57,8 +58,11 @@ pub enum SessionManagerMessage {
         driver_id: DriverId,
         result: oneshot::Sender<ExecutionResult<DriverHandle>>,
     },
-    Shutdown {
-        result: oneshot::Sender<()>,
+    /// Start shutting down. The result is observed through the shared manager state.
+    Shutdown,
+    /// Sent when everything has stopped. This is what makes the actor stop.
+    CompleteShutdown {
+        outcome: CleanupOutcome,
     },
 }
 
@@ -73,7 +77,8 @@ impl SpanAssociation for SessionManagerMessage {
             SessionManagerMessage::CheckSession { .. } => "CheckSession",
             SessionManagerMessage::SetSessionFailure { .. } => "SetSessionFailure",
             SessionManagerMessage::GetDriver { .. } => "GetDriver",
-            SessionManagerMessage::Shutdown { .. } => "Shutdown",
+            SessionManagerMessage::Shutdown => "Shutdown",
+            SessionManagerMessage::CompleteShutdown { .. } => "CompleteShutdown",
         };
         name.into()
     }
@@ -115,7 +120,7 @@ impl SpanAssociation for SessionManagerMessage {
             } => {
                 p.push((SpanAttribute::CLUSTER_DRIVER_ID, driver_id.to_string()));
             }
-            SessionManagerMessage::Shutdown { .. } => {}
+            SessionManagerMessage::Shutdown | SessionManagerMessage::CompleteShutdown { .. } => {}
         }
         p.into_iter().map(|(k, v)| (k.into(), v.into()))
     }

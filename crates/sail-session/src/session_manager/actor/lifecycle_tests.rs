@@ -15,7 +15,7 @@ use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::FutureExt;
-use futures::future::BoxFuture;
+use futures::future::{BoxFuture, join_all};
 use object_store::path::Path;
 use opentelemetry::logs::{AnyValue, LoggerProvider};
 use opentelemetry_sdk::logs::{InMemoryLogExporter, SdkLoggerProvider};
@@ -40,7 +40,8 @@ use crate::session_factory::{
     SessionJobRunnerInfo,
 };
 use crate::session_manager::{
-    SessionManager, SessionManagerComponents, SessionManagerMessage, SessionManagerOptions,
+    ServerStopError, SessionManager, SessionManagerComponents, SessionManagerMessage,
+    SessionManagerOptions, serve_until_stopped,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
@@ -255,6 +256,18 @@ impl Fixture {
         self.manager
             .get_or_create_session_context(session_id.to_string(), "user".to_string())
             .await
+    }
+
+    fn session_owned(
+        &self,
+        session_id: String,
+    ) -> impl Future<Output = Result<SessionContext, SessionError>> + use<> {
+        let manager = self.manager.clone();
+        async move {
+            manager
+                .get_or_create_session_context(session_id, "user".to_string())
+                .await
+        }
     }
 
     async fn send(&self, message: SessionManagerMessage) {
@@ -718,5 +731,455 @@ async fn destroying_the_actor_is_an_interruption_and_never_a_success() -> TestRe
         .get_or_create_session_context("a".to_string(), "user".to_string())
         .await;
     assert!(is_closed(&lookup, "a"));
+    Ok(())
+}
+
+fn shutdown(fixture: &Fixture) -> tokio::task::JoinHandle<Result<(), SessionError>> {
+    let manager = fixture.manager.clone();
+    tokio::spawn(async move { manager.shutdown().await })
+}
+
+#[tokio::test]
+async fn shutdown_cleans_every_session_concurrently_and_aggregates_failures() -> TestResult {
+    let failure = unknown_commit();
+    let (release, hold_stop) = oneshot::channel();
+    let fixture = Fixture::with_scripts(vec![
+        (
+            "blocked",
+            Script {
+                hold_stop: Some(hold_stop),
+                ..Default::default()
+            },
+        ),
+        (
+            "failing",
+            Script {
+                stop_error: Some(failure.clone()),
+                ..Default::default()
+            },
+        ),
+        (
+            "panicking",
+            Script {
+                stop_panics: true,
+                ..Default::default()
+            },
+        ),
+    ]);
+    for session_id in ["blocked", "failing", "panicking", "clean"] {
+        fixture.session(session_id).await?;
+    }
+    let Fixture {
+        mut system,
+        manager,
+        harness,
+        _provider,
+        ..
+    } = fixture;
+    let observer = {
+        let manager = manager.clone();
+        tokio::spawn(async move { manager.shutdown().await })
+    };
+    // Every session is stopped, while the first one is still blocked.
+    for session_id in ["blocked", "failing", "panicking", "clean"] {
+        harness.stop_started(session_id).await;
+    }
+    assert!(!observer.is_finished());
+    release.send(()).map_err(|_| "stop was abandoned")?;
+    let error = timeout(BOUND, observer)
+        .await??
+        .err()
+        .ok_or("shutdown succeeded")?;
+    let SessionError::DataFusionError(error) = error else {
+        return Err("shutdown error lost its type".into());
+    };
+    let DataFusionError::Shared(error) = &error else {
+        return Err("shutdown error is not the shared outcome".into());
+    };
+    let DataFusionError::Collection(errors) = error.as_ref() else {
+        return Err("sibling failures were not aggregated".into());
+    };
+    let errors = errors.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(errors.iter().any(|x| x.contains("failing")), "{errors:?}");
+    assert!(errors.iter().any(|x| x.contains("panicking")), "{errors:?}");
+    // The nonretryable classification survives the aggregation.
+    let cause = CommonErrorCause::new::<NoPython>(error);
+    assert!(!cause.is_retryable());
+    timeout(BOUND, system.join()).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn shutdown_racing_a_delete_shares_its_cleanup() -> TestResult {
+    let (release, hold_stop) = oneshot::channel();
+    let fixture = Fixture::with_scripts(vec![(
+        "a",
+        Script {
+            hold_stop: Some(hold_stop),
+            ..Default::default()
+        },
+    )]);
+    fixture.session("a").await?;
+    let deletion = fixture.delete("a");
+    fixture.harness.stop_started("a").await;
+    let observer = shutdown(&fixture);
+    let late = {
+        // This is ordered after Shutdown only if the manager is closing, which either way
+        // joins the same cleanup rather than starting another one.
+        fixture.delete("a")
+    };
+    tokio::task::yield_now().await;
+    assert!(!observer.is_finished());
+    release.send(()).map_err(|_| "stop was abandoned")?;
+    assert!(timeout(BOUND, deletion).await???);
+    assert!(timeout(BOUND, late).await???);
+    timeout(BOUND, observer).await???;
+    assert_eq!(fixture.harness.stop_calls("a"), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn shutdown_owns_a_session_in_creating() -> TestResult {
+    let (activate, hold_activation) = oneshot::channel();
+    let fixture = Fixture::with_scripts(vec![(
+        "a",
+        Script {
+            hold_activation: Some(hold_activation),
+            ..Default::default()
+        },
+    )]);
+    let waiter = {
+        let manager = fixture.manager.clone();
+        tokio::spawn(async move {
+            manager
+                .get_or_create_session_context("a".to_string(), "user".to_string())
+                .await
+        })
+    };
+    let wait = async {
+        while fixture.harness.scripts.lock().unwrap().contains_key("a") {
+            tokio::task::yield_now().await;
+        }
+    };
+    timeout(BOUND, wait).await?;
+    // The activation is still held, and it never finishes before the shutdown does.
+    timeout(BOUND, shutdown(&fixture)).await???;
+    assert_eq!(fixture.harness.stop_calls("a"), 1);
+    assert!(timeout(BOUND, waiter).await?.map_err(|_| "join")?.is_err());
+    let _ = activate.send(Ok(()));
+    assert!(is_closed(&fixture.session("a").await, "a"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn closing_seals_admission_and_keeps_serving_the_messages_shutdown_needs() -> TestResult {
+    let (release, hold_stop) = oneshot::channel();
+    let fixture = Fixture::with_scripts(vec![(
+        "a",
+        Script {
+            hold_stop: Some(hold_stop),
+            ..Default::default()
+        },
+    )]);
+    fixture.session("a").await?;
+    let observer = shutdown(&fixture);
+    fixture.harness.stop_started("a").await;
+
+    // An existing session is not available, and neither is a new one.
+    assert!(is_closed(&fixture.session("a").await, "a"));
+    let error = fixture
+        .session("new")
+        .await
+        .err()
+        .ok_or("session created")?;
+    assert!(error.to_string().contains("shutting down"), "{error}");
+
+    // A driver lookup is answered. The gateway depends on this while it stops: a lookup that
+    // was queued behind the shutdown would otherwise hold a reply that the gateway waits for.
+    let (tx, rx) = oneshot::channel();
+    fixture
+        .send(SessionManagerMessage::GetDriver {
+            driver_id: 1.into(),
+            result: tx,
+        })
+        .await;
+    let reply = timeout(BOUND, rx).await??;
+    assert!(matches!(reply, Err(ExecutionError::InvalidArgument(_))));
+
+    // More messages than the mailbox holds are served while the shutdown is in progress.
+    let lookups = (0..32).map(|i| fixture.session_owned(format!("late-{i}")));
+    for result in timeout(BOUND, join_all(lookups)).await? {
+        assert!(result.is_err());
+    }
+    assert!(!observer.is_finished());
+    release.send(()).map_err(|_| "stop was abandoned")?;
+    timeout(BOUND, observer).await???;
+    Ok(())
+}
+
+#[tokio::test]
+async fn every_shutdown_caller_observes_the_same_result() -> TestResult {
+    let failure = unknown_commit();
+    let (release, hold_stop) = oneshot::channel();
+    let fixture = Fixture::with_scripts(vec![(
+        "a",
+        Script {
+            stop_error: Some(failure),
+            hold_stop: Some(hold_stop),
+            ..Default::default()
+        },
+    )]);
+    fixture.session("a").await?;
+    let first = shutdown(&fixture);
+    fixture.harness.stop_started("a").await;
+    // The caller that started the shutdown goes away, which does not affect it.
+    first.abort();
+    assert!(first.await.is_err_and(|e| e.is_cancelled()));
+    let second = shutdown(&fixture);
+    tokio::task::yield_now().await;
+    assert!(!second.is_finished());
+    release.send(()).map_err(|_| "stop was abandoned")?;
+    let shared = |error: SessionError| match error {
+        SessionError::DataFusionError(DataFusionError::Shared(error)) => Ok(error),
+        _ => Err("shutdown error is not the shared outcome"),
+    };
+    let second = shared(timeout(BOUND, second).await??.err().ok_or("succeeded")?)?;
+    let Fixture {
+        mut system,
+        manager,
+        _provider,
+        ..
+    } = fixture;
+    timeout(BOUND, system.join()).await?;
+    // The mailbox has closed by now.
+    let third = manager.shutdown().await.err().ok_or("succeeded")?;
+    assert!(Arc::ptr_eq(&second, &shared(third)?));
+    // What failed stays reachable, and a release reports it.
+    let error = manager
+        .delete_session("a".to_string())
+        .await
+        .err()
+        .ok_or("succeeded")?;
+    assert!(
+        error.to_string().contains("stop outcome unknown"),
+        "{error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_shutdown_canceled_while_the_mailbox_is_full_can_be_requested_again() -> TestResult {
+    let fixture = Fixture::with_scripts(vec![]);
+    fixture.session("a").await?;
+    // On this single thread, the actor cannot run while the mailbox is being filled.
+    let mut filling = vec![];
+    loop {
+        let (tx, rx) = oneshot::channel();
+        let message = SessionManagerMessage::CheckSession {
+            session_id: "a".to_string(),
+            result: tx,
+        };
+        if fixture
+            .manager
+            .handle
+            .send(message)
+            .now_or_never()
+            .is_none()
+        {
+            break;
+        }
+        filling.push(rx);
+    }
+    let mut canceled = Box::pin(fixture.manager.shutdown());
+    assert!(futures::poll!(canceled.as_mut()).is_pending());
+    drop(canceled);
+    assert!(join_all(filling).await.iter().all(Result::is_ok));
+    // Nothing was accepted, so the session is still running, and the request can be repeated.
+    fixture.session("a").await?;
+    assert_eq!(fixture.harness.stop_calls("a"), 0);
+    timeout(BOUND, fixture.manager.shutdown()).await??;
+    assert_eq!(fixture.harness.stop_calls("a"), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn shutdown_does_not_wait_for_a_scheduled_idle_probe() -> TestResult {
+    let harness = Arc::new(Harness::default());
+    let fixture = Fixture::new(harness, Duration::from_secs(24 * 60 * 60));
+    fixture.session("a").await?;
+    timeout(BOUND, fixture.manager.shutdown()).await??;
+    let Fixture { mut system, .. } = fixture;
+    timeout(BOUND, system.join()).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn destroying_the_actor_during_shutdown_is_not_a_success() -> TestResult {
+    let (_release, hold_stop) = oneshot::channel();
+    let fixture = Fixture::with_scripts(vec![(
+        "a",
+        Script {
+            hold_stop: Some(hold_stop),
+            ..Default::default()
+        },
+    )]);
+    fixture.session("a").await?;
+    let observer = shutdown(&fixture);
+    fixture.harness.stop_started("a").await;
+    let Fixture {
+        system,
+        manager,
+        _provider,
+        ..
+    } = fixture;
+    drop(system);
+    let error = timeout(BOUND, observer).await??.err().ok_or("succeeded")?;
+    assert!(error.to_string().contains("interrupted"), "{error}");
+    let error = manager.shutdown().await.err().ok_or("succeeded")?;
+    assert!(error.to_string().contains("interrupted"), "{error}");
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("transport failed")]
+struct TransportError;
+
+#[tokio::test]
+async fn the_signal_stops_sessions_while_the_transport_is_still_draining() -> TestResult {
+    let (hold_tx, hold_stop) = oneshot::channel();
+    let harness = Arc::new(Harness::default());
+    harness.script(
+        "a",
+        Script {
+            hold_stop: Some(hold_stop),
+            ..Default::default()
+        },
+    );
+    let mut fixture = Fixture::new(harness.clone(), Duration::MAX);
+    fixture.session("a").await?;
+    let (signal, signaled) = oneshot::channel::<()>();
+    let observed = harness.clone();
+    let transport = move |drain: BoxFuture<'static, ()>| async move {
+        drain.await;
+        // An active response ends only when its job is stopped, which must already be happening.
+        observed.stop_started("a").await;
+        hold_tx.send(()).map_err(|_| TransportError)?;
+        Ok::<_, TransportError>(())
+    };
+    let Fixture {
+        ref mut system,
+        ref manager,
+        ..
+    } = fixture;
+    signal.send(()).map_err(|_| "signal")?;
+    let served = serve_until_stopped(
+        manager,
+        system,
+        async move {
+            let _ = signaled.await;
+        },
+        transport,
+    );
+    timeout(BOUND, served).await?.map_err(|e| e.to_string())?;
+    assert_eq!(fixture.harness.stop_calls("a"), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failed_transport_shuts_the_manager_down_and_joins_the_actors() -> TestResult {
+    let mut fixture = Fixture::with_scripts(vec![]);
+    fixture.session("a").await?;
+    let Fixture {
+        ref mut system,
+        ref manager,
+        ..
+    } = fixture;
+    let served = serve_until_stopped(manager, system, std::future::pending(), |_| async {
+        Err::<(), _>(TransportError)
+    });
+    let error = timeout(BOUND, served).await?.err().ok_or("succeeded")?;
+    assert_eq!(error.to_string(), "transport failed");
+    assert_eq!(fixture.harness.stop_calls("a"), 1);
+    assert!(
+        fixture
+            .manager
+            .handle
+            .send(SessionManagerMessage::Shutdown)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn transport_and_cleanup_failures_are_both_retained() -> TestResult {
+    let mut fixture = Fixture::with_scripts(vec![
+        (
+            "a",
+            Script {
+                stop_error: Some(unknown_commit()),
+                ..Default::default()
+            },
+        ),
+        (
+            "b",
+            Script {
+                stop_error: Some(Arc::new(DataFusionError::Plan("second".into()))),
+                ..Default::default()
+            },
+        ),
+    ]);
+    fixture.session("a").await?;
+    fixture.session("b").await?;
+    let Fixture {
+        ref mut system,
+        ref manager,
+        ..
+    } = fixture;
+    let served = serve_until_stopped(manager, system, std::future::pending(), |_| async {
+        Err::<(), _>(TransportError)
+    });
+    let error = timeout(BOUND, served).await?.err().ok_or("succeeded")?;
+    let error = error
+        .downcast_ref::<ServerStopError>()
+        .ok_or("failures were not combined")?;
+    assert_eq!(error.transport.to_string(), "transport failed");
+    let message = error.to_string();
+    assert!(message.contains("transport failed"), "{message}");
+    assert!(message.contains("session a"), "{message}");
+    assert!(message.contains("session b"), "{message}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_cleanup_failure_alone_is_reported_and_the_actors_are_joined() -> TestResult {
+    let mut fixture = Fixture::with_scripts(vec![(
+        "a",
+        Script {
+            stop_error: Some(unknown_commit()),
+            ..Default::default()
+        },
+    )]);
+    fixture.session("a").await?;
+    let Fixture {
+        ref mut system,
+        ref manager,
+        ..
+    } = fixture;
+    let served = serve_until_stopped(manager, system, std::future::ready(()), |drain| async {
+        drain.await;
+        Ok::<_, TransportError>(())
+    });
+    let error = timeout(BOUND, served).await?.err().ok_or("succeeded")?;
+    assert!(error.to_string().contains("session a"), "{error}");
+    assert!(
+        fixture
+            .manager
+            .handle
+            .send(SessionManagerMessage::Shutdown)
+            .await
+            .is_err()
+    );
     Ok(())
 }

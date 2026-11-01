@@ -23,7 +23,7 @@ use crate::error::{SessionError, SessionResult};
 use crate::session_factory::{ServerSessionInfo, SessionJobRunnerInfo};
 use crate::session_manager::SessionManagerMessage;
 use crate::session_manager::actor::cleanup::SessionCleanup;
-use crate::session_manager::actor::{SessionManagerActor, SessionRelease};
+use crate::session_manager::actor::{ManagerState, SessionManagerActor, SessionRelease};
 use crate::session_manager::session::{ServerSession, ServerSessionState, SessionOwner};
 
 impl SessionManagerActor {
@@ -43,6 +43,14 @@ impl SessionManagerActor {
         user_id: String,
         result: oneshot::Sender<SessionResult<SessionContext>>,
     ) -> ActorAction {
+        if !matches!(self.state, ManagerState::Open) {
+            let error = match self.sessions.get(&session_id) {
+                Some(session) => session.state.unavailable(&session_id),
+                None => SessionError::internal("session manager is shutting down"),
+            };
+            let _ = result.send(Err(error));
+            return ActorAction::Continue;
+        }
         if let Some(session) = self.sessions.get_mut(&session_id) {
             let context = match &mut session.state {
                 ServerSessionState::Running { context, .. } => Some(context.clone()),
