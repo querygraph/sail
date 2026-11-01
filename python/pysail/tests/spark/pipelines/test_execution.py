@@ -251,7 +251,7 @@ def test_cycle_does_not_read_old_catalog_output(pipeline_spark, pipeline, dry):
         def right_node():
             return pipeline_spark.table("left_node")
 
-    with pytest.raises(AnalysisException, match="PIPELINE_CIRCULAR_DEPENDENCY"):
+    with pytest.raises(AnalysisException, match="Circular dependencies are not supported in a pipeline"):
         run(dry=dry)
     assert not pipeline_spark.catalog.tableExists("right_node")
     assert pipeline_spark.table("left_node").count() == 1

@@ -15,7 +15,9 @@ use super::schema_stream::streaming_read_fields;
 use crate::config::EncoderSchemaSettings;
 use crate::error::{SparkError, SparkResult};
 use crate::proto::data_type::parse_spark_data_type;
+use crate::schema::to_tree_string;
 use crate::session::SparkSession;
+use crate::spark::connect as sc;
 use crate::spark::connect::data_type::StructField;
 use crate::spark::connect::pipeline_command::{DefineOutput, define_output as out};
 
@@ -44,6 +46,7 @@ pub(super) struct VirtualTableSchema {
     name: Name,
     declared: Option<spec::Schema>,
     incoming: Vec<SchemaRef>,
+    streaming: bool,
 }
 
 impl VirtualTableSchema {
@@ -51,12 +54,19 @@ impl VirtualTableSchema {
         Self {
             name: output.name.clone(),
             declared: output.schema.clone(),
+            streaming: false,
             incoming,
         }
     }
 
     /// Spark's VirtualTableInput.load uses a declaration directly, without
     /// merging incoming schemas. No error is suppressed or replaced by a schema.
+    /// Whether a flow into this table is streaming, which makes it stateful.
+    pub fn with_streaming_flow(mut self, streaming: bool) -> Self {
+        self.streaming = streaming;
+        self
+    }
+
     pub fn load(&self, ctx: &SessionContext) -> SparkResult<Schema> {
         let resolver = PlanResolver::new(ctx, ctx.extension::<SparkSession>()?.plan_config()?);
         arrow_schema(&resolver, self.read_fields()?)
@@ -81,6 +91,41 @@ impl VirtualTableSchema {
         }
     }
 
+    fn incompatible(
+        &self,
+        ctx: &SessionContext,
+        declared: &spec::Fields,
+        inferred: &spec::Fields,
+    ) -> SparkError {
+        let tree = |fields: &spec::Fields| -> SparkResult<String> {
+            let plan_config = ctx.extension::<SparkSession>()?.plan_config()?;
+            let schema = arrow_schema(&PlanResolver::new(ctx, plan_config), fields.clone())?;
+            let data_type = sc::DataType::try_from(DataType::Struct(schema.fields().clone()))?;
+            Ok(to_tree_string(&data_type, None))
+        };
+        let (declared, inferred) = match (tree(declared), tree(inferred)) {
+            (Ok(declared), Ok(inferred)) => (declared, inferred),
+            (Err(error), _) | (_, Err(error)) => return error,
+        };
+        let hint = if self.streaming {
+            "\nStreaming tables are stateful and remember data that has already been\n\
+             processed. If you want to recompute the table from scratch, please full refresh\n\
+             the table.\n"
+        } else {
+            ""
+        };
+        analysis(
+            "USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE",
+            format!(
+                "Table '{}' has a user-specified schema that is incompatible with the schema \
+                 inferred from its query.\n{hint}\nDeclared schema:\n{}\n\nInferred schema:\n{}",
+                self.name.join("."),
+                declared,
+                inferred,
+            ),
+        )
+    }
+
     /// Validate declaration compatibility after successful query resolution.
     /// A read uses load directly and does not run this graph validation.
     pub fn validate(&self, ctx: &SessionContext) -> SparkResult<Schema> {
@@ -91,25 +136,12 @@ impl VirtualTableSchema {
         }
         let declared = self.load(ctx)?;
         let declared_fields = spark_fields(&declared)?;
-        let merged = merge_fields(&declared_fields, &inferred).map_err(|error| {
-            analysis(
-                "USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE",
-                format!(
-                    "'{}' has a user-specified schema that is incompatible: specified {declared:?}, inferred {inferred:?}: {error}",
-                    self.name.join(".")
-                ),
-            )
-        })?;
+        let merged = merge_fields(&declared_fields, &inferred)
+            .map_err(|_| self.incompatible(ctx, &declared_fields, &inferred))?;
         // A successful merge can still add undeclared columns or weaken
         // nullability, which the declaration compatibility check must reject.
         if merged != declared_fields {
-            return Err(analysis(
-                "USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE",
-                format!(
-                    "'{}' has a user-specified schema that is incompatible: specified {declared:?}, inferred {inferred:?}",
-                    self.name.join(".")
-                ),
-            ));
+            return Err(self.incompatible(ctx, &declared_fields, &inferred));
         }
         Ok(declared)
     }

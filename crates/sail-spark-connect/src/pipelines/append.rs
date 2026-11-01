@@ -65,6 +65,9 @@ struct FlowState {
     batches: u64,
     seen: BTreeMap<String, BTreeSet<String>>,
     pending: Option<BTreeMap<String, Vec<String>>>,
+    /// The sources this flow reads; changing them needs a full refresh.
+    #[serde(default)]
+    sources: BTreeSet<String>,
     /// The event time below which rows are late, in microseconds.
     #[serde(default)]
     watermark: Option<i64>,
@@ -817,6 +820,27 @@ fn bind_streams<'a>(
     .boxed()
 }
 
+const SOURCES_CHANGED: &str = "STREAMING_SOURCES_CHANGED";
+
+fn sources_changed_error(flow: &Flow) -> SparkError {
+    Box::new(StructuredSparkError {
+        class: "org.apache.spark.sql.AnalysisException".into(),
+        condition: SOURCES_CHANGED.into(),
+        sql_state: "42000".into(),
+        message: format!(
+            "Flow {} had streaming sources added or removed.",
+            flow.name.join(".")
+        ),
+        parameters: HashMap::new(),
+    })
+    .into()
+}
+
+/// Whether this failure needs a full refresh, which no retry can stand in for.
+pub(super) fn sources_changed(error: &SparkError) -> bool {
+    matches!(error, SparkError::Structured(error) if error.condition == SOURCES_CHANGED)
+}
+
 pub(super) struct AppendFlow<'a> {
     pub graph: &'a GraphDefinition,
     pub flow: &'a Flow,
@@ -858,6 +882,11 @@ pub(super) async fn run(
         0,
     )
     .await?;
+    let sources = batch.keys().cloned().collect::<BTreeSet<_>>();
+    if !state.sources.is_empty() && state.sources != sources {
+        return Err(sources_changed_error(run.flow));
+    }
+    state.sources = sources;
     let windowed = windowed_aggregate(&scope, &run.flow.query)?;
     {
         let bound = BatchScope {
