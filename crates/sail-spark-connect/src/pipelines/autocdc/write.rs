@@ -321,6 +321,10 @@ pub(super) async fn flow_output_schema(
     let plan = LogicalPlanBuilder::scan("source", provider_as_source(Arc::new(empty)), None)?
         .build()
         .map_err(PlanError::from)?;
+    // The selection is checked first: a mis-cased selection reports that, not
+    // the sequence that would fail after it.
+    let names: Vec<String> = source.fields().iter().map(|x| x.name().clone()).collect();
+    let selected = output_field_names(args, &names, case)?;
     let evaluated = vec![(SEQUENCING_COLUMN.to_string(), args.sequencing.clone())];
     let evaluated = with_evaluated_columns(ctx, config, plan, evaluated).await?;
     let sequencing = evaluated
@@ -330,8 +334,6 @@ pub(super) async fn flow_output_schema(
         .find(|field| field.name() == SEQUENCING_COLUMN)
         .map(|field| field.data_type().clone())
         .ok_or_else(|| SparkError::internal("AutoCDC sequencing column was not evaluated"))?;
-    let names: Vec<String> = source.fields().iter().map(|x| x.name().clone()).collect();
-    let selected = output_field_names(args, &names, case)?;
     let member = |name: &str| Field::new(name, sequencing.clone(), true);
     let metadata = Fields::from(vec![
         member(DELETE_SEQUENCE_FIELD),

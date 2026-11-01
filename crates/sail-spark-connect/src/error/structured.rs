@@ -17,7 +17,17 @@ pub(super) fn into_status(error: StructuredSparkError) -> Status {
     if !error.sql_state.is_empty() {
         metadata.insert("sqlState".into(), error.sql_state.clone());
     }
-    super::spark_status(&error.class, &error.to_string(), metadata)
+    super::spark_status(&error.class, &rendered(&error), metadata)
+}
+
+/// Spark's formatter ends a condition's message with its SQL state.
+pub(super) fn rendered(error: &StructuredSparkError) -> String {
+    let text = error.to_string();
+    if error.sql_state.is_empty() || text.contains("SQLSTATE:") {
+        text
+    } else {
+        format!("{text} SQLSTATE: {}", error.sql_state)
+    }
 }
 
 #[cfg(test)]
