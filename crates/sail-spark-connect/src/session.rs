@@ -1,19 +1,27 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
+use std::mem;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::logical_expr::StringifiedPlan;
+use futures::future::join_all;
 use sail_common::utils::datetime::get_system_timezone;
 use sail_common_datafusion::extension::SessionExtension;
+use sail_common_datafusion::session::lifecycle::SessionOperations;
 use sail_data_source::formats::orc::{
     OrcListingSessionDefaults, OrcReadSessionModes, OrcWriteSessionDefaults,
 };
 use sail_plan::config::PlanConfig;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 use crate::config::{ConfigKeyValue, EncoderSchemaSettings, SparkRuntimeConfig};
-use crate::error::{SparkError, SparkResult, SparkThrowable, StructuredSparkError};
+use crate::error::{
+    SparkError, SparkResult, SparkThrowable, StructuredSparkError, session_closed_error,
+};
 use crate::executor::Executor;
 use crate::pipelines::PipelineGraph;
 use crate::spark::config::SparkConfigKey;
@@ -35,6 +43,36 @@ pub(crate) struct SparkSession {
     user_id: String,
     options: SparkSessionOptions,
     state: Mutex<SparkSessionState>,
+    /// The number of requests that hold a [`SessionOperationLease`].
+    requests: watch::Sender<usize>,
+    closing: Mutex<ClosingOperations>,
+}
+
+/// The right of a request to use the session, from the time that the request obtains the
+/// session context until it returns. Closing the session waits for it, since a context that was
+/// obtained earlier can still be used. Whatever outlives the request is registered in the
+/// session, and registration is refused once the session is closing.
+pub(crate) struct SessionOperationLease {
+    session: Arc<SparkSession>,
+}
+
+impl Drop for SessionOperationLease {
+    fn drop(&mut self) {
+        // The count is only used to wait for requests, so it cannot be affected by poison.
+        let _state = self
+            .session
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.session.requests.send_modify(|x| *x -= 1);
+    }
+}
+
+/// The operations that were taken out of a closing session, to be waited for.
+#[derive(Default)]
+struct ClosingOperations {
+    executors: Vec<Arc<Executor>>,
+    streaming_queries: Vec<JoinHandle<()>>,
 }
 
 impl Debug for SparkSession {
@@ -64,12 +102,24 @@ impl SparkSession {
             user_id,
             options,
             state: Mutex::new(SparkSessionState::try_new()?),
+            requests: watch::channel(0).0,
+            closing: Mutex::new(ClosingOperations::default()),
         };
         extension.set_config(vec![ConfigKeyValue {
             key: SparkConfigKey::SPARK_SQL_SESSION_TIME_ZONE.to_string(),
             value: Some(get_system_timezone()?),
         }])?;
         Ok(extension)
+    }
+
+    /// Admit a request to the session, or refuse it if the session is closing.
+    pub(crate) fn begin_operation(self: &Arc<Self>) -> SparkResult<SessionOperationLease> {
+        let state = self.state.lock()?;
+        state.check_open(&self.session_id)?;
+        self.requests.send_modify(|x| *x += 1);
+        Ok(SessionOperationLease {
+            session: self.clone(),
+        })
     }
 
     pub(crate) fn session_id(&self) -> &str {
@@ -142,8 +192,9 @@ impl SparkSession {
 
     pub(crate) fn add_pipeline(&self, graph: PipelineGraph) -> SparkResult<String> {
         let id = uuid::Uuid::new_v4().to_string();
-        self.state
-            .lock()?
+        let mut state = self.state.lock()?;
+        state.check_open(&self.session_id)?;
+        state
             .pipelines
             .insert(id.clone(), Arc::new(Mutex::new(graph)));
         Ok(id)
@@ -276,11 +327,15 @@ impl SparkSession {
         Ok(state.config.is_modifiable(key))
     }
 
-    pub(crate) fn add_executor(&self, executor: Executor) -> SparkResult<()> {
+    /// Register an executor, which must happen before it is started,
+    /// so that closing the session cannot miss a task that has been started.
+    pub(crate) fn add_executor(&self, executor: Executor) -> SparkResult<Arc<Executor>> {
         let mut state = self.state.lock()?;
+        state.check_open(&self.session_id)?;
         let id = executor.metadata.operation_id.clone();
-        state.executors.insert(id, Arc::new(executor));
-        Ok(())
+        let executor = Arc::new(executor);
+        state.executors.insert(id, executor.clone());
+        Ok(executor)
     }
 
     pub(crate) fn get_executor(&self, id: &str) -> SparkResult<Option<Arc<Executor>>> {
@@ -341,6 +396,7 @@ impl SparkSession {
             run_id: uuid::Uuid::new_v4().to_string(),
         };
         let mut state = self.state.lock()?;
+        state.check_open(&self.session_id)?;
         let query = StreamingQuery::new(name, info, stream);
         state.streaming_queries.add_query(id.clone(), query);
         Ok(id)
@@ -410,9 +466,78 @@ impl SparkSession {
         state.streaming_queries.reset_stopped_queries();
         Ok(())
     }
+
+    fn begin_close_operations(&self) -> SparkResult<()> {
+        let (executors, streaming_queries, pipelines) = {
+            let mut state = self.state.lock()?;
+            if state.closed {
+                return Ok(());
+            }
+            state.closed = true;
+            let executors = state.executors.drain().map(|(_, x)| x).collect::<Vec<_>>();
+            let streaming_queries = state.streaming_queries.close_queries();
+            let pipelines = mem::take(&mut state.pipelines);
+            (executors, streaming_queries, pipelines)
+        };
+        // Everything is signaled before anything is awaited: a pipeline run is delivered by an
+        // executor, and either may be waiting for a job that the job runner is about to stop.
+        let mut first_error = None;
+        for graph in pipelines.into_values() {
+            match graph.lock() {
+                Ok(mut graph) => graph.cancel(),
+                Err(error) => {
+                    first_error.get_or_insert(SparkError::from(error));
+                }
+            }
+        }
+        for executor in &executors {
+            let error = session_closed_error(&self.session_id);
+            if let Err(error) = executor.request_close(error) {
+                first_error.get_or_insert(error);
+            }
+        }
+        *self.closing.lock()? = ClosingOperations {
+            executors,
+            streaming_queries,
+        };
+        first_error.map_or(Ok(()), Err)
+    }
+
+    async fn wait_operations_closed(&self) -> SparkResult<()> {
+        let ClosingOperations {
+            executors,
+            streaming_queries,
+        } = mem::take(&mut *self.closing.lock()?);
+        let closed = join_all(executors.iter().map(|x| x.closed())).await;
+        let joined = join_all(streaming_queries).await;
+        let mut requests = self.requests.subscribe();
+        // The sender is in `self`, so this cannot fail while `self` is alive.
+        let _ = requests.wait_for(|x| *x == 0).await;
+        closed.into_iter().collect::<SparkResult<Vec<_>>>()?;
+        for result in joined {
+            result?;
+        }
+        Ok(())
+    }
+}
+
+#[tonic::async_trait]
+impl SessionOperations for SparkSession {
+    fn begin_close(&self) -> DataFusionResult<()> {
+        self.begin_close_operations()
+            .map_err(|error| DataFusionError::External(Box::new(error)))
+    }
+
+    async fn wait_closed(&self) -> DataFusionResult<()> {
+        self.wait_operations_closed()
+            .await
+            .map_err(|error| DataFusionError::External(Box::new(error)))
+    }
 }
 
 struct SparkSessionState {
+    /// Whether the session is closing. No operation can be admitted or registered after this.
+    closed: bool,
     config: SparkRuntimeConfig,
     native_config_keys: BTreeSet<String>,
     executors: HashMap<String, Arc<Executor>>,
@@ -423,6 +548,7 @@ struct SparkSessionState {
 impl SparkSessionState {
     fn try_new() -> SparkResult<Self> {
         Ok(Self {
+            closed: false,
             config: SparkRuntimeConfig::try_new()?,
             native_config_keys: BTreeSet::new(),
             executors: HashMap::new(),
@@ -430,4 +556,15 @@ impl SparkSessionState {
             pipelines: HashMap::new(),
         })
     }
+
+    fn check_open(&self, session_id: &str) -> SparkResult<()> {
+        if self.closed {
+            return Err(session_closed_error(session_id));
+        }
+        Ok(())
+    }
 }
+
+#[cfg(test)]
+#[path = "session_lifecycle_tests.rs"]
+mod lifecycle_tests;

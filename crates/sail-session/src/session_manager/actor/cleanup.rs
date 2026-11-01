@@ -1,5 +1,6 @@
+use std::any::Any;
 use std::fmt;
-use std::panic::AssertUnwindSafe;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use datafusion::common::{DataFusionError, Result, internal_datafusion_err};
@@ -9,6 +10,7 @@ use futures::FutureExt;
 use sail_cache::remote_checkpoint::RemoteCheckpointRegistry;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::session::job::JobRunner;
+use sail_common_datafusion::session::lifecycle::{SessionOperations, SessionOperationsService};
 use sail_execution::DriverId;
 use tokio::sync::watch;
 
@@ -130,11 +132,15 @@ impl SessionCleanup {
         let checkpoints = context
             .as_ref()
             .and_then(|context| context.extension::<RemoteCheckpointRegistry>().ok());
+        let operations = context
+            .as_ref()
+            .and_then(|context| context.extension::<SessionOperationsService>().ok());
         let runtime = context
             .as_ref()
             .map(|context| context.runtime_env())
             .unwrap_or_default();
         stop_and_clean_checkpoints(
+            operations.as_ref().map(|x| x.operations()),
             service.runner(),
             checkpoints.as_deref(),
             runtime.as_ref(),
@@ -162,12 +168,13 @@ fn interrupted(record: &SessionCleanup) -> Arc<DataFusionError> {
     ))
 }
 
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
-    payload
+fn panicked(operation: &str, payload: &(dyn Any + Send)) -> DataFusionError {
+    let message = payload
         .downcast_ref::<&str>()
         .copied()
         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-        .unwrap_or("unknown panic")
+        .unwrap_or("unknown panic");
+    internal_datafusion_err!("{operation} panicked: {message}")
 }
 
 /// The unique right to run a cleanup. If this is dropped before the cleanup finishes (the task
@@ -183,12 +190,7 @@ impl CleanupDriver {
         let result = AssertUnwindSafe(record.clean())
             .catch_unwind()
             .await
-            .unwrap_or_else(|payload| {
-                Err(internal_datafusion_err!(
-                    "session cleanup panicked: {}",
-                    panic_message(payload.as_ref())
-                ))
-            });
+            .unwrap_or_else(|payload| Err(panicked("session cleanup", payload.as_ref())));
         match result {
             Ok(()) => {
                 // Publish first: a resource destructor must not delay or prevent the outcome.
@@ -217,16 +219,60 @@ impl Drop for CleanupDriver {
     }
 }
 
-/// Do not invoke checkpoint cleanup when runner shutdown reports an error.
+/// Close the operations of the session and stop its runner, and then remove its checkpoints.
+///
+/// Closing is requested before anything is awaited, and the runner is stopped concurrently with
+/// waiting for the operations. An operation can be waiting for a job, and joining it before the
+/// job was stopped would never finish. Waiting for the runner alone is not enough either, since
+/// operations can start jobs until they have finished.
+///
+/// Do not invoke checkpoint cleanup when any of this reports an error: the error can mean that
+/// something is still writing.
 pub(super) async fn stop_and_clean_checkpoints(
+    operations: Option<&dyn SessionOperations>,
     runner: &dyn JobRunner,
     checkpoints: Option<&RemoteCheckpointRegistry>,
     runtime: &RuntimeEnv,
     on_phase: impl Fn(CleanupPhase),
 ) -> Result<()> {
     on_phase(CleanupPhase::StoppingRunner);
-    runner.stop().await?;
+    let mut errors = vec![];
+    if let Some(operations) = operations {
+        match catch_unwind(AssertUnwindSafe(|| operations.begin_close())) {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => errors.push(error),
+            Err(payload) => errors.push(panicked("closing operations", payload.as_ref())),
+        }
+    }
+    let wait_closed = async {
+        let Some(operations) = operations else {
+            return Ok(());
+        };
+        AssertUnwindSafe(operations.wait_closed())
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|payload| Err(panicked("waiting for operations", payload.as_ref())))
+    };
+    let (stopped, closed) = tokio::join!(runner.stop(), wait_closed);
+    errors.extend(stopped.err());
+    errors.extend(closed.err());
+    if let Some(error) = errors.pop() {
+        return Err(if errors.is_empty() {
+            error
+        } else {
+            errors.push(error);
+            DataFusionError::Collection(errors)
+        });
+    }
     if let Some(checkpoints) = checkpoints {
+        if checkpoints.may_have_storage() && !runner.confirms_checkpoint_effects() {
+            // The objects stay in place, and the record retains what is needed to find them.
+            return Err(DataFusionError::Execution(
+                "session checkpoints were not removed, since the job runner cannot confirm \
+                 that their writers have stopped"
+                    .to_string(),
+            ));
+        }
         on_phase(CleanupPhase::RemovingCheckpoints);
         checkpoints.cleanup_session(runtime).await?;
     }

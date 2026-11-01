@@ -15,7 +15,7 @@ use fastrace::future::FutureExt;
 use futures::stream::StreamExt;
 use futures::{Stream, stream};
 use sail_common_datafusion::schema::{normalize_record_batch, record_batch_has_views};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
@@ -112,6 +112,9 @@ pub(crate) struct ExecutorMetadata {
 pub(crate) struct Executor {
     pub(crate) metadata: ExecutorMetadata,
     state: Mutex<ExecutorState>,
+    /// Closed when the most recently started task has finished. Unlike the task handle, this
+    /// is not moved out while pausing, so it cannot be lost with a caller that was canceled.
+    finished: Mutex<Option<watch::Receiver<()>>>,
 }
 
 enum ExecutorState {
@@ -129,10 +132,20 @@ enum ExecutorState {
     },
     Pausing,
     Failed(SparkError),
+    /// The session has been closed. The executor can never run again.
+    Closed,
+}
+
+/// A request for the task of an executor to stop.
+enum ExecutorSignal {
+    /// Keep the task context, since the client may reattach.
+    Pause,
+    /// Discard the task context, and tell the client that the session was closed.
+    Close(SparkError),
 }
 
 struct ExecutorTask {
-    notifier: oneshot::Sender<()>,
+    notifier: oneshot::Sender<ExecutorSignal>,
     handle: JoinHandle<ExecutorTaskResult>,
     buffer: Arc<Mutex<ExecutorBuffer>>,
 }
@@ -243,6 +256,7 @@ impl Executor {
         };
         Self {
             metadata,
+            finished: Mutex::new(None),
             state: Mutex::new(ExecutorState::Pending {
                 context: ExecutorTaskContext {
                     stream,
@@ -262,6 +276,7 @@ impl Executor {
         }
         Self {
             metadata,
+            finished: Mutex::new(None),
             state: Mutex::new(ExecutorState::Completed {
                 buffer: Arc::new(Mutex::new(buffer)),
             }),
@@ -403,13 +418,23 @@ impl Executor {
 
     async fn run(
         mut context: ExecutorTaskContext,
-        listener: oneshot::Receiver<()>,
+        listener: oneshot::Receiver<ExecutorSignal>,
         tx: mpsc::Sender<SparkResult<ExecutorOutput>>,
         reattachable: bool,
     ) -> ExecutorTaskResult {
         let out = tokio::select! {
             x = Executor::run_internal(&mut context, &tx, reattachable) => x,
-            _ = listener => return ExecutorTaskResult::Paused(context),
+            signal = listener => {
+                return match signal {
+                    Ok(ExecutorSignal::Close(error)) => {
+                        drop(context);
+                        // The client may not be reading, and closing must not wait for it.
+                        let _ = tx.try_send(Err(error));
+                        ExecutorTaskResult::Completed
+                    }
+                    Ok(ExecutorSignal::Pause) | Err(_) => ExecutorTaskResult::Paused(context),
+                };
+            }
         };
         match out {
             Ok(()) => ExecutorTaskResult::Completed,
@@ -451,14 +476,21 @@ impl Executor {
                 *state = x;
                 return Err(SparkError::internal("task is being paused"));
             }
+            x @ ExecutorState::Closed => {
+                *state = x;
+                return Err(SparkError::internal("task has been closed"));
+            }
         };
         let (tx, rx) = mpsc::channel(1);
         let (notifier, listener) = oneshot::channel();
         let buffer = Arc::clone(&context.buffer);
         let reattachable = self.metadata.reattachable;
+        let (finished_tx, finished) = watch::channel(());
+        *self.finished.lock()? = Some(finished);
         let handle = {
             let span = { Span::enter_with_parent("Executor::run", &span) };
             tokio::spawn(async move {
+                let _finished = finished_tx;
                 Executor::run(context, listener, tx, reattachable)
                     .in_span(span)
                     .await
@@ -489,15 +521,50 @@ impl Executor {
                 }
             }
         };
-        let _ = task.notifier.send(());
-        let state = match task.handle.await? {
+        let _ = task.notifier.send(ExecutorSignal::Pause);
+        let next = match task.handle.await? {
             ExecutorTaskResult::Paused(context) => ExecutorState::Pending { context, span },
             ExecutorTaskResult::Completed => ExecutorState::Completed {
                 buffer: task.buffer,
             },
             ExecutorTaskResult::Failed(e) => ExecutorState::Failed(e),
         };
-        *(self.state.lock()?) = state;
+        let mut state = self.state.lock()?;
+        if !matches!(*state, ExecutorState::Closed) {
+            *state = next;
+        }
+        Ok(())
+    }
+
+    /// Stop the executor permanently, without waiting for its task. See [`Self::closed`].
+    /// `error` is sent to the client that is receiving the output, if there is one.
+    pub(crate) fn request_close(&self, error: SparkError) -> SparkResult<()> {
+        let previous = {
+            let mut state = self.state.lock()?;
+            mem::replace(state.deref_mut(), ExecutorState::Closed)
+        };
+        match previous {
+            ExecutorState::Running { task, .. } => {
+                // Dropping the handle does not cancel the task, and `finished` tracks it.
+                let _ = task.notifier.send(ExecutorSignal::Close(error));
+            }
+            // Dropping a pending context here disposes of its stream outside of the lock.
+            ExecutorState::Pending { .. }
+            | ExecutorState::Idle
+            | ExecutorState::Completed { .. }
+            | ExecutorState::Pausing
+            | ExecutorState::Failed(_)
+            | ExecutorState::Closed => {}
+        }
+        Ok(())
+    }
+
+    /// Wait for the task to finish after [`Self::request_close`].
+    pub(crate) async fn closed(&self) -> SparkResult<()> {
+        let finished = self.finished.lock()?.take();
+        if let Some(mut finished) = finished {
+            while finished.changed().await.is_ok() {}
+        }
         Ok(())
     }
 
@@ -507,7 +574,10 @@ impl Executor {
             ExecutorState::Running { task, span: _ } => &task.buffer,
             ExecutorState::Pending { context, span: _ } => &context.buffer,
             ExecutorState::Completed { buffer } => buffer,
-            ExecutorState::Idle | ExecutorState::Failed(_) | ExecutorState::Pausing => {
+            ExecutorState::Idle
+            | ExecutorState::Failed(_)
+            | ExecutorState::Pausing
+            | ExecutorState::Closed => {
                 return Ok(());
             }
         };

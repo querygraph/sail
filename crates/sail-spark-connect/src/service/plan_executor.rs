@@ -146,8 +146,7 @@ async fn handle_execute_plan(
         spark.options().execution_heartbeat_interval,
         mode,
     );
-    let rx = executor.start()?;
-    spark.add_executor(executor)?;
+    let rx = spark.add_executor(executor)?.start()?;
     Ok(ExecutePlanResponseStream::new(
         spark.session_id().to_string(),
         operation_id,
@@ -280,8 +279,7 @@ pub(crate) async fn handle_execute_sql_command(
             let rx: ExecutorOutputStream = if metadata.reattachable {
                 output.push(ExecutorOutput::complete());
                 let executor = Executor::completed(metadata, output);
-                let rx = executor.start()?;
-                spark.add_executor(executor)?;
+                let rx = spark.add_executor(executor)?.start()?;
                 rx
             } else {
                 Box::pin(stream::iter(output.into_iter().map(Ok)))

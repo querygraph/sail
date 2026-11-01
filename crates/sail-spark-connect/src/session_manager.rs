@@ -9,6 +9,7 @@ use sail_common::actor::ActorSystem;
 use sail_common::config::AppConfig;
 use sail_common::runtime::RuntimeHandle;
 use sail_common_datafusion::catalog::display::DefaultCatalogDisplay;
+use sail_common_datafusion::session::lifecycle::SessionOperationsService;
 use sail_common_datafusion::session::plan::PlanService;
 use sail_plan::catalog::SparkCatalogObjectDisplay;
 use sail_plan::formatter::SparkPlanFormatter;
@@ -92,11 +93,13 @@ fn spark_session_config(mut config: SessionConfig, spark: SparkSession) -> Resul
     let (orc_defaults, orc_modes, orc_write_defaults) = spark
         .orc_config()
         .map_err(|e| internal_datafusion_err!("{e}"))?;
+    let spark = Arc::new(spark);
     Ok(config
         .with_extension(Arc::new(orc_defaults))
         .with_extension(Arc::new(orc_modes))
         .with_extension(Arc::new(orc_write_defaults))
-        .with_extension(Arc::new(spark)))
+        .with_extension(Arc::new(SessionOperationsService::new(spark.clone())))
+        .with_extension(spark))
 }
 
 /// The session factory used by the Spark Connect server by default.
