@@ -137,9 +137,28 @@ fn nvl2(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
 // Conditional types are inspected during resolution, before the analyzer runs.
 // Use its shared CASE policy without evaluating branch values.
 fn coerce_conditional_case(
-    case: expr::Case,
+    mut case: expr::Case,
     function_context: &FunctionContextInput<'_>,
 ) -> PlanResult<expr::Expr> {
+    // ANSI type coercion widens an integer and a float to a double, which keeps
+    // every integer exact. The shared policy would choose the float.
+    if function_context.plan_config.ansi_mode {
+        let schema = function_context.schema;
+        let types = case
+            .when_then_expr
+            .iter()
+            .map(|(_, then)| then.get_type(schema))
+            .chain(case.else_expr.iter().map(|value| value.get_type(schema)))
+            .collect::<Result<Vec<_>, _>>()?;
+        if types.iter().any(DataType::is_integer) && types.contains(&DataType::Float32) {
+            for (_, then) in &mut case.when_then_expr {
+                **then = cast(then.as_ref().clone(), DataType::Float64);
+            }
+            if let Some(value) = &mut case.else_expr {
+                **value = cast(value.as_ref().clone(), DataType::Float64);
+            }
+        }
+    }
     let timezone = function_context.plan_config.session_timezone_label();
     Ok(expr::Expr::Case(coerce_case_expression(
         case,

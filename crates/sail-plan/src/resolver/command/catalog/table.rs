@@ -8,6 +8,7 @@ use sail_catalog::provider::{
     AlterTableOptions, CatalogPartitionField, CreateTableColumnOptions, CreateTableOptions,
 };
 use sail_common::spec;
+use sail_common::utils::string::spark_case_insensitive_name_eq;
 use sail_common_datafusion::catalog::{
     CatalogTableBucketBy, CatalogTableColumnIdentity, CatalogTableConstraint, CatalogTableSort,
 };
@@ -333,21 +334,22 @@ impl PlanResolver<'_> {
         // Known schemas can be checked before any catalog provider sees the
         // create command. Schema-less external tables retain provider inference.
         if !columns.is_empty() {
+            let same = |a: &str, b: &str| {
+                a == b || (!self.config.case_sensitive && spark_case_insensitive_name_eq(a, b))
+            };
             for partition in &mut result {
-                let column = columns
-                    .iter()
-                    .find(|column| {
-                        column.name == partition.column
-                            || (!self.config.case_sensitive
-                                && column.name.eq_ignore_ascii_case(&partition.column))
-                    })
-                    .ok_or_else(|| {
-                        PlanError::analysis(format!(
-                            "[COLUMN_NOT_DEFINED_IN_TABLE] partition column `{}` is not defined in the table",
-                            partition.column
-                        ))
-                    })?;
-                partition.column = column.name.clone();
+                if let Some(column) = columns.iter().find(|x| same(&x.name, &partition.column)) {
+                    partition.column = column.name.clone();
+                    continue;
+                }
+                // A nested source names a field of a declared column.
+                let parent = partition.column.split('.').next().unwrap_or_default();
+                if parent == partition.column || !columns.iter().any(|x| same(&x.name, parent)) {
+                    return Err(PlanError::analysis(format!(
+                        "[COLUMN_NOT_DEFINED_IN_TABLE] partition column `{}` is not defined in the table",
+                        partition.column
+                    )));
+                }
             }
             for (index, partition) in result.iter().enumerate() {
                 if result[..index].contains(partition) {

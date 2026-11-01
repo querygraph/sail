@@ -19,7 +19,10 @@ impl PlanResolver<'_> {
         let mut candidates = vec![];
         let mut seen = HashSet::new();
         for (qualifier, field) in schema.iter() {
-            let info = state.get_field_info(field.name())?;
+            // A schema can hold internal columns the state does not name.
+            let Ok(info) = state.get_field_info(field.name()) else {
+                continue;
+            };
             if info.is_hidden() || !seen.insert((qualifier.cloned(), info.origin())) {
                 continue;
             }

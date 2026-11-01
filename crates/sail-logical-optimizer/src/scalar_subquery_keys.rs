@@ -18,6 +18,7 @@ use datafusion_expr::{
 };
 use projection::project_with_keys;
 use sail_function::scalar::normalize_float_keys::NormalizeFloatKeys;
+use sail_function::scalar::spark_ansi_string_cast::SparkAnsiStringCast;
 
 mod projection;
 
@@ -62,14 +63,20 @@ impl OptimizerRule for NormalizeScalarSubqueryKeys {
                     if query.outer_ref_columns.is_empty() {
                         return Ok(Transformed::no(Expr::ScalarSubquery(query)));
                     }
+                    let native = native_key_casts(query.subquery.as_ref().clone())?;
+                    let casts_changed = native.transformed;
+                    if casts_changed {
+                        query.subquery = Arc::new(native.data);
+                    }
                     normalize_keys(&query.subquery, config.alias_generator(), &mut reserved).map(
                         |result| {
-                            if result.transformed {
+                            let transformed = result.transformed;
+                            if transformed {
                                 query.subquery = Arc::new(result.data);
                             }
                             Transformed::new_transformed(
                                 Expr::ScalarSubquery(query),
-                                result.transformed,
+                                transformed || casts_changed,
                             )
                         },
                     )
@@ -77,6 +84,64 @@ impl OptimizerRule for NormalizeScalarSubqueryKeys {
                 .map(|result| result.update_data(|expression| name.restore(expression)))
         })
     }
+}
+
+/// Decorrelation reads a correlated predicate only through native casts, so the
+/// ANSI string cast that reports Spark's error becomes a native one in such a
+/// predicate. A bad key still fails, with the native cast's message.
+fn native_key_casts(plan: LogicalPlan) -> Result<Transformed<LogicalPlan>> {
+    plan.transform_up(|node| {
+        if !matches!(node, LogicalPlan::Filter(_)) {
+            return Ok(Transformed::no(node));
+        }
+        node.map_expressions(|predicate| {
+            if !predicate.contains_outer() {
+                return Ok(Transformed::no(predicate));
+            }
+            let conjuncts = split_conjunction(&predicate);
+            let rewritten = conjuncts
+                .iter()
+                .map(|conjunct| {
+                    if !conjunct.contains_outer() {
+                        return Ok((*conjunct).clone());
+                    }
+                    (*conjunct)
+                        .clone()
+                        .transform_up(|expression| {
+                            let target = match &expression {
+                                Expr::ScalarFunction(function) => function
+                                    .func
+                                    .inner()
+                                    .downcast_ref::<SparkAnsiStringCast>()
+                                    .map(|cast| cast.target_type().clone()),
+                                _ => None,
+                            };
+                            match (target, expression) {
+                                (Some(target), Expr::ScalarFunction(mut function))
+                                    if function.args.len() == 1 =>
+                                {
+                                    let input = function.args.remove(0);
+                                    Ok(Transformed::yes(Expr::Cast(Cast::new(
+                                        Box::new(input),
+                                        target,
+                                    ))))
+                                }
+                                (_, expression) => Ok(Transformed::no(expression)),
+                            }
+                        })
+                        .map(|result| result.data)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let changed = rewritten
+                .iter()
+                .zip(&conjuncts)
+                .any(|(new, old)| new != *old);
+            match (changed, conjunction(rewritten)) {
+                (true, Some(predicate)) => Ok(Transformed::yes(predicate)),
+                _ => Ok(Transformed::no(predicate)),
+            }
+        })
+    })
 }
 
 fn native_equality(expression: &Expr) -> Option<(&Expr, &Expr)> {

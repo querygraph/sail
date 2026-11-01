@@ -170,7 +170,60 @@ impl PlanResolver<'_> {
             }
         }
 
+        Self::resolve_values_float_decimal_types(values, schema)?;
+        Self::resolve_values_nullability(values, schema)?;
         Ok(nan_positions)
+    }
+
+    /// As in Spark, a column that mixes floats and decimals is a double.
+    fn resolve_values_float_decimal_types(
+        values: &mut [Vec<Expr>],
+        schema: &DFSchemaRef,
+    ) -> PlanResult<()> {
+        let columns = values.first().map_or(0, Vec::len);
+        if values.iter().any(|row| row.len() != columns) {
+            return Ok(());
+        }
+        for idx in 0..columns {
+            let types = values
+                .iter()
+                .map(|row| row[idx].get_type(schema))
+                .collect::<Result<Vec<_>, _>>()?;
+            let is_decimal =
+                |t: &DataType| matches!(t, DataType::Decimal128(..) | DataType::Decimal256(..));
+            if types.iter().any(DataType::is_floating) && types.iter().any(is_decimal) {
+                for row in values.iter_mut() {
+                    row[idx] = cast(row[idx].clone(), DataType::Float64);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Rows can differ only in the nullability of nested values, which arrays
+    /// cannot be concatenated across.
+    fn resolve_values_nullability(
+        values: &mut [Vec<Expr>],
+        schema: &DFSchemaRef,
+    ) -> PlanResult<()> {
+        let columns = values.first().map_or(0, Vec::len);
+        if values.iter().any(|row| row.len() != columns) {
+            return Ok(());
+        }
+        for idx in 0..columns {
+            let types = values
+                .iter()
+                .map(|row| row[idx].get_type(schema))
+                .collect::<Result<Vec<_>, _>>()?;
+            let relaxed = types.iter().map(relaxed_nullability).collect::<Vec<_>>();
+            let differs = types.windows(2).any(|pair| pair[0] != pair[1]);
+            if differs && relaxed.windows(2).all(|pair| pair[0] == pair[1]) {
+                for (row, target) in values.iter_mut().zip(relaxed) {
+                    row[idx] = cast(row[idx].clone(), target);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn resolve_values_map_types(
@@ -254,4 +307,24 @@ fn merge_map_value_nullability(left: DataType, right: DataType) -> DataType {
         ),
         *left_sorted,
     )
+}
+
+fn relaxed_nullability(data_type: &DataType) -> DataType {
+    match data_type {
+        DataType::List(field) => DataType::List(Arc::new(
+            field
+                .as_ref()
+                .clone()
+                .with_data_type(relaxed_nullability(field.data_type()))
+                .with_nullable(true),
+        )),
+        DataType::LargeList(field) => DataType::LargeList(Arc::new(
+            field
+                .as_ref()
+                .clone()
+                .with_data_type(relaxed_nullability(field.data_type()))
+                .with_nullable(true),
+        )),
+        other => other.clone(),
+    }
 }
