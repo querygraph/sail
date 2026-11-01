@@ -16,6 +16,7 @@ sail-catalog = { path = "../sail-catalog" }
 sail-common = { path = "../sail-common" }
 sail-common-datafusion = { path = "../sail-common-datafusion" }
 sail-data-source = { path = "../sail-data-source" }
+sail-iggy-bounded = { path = "../sail-iggy-bounded" }
 sail-plan = { path = "../sail-plan" }
 sail-python-udf = { path = "../sail-python-udf" }
 sail-sql-analyzer = { path = "../sail-sql-analyzer" }

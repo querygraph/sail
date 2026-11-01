@@ -38,6 +38,10 @@ pub trait RelationScope: Send + Sync {
         self.resolve_late_bound(name)
     }
 
+    /// Observe a read of an external data source. It names nothing to
+    /// resolve, but its mode still matters to a caller classifying a query.
+    fn observe_source_read(&self, _is_streaming: bool) {}
+
     /// Bind an external name using the caller's captured namespace. This keeps
     /// independent planning requests from mutating shared catalog defaults.
     fn qualify(&self, name: &[String]) -> PlanResult<Vec<String>> {
@@ -104,6 +108,12 @@ impl<'a> ViewScope<'a> {
 }
 
 impl RelationScope for ViewScope<'_> {
+    fn observe_source_read(&self, is_streaming: bool) {
+        if let Some(parent) = self.parent {
+            parent.observe_source_read(is_streaming);
+        }
+    }
+
     fn resolve_read(&self, name: &[String], is_streaming: bool) -> PlanResult<Option<LogicalPlan>> {
         match self.parent {
             Some(parent) => parent.resolve_read(&self.qualify(name)?, is_streaming),

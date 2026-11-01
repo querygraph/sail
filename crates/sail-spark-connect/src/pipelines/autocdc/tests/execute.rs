@@ -11,8 +11,9 @@ use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 
 use super::super::execute::{BoundedSources, admitted, execute_graph};
-use super::super::schema::METADATA_COLUMN;
-use super::super::{ChangeArgs, ScdType};
+use super::super::schema::{Case, METADATA_COLUMN};
+use super::super::write::flow_output_schema;
+use super::super::{ChangeArgs, ColumnSelection, ScdType, UnqualifiedColumnName};
 use super::run::{event, flow, source_name, source_schema, warehouse};
 use super::write::{attribute, context, finish, key, meta, row, rows, target};
 use crate::pipelines::analysis::AnalyzedGraph;
@@ -214,6 +215,186 @@ async fn nothing_else_is_admitted() -> TestResult {
     }
     let scd2 = graph_of(vec![type2], vec![output()]);
     assert!(!admitted(&ctx, &scd2)?, "SCD type 2");
+    finish(&ctx).await?;
+    Ok(())
+}
+
+fn iggy_view(format: &str, is_streaming: bool) -> (Output, Flow) {
+    let name = vec!["changes".to_string()];
+    let output = Output {
+        name: name.clone(),
+        kind: OutputType::TemporaryView,
+        ..output()
+    };
+    let read = spec::ReadDataSource {
+        format: Some(format.to_string()),
+        schema: None,
+        options: vec![],
+        paths: vec![],
+        predicates: vec![],
+    };
+    let flow = Flow {
+        name: name.clone(),
+        target: name,
+        auto_cdc: None,
+        query: spec::QueryPlan::new(spec::QueryNode::Read {
+            read_type: spec::ReadType::DataSource(Box::new(read)),
+            is_streaming,
+        }),
+        ..flow()
+    };
+    (output, flow)
+}
+
+fn cdc_flow_over_changes() -> Result<Flow, Box<dyn std::error::Error>> {
+    let mut flow = cdc_flow()?;
+    flow.query = spec::QueryPlan::new(spec::QueryNode::Read {
+        read_type: spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
+            name: spec::ObjectName::bare("Changes"),
+            temporal: None,
+            sample: None,
+            options: vec![],
+        })),
+        is_streaming: true,
+    });
+    Ok(flow)
+}
+
+#[tokio::test]
+async fn an_iggy_view_is_a_source_and_only_a_bare_streaming_read_is_one() -> TestResult {
+    let (ctx, _) = context()?;
+    let with = |view: (Output, Flow)| -> Result<_, Box<dyn std::error::Error>> {
+        let (view_output, view_flow) = view;
+        Ok(graph_of(
+            vec![view_flow, cdc_flow_over_changes()?],
+            vec![view_output, output()],
+        ))
+    };
+    assert!(admitted(&ctx, &with(iggy_view("iggy", true))?)?);
+    assert!(admitted(&ctx, &with(iggy_view("IGGY", true))?)?);
+    assert!(
+        !admitted(&ctx, &with(iggy_view("iggy", false))?)?,
+        "a batch read has no bound"
+    );
+    assert!(
+        !admitted(&ctx, &with(iggy_view("rate", true))?)?,
+        "another streaming format"
+    );
+
+    let (view_output, mut view_flow) = iggy_view("iggy", true);
+    view_flow.query = spec::QueryPlan::new(spec::QueryNode::Limit {
+        input: Box::new(view_flow.query.clone()),
+        skip: None,
+        limit: Some(spec::Expr::Literal(spec::Literal::Int64 { value: Some(1) })),
+    });
+    assert!(
+        !admitted(&ctx, &with((view_output, view_flow))?)?,
+        "a transformed read would be run past its plan"
+    );
+
+    let (view_output, view_flow) = iggy_view("iggy", true);
+    let mut second = view_flow.clone();
+    second.name = vec!["again".to_string()];
+    let two_flows = graph_of(
+        vec![view_flow, second, cdc_flow_over_changes()?],
+        vec![view_output, output()],
+    );
+    assert!(!admitted(&ctx, &two_flows)?, "a view fed by two flows");
+
+    let (view_output, view_flow) = iggy_view("iggy", true);
+    let ordinary = Flow {
+        auto_cdc: None,
+        ..cdc_flow_over_changes()?
+    };
+    let plain = graph_of(vec![view_flow, ordinary], vec![view_output, output()]);
+    assert!(!admitted(&ctx, &plain)?, "an ordinary flow over the view");
+    finish(&ctx).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_output_schema_is_the_selection_then_the_typed_metadata_column() -> TestResult {
+    let (ctx, config) = context()?;
+    let source = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, true),
+        Field::new("seq", DataType::Int32, false),
+    ]));
+    let args = |selection| {
+        ChangeArgs::new(
+            vec![key("id")?],
+            attribute("seq"),
+            ScdType::Type1,
+            None,
+            selection,
+        )
+    };
+    let everything = flow_output_schema(
+        &ctx,
+        config.clone(),
+        &args(None)?,
+        Case::Insensitive,
+        &source,
+    )
+    .await?;
+    let names: Vec<&str> = everything
+        .fields()
+        .iter()
+        .map(|x| x.name().as_str())
+        .collect();
+    assert_eq!(names, vec!["id", "op", "seq", METADATA_COLUMN]);
+    assert!(
+        !everything.field(0).is_nullable(),
+        "source fields keep their nullability"
+    );
+    let metadata = everything.field(3);
+    assert!(!metadata.is_nullable());
+    let DataType::Struct(members) = metadata.data_type() else {
+        return Err("the metadata column is not a struct".into());
+    };
+    let members: Vec<(&str, &DataType, bool)> = members
+        .iter()
+        .map(|x| (x.name().as_str(), x.data_type(), x.is_nullable()))
+        .collect();
+    assert_eq!(
+        members,
+        vec![
+            ("deleteSequence", &DataType::Int32, true),
+            ("upsertSequence", &DataType::Int32, true),
+        ]
+    );
+
+    let without_op = Some(ColumnSelection::Exclude(vec![
+        UnqualifiedColumnName::parse("OP")?,
+    ]));
+    let selected = flow_output_schema(
+        &ctx,
+        config.clone(),
+        &args(without_op)?,
+        Case::Insensitive,
+        &source,
+    )
+    .await?;
+    let names: Vec<&str> = selected
+        .fields()
+        .iter()
+        .map(|x| x.name().as_str())
+        .collect();
+    assert_eq!(names, vec!["id", "seq", METADATA_COLUMN]);
+
+    let unknown = ChangeArgs::new(
+        vec![key("id")?],
+        attribute("missing"),
+        ScdType::Type1,
+        None,
+        None,
+    )?;
+    assert!(
+        flow_output_schema(&ctx, config, &unknown, Case::Insensitive, &source)
+            .await
+            .is_err(),
+        "a sequencing expression over no column"
+    );
     finish(&ctx).await?;
     Ok(())
 }

@@ -19,6 +19,7 @@ sail-catalog-onelake = { path = "../sail-catalog-onelake" }
 sail-catalog-glue = { path = "../sail-catalog-glue" }
 sail-catalog-hms = { path = "../sail-catalog-hms" }
 sail-data-source = { path = "../sail-data-source" }
+sail-iggy-bounded = { path = "../sail-iggy-bounded" }
 sail-delta-lake = { path = "../sail-delta-lake" }
 sail-iceberg = { path = "../sail-iceberg" }
 sail-logical-plan = { path = "../sail-logical-plan" }
