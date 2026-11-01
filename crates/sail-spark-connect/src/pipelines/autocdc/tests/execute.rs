@@ -193,7 +193,10 @@ async fn nothing_else_is_admitted() -> TestResult {
     register(&ctx, events());
     assert!(admitted(&ctx, &graph)?);
     let batch_flow = graph_of(vec![flow()], vec![output()]);
-    assert!(!admitted(&ctx, &batch_flow)?, "a flow that is not AutoCDC");
+    assert!(
+        admitted(&ctx, &batch_flow)?,
+        "a batch flow runs beside AutoCDC flows"
+    );
 
     let sink = Output {
         kind: OutputType::Sink,
@@ -313,7 +316,9 @@ async fn an_iggy_view_is_a_source_and_only_a_bare_streaming_read_is_one() -> Tes
         ..cdc_flow_over_changes()?
     };
     let plain = graph_of(vec![view_flow, ordinary], vec![view_output, output()]);
-    assert!(!admitted(&ctx, &plain)?, "an ordinary flow over the view");
+    // No AutoCDC flow, so this graph never reaches the durable path; the
+    // streaming path refuses the view (`test_autocdc_iggy.py`).
+    assert!(admitted(&ctx, &plain)?, "an ordinary flow over the view");
     finish(&ctx).await?;
     Ok(())
 }

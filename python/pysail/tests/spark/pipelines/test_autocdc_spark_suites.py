@@ -221,3 +221,45 @@ def test_two_pipelines_with_other_columns_evolve_a_shared_target(space, pipeline
         (2, "bob-v2", 2, 25),
         (3, "carol", 1, 30),
     ]
+
+
+def test_an_autocdc_target_feeds_a_materialized_view_in_the_same_graph(space, pipeline_factory, broker):  # noqa: F811
+    broker.send({"id": 1, "name": "alice", "seq": 1}, {"id": 1, "name": "alicia", "seq": 2})
+    _, registry, start = pipeline_factory()
+    with graph_element_registration_context(registry):
+
+        @dp.temporary_view
+        def changes():
+            return (
+                space.readStream.format("iggy")
+                .option("url", broker.url)
+                .option("stream", STREAM)
+                .option("topic", TOPIC)
+                .option("timeout_ms", "5000")
+                .schema(BASE)
+                .load()
+            )
+
+        dp.create_streaming_table("target", format="delta")
+        dp.create_auto_cdc_flow(target="target", source="changes", keys=["id"], sequence_by="seq")
+
+        @dp.materialized_view
+        def downstream():
+            return space.read.table("target").select("id", "name")
+
+    start()
+    assert rows(space, "id", "name", table="downstream") == [(1, "alicia")]
+    space.sql("DROP TABLE IF EXISTS downstream")
+
+
+def test_two_targets_keep_independent_state(space, pipeline_factory, broker):  # noqa: F811
+    broker.send({"id": 1, "name": "alice", "seq": 100})
+    run(space, pipeline_factory, broker.url, BASE, name="t_a", flow="flow_a")
+    broker.send({"id": 9, "name": "bob", "seq": 1})
+    run(space, pipeline_factory, broker.url, BASE, name="t_b", flow="flow_b")
+    assert rows(space, "id", "name", "seq", table="t_a") == [(1, "alice", 100)]
+    assert rows(space, "id", "name", "seq", table="t_b") == [(1, "alice", 100), (9, "bob", 1)]
+    assert space.catalog.tableExists("__spark_autocdc_aux_state_t_a")
+    assert space.catalog.tableExists("__spark_autocdc_aux_state_t_b")
+    space.sql("DROP TABLE IF EXISTS t_a")
+    space.sql("DROP TABLE IF EXISTS t_b")
