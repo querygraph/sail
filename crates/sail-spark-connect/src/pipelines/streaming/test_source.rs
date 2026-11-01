@@ -15,6 +15,7 @@ use datafusion::datasource::{MemTable, TableProvider};
 
 use super::source::{
     BoundedSource, Cursor, Incarnation, Partition, PartitionId, Range, ScanError, SourceDescriptor,
+    SourceError,
 };
 
 #[derive(Debug, Clone)]
@@ -132,7 +133,7 @@ impl BoundedSource for DeterministicSource {
         self.schema.clone()
     }
 
-    fn describe(&self) -> SourceDescriptor {
+    fn describe(&self) -> Result<SourceDescriptor, SourceError> {
         let partitions = self.with_partitions(|partitions| {
             partitions
                 .iter()
@@ -142,18 +143,18 @@ impl BoundedSource for DeterministicSource {
                 })
                 .collect()
         });
-        SourceDescriptor {
+        Ok(SourceDescriptor {
             kind: "deterministic".into(),
             descriptor: serde_json::json!({ "name": self.name }),
             partitions,
-        }
+        })
     }
 
-    fn earliest(&self, partition: &PartitionId) -> Result<Cursor, ScanError> {
+    fn earliest(&self, partition: &PartitionId) -> Result<Cursor, SourceError> {
         Ok(Self::cursor(self.state(partition)?.earliest))
     }
 
-    fn frontier(&self, partition: &PartitionId) -> Result<Cursor, ScanError> {
+    fn frontier(&self, partition: &PartitionId) -> Result<Cursor, SourceError> {
         Ok(Self::cursor(Self::end_of(&self.state(partition)?)))
     }
 
@@ -163,7 +164,7 @@ impl BoundedSource for DeterministicSource {
         start: &Cursor,
         frontier: &Cursor,
         max_rows: usize,
-    ) -> Result<Cursor, ScanError> {
+    ) -> Result<Cursor, SourceError> {
         let start = Self::position(partition, start)?;
         let frontier = Self::position(partition, frontier)?;
         let step = u64::try_from(max_rows).unwrap_or(u64::MAX);
@@ -172,7 +173,7 @@ impl BoundedSource for DeterministicSource {
         ))
     }
 
-    fn scan(&self, range: &Range) -> Result<Arc<dyn TableProvider>, ScanError> {
+    fn scan(&self, range: &Range) -> Result<Arc<dyn TableProvider>, SourceError> {
         let state = self.state(&range.partition)?;
         let actual = Incarnation(format!("inc:{}", state.incarnation));
         if actual != range.incarnation {
@@ -180,7 +181,8 @@ impl BoundedSource for DeterministicSource {
                 partition: range.partition.clone(),
                 expected: range.incarnation.clone(),
                 actual,
-            });
+            }
+            .into());
         }
         let start = Self::position(&range.partition, &range.start)?;
         let end = Self::position(&range.partition, &range.end)?;
@@ -189,7 +191,8 @@ impl BoundedSource for DeterministicSource {
                 partition: range.partition.clone(),
                 expected: range.start.clone(),
                 first_retained: Self::cursor(state.earliest),
-            });
+            }
+            .into());
         }
         let available = Self::end_of(&state);
         if end > available {
@@ -199,7 +202,8 @@ impl BoundedSource for DeterministicSource {
                 partition: range.partition.clone(),
                 expected: range.end.clone(),
                 actual: Self::cursor(available),
-            });
+            }
+            .into());
         }
         let first = usize::try_from(start - state.earliest).unwrap_or(usize::MAX);
         let last = usize::try_from(end - state.earliest).unwrap_or(usize::MAX);

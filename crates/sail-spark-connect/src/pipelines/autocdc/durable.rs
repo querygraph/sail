@@ -440,7 +440,7 @@ impl<S: Store> DurableRun<'_, S> {
         let binding = SourceBinding {
             name: run.source_name.clone(),
             schema: run.source.schema(),
-            descriptor: run.source.describe(),
+            descriptor: run.source.describe()?,
             intent: batch.clone(),
             scans,
         };

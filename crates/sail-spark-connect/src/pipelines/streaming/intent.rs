@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::source::{BoundedSource, Cursor, Incarnation, PartitionId, Range, ScanError};
+use super::source::{BoundedSource, Cursor, Incarnation, PartitionId, Range, SourceError};
 
 /// The per-partition end captured at the start of a run, with the
 /// incarnation it was captured under.
@@ -18,9 +18,9 @@ pub struct RunFrontier {
 
 impl RunFrontier {
     /// `frontier(partitions)` for every partition the source describes now.
-    pub fn capture(source: &dyn BoundedSource) -> Result<Self, ScanError> {
+    pub fn capture(source: &dyn BoundedSource) -> Result<Self, SourceError> {
         let mut partitions = BTreeMap::new();
-        for partition in source.describe().partitions {
+        for partition in source.describe()?.partitions {
             let end = source.frontier(&partition.id)?;
             partitions.insert(partition.id, (partition.incarnation, end));
         }
@@ -52,9 +52,9 @@ impl Progress {
 }
 
 /// Why an intent could not be planned. Both fail closed: neither is "caught up".
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum PlanError {
-    Scan(ScanError),
+    Scan(SourceError),
     /// A limit of zero rows per partition can never advance.
     ZeroLimit,
     /// The adapter returned a range end equal to its start although the
@@ -72,8 +72,8 @@ pub enum PlanError {
     },
 }
 
-impl From<ScanError> for PlanError {
-    fn from(error: ScanError) -> Self {
+impl From<SourceError> for PlanError {
+    fn from(error: SourceError) -> Self {
         Self::Scan(error)
     }
 }

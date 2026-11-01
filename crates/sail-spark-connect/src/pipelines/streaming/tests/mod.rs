@@ -12,11 +12,29 @@ use datafusion::logical_expr::LogicalPlanBuilder;
 use datafusion::prelude::SessionContext;
 
 use super::intent::{BatchIntent, PlanError, Progress, RunFrontier, next_intent};
-use super::source::{BoundedSource, Cursor, Incarnation, PartitionId, Range, ScanError};
+use super::source::{
+    BoundedSource, Cursor, Incarnation, PartitionId, Range, ScanError, SourceError,
+};
 use super::test_source::DeterministicSource;
-use crate::error::SparkResult;
+use crate::error::{SparkError, SparkResult};
 
 mod ranges;
+
+/// The refusal a source call returned, if that is how it failed.
+fn refused<T>(result: Result<T, SourceError>) -> Option<ScanError> {
+    match result {
+        Err(SourceError::Refused(error)) => Some(error),
+        _ => None,
+    }
+}
+
+/// The source refusal planning failed on, if that is how it failed.
+fn refused_plan<T>(result: Result<T, PlanError>) -> Option<ScanError> {
+    match result {
+        Err(PlanError::Scan(SourceError::Refused(error))) => Some(error),
+        _ => None,
+    }
+}
 
 fn schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
