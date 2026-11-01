@@ -160,6 +160,7 @@ impl Fixture {
             write: &write,
             checkpoint: &self.checkpoint,
             max_rows_per_partition: 1,
+            flow_source: None,
         };
         run_durable_flow(
             &self.ctx,

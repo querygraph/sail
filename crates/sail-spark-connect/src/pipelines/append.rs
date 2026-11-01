@@ -54,7 +54,7 @@ use super::graph::{Flow, GraphDefinition, Name};
 use crate::error::{SparkError, SparkResult, StructuredSparkError};
 use crate::spark::connect::OutputType;
 
-const SOURCE_ALIAS: &str = "__sail_stream_source";
+pub(super) const SOURCE_ALIAS: &str = "__sail_stream_source";
 const STREAM_SOURCE_PART: &str = "__sail_data_source";
 const FILE_FORMATS: [&str; 6] = ["parquet", "orc", "json", "csv", "text", "avro"];
 const HIVE_DEFAULT_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
@@ -159,7 +159,7 @@ fn storage_error(error: object_store::Error) -> SparkError {
 }
 
 /// Normalize a read name the way the graph does.
-fn qualified(scope: &GraphScope<'_>, name: &[String]) -> PlanResult<Name> {
+pub(super) fn qualified(scope: &GraphScope<'_>, name: &[String]) -> PlanResult<Name> {
     let raw: Name = name.iter().map(|x| x.to_ascii_lowercase()).collect();
     if scope.graph.outputs.iter().any(|x| x.name == raw) {
         Ok(raw)
@@ -343,7 +343,7 @@ fn source_name(source: &spec::ReadDataSource) -> Name {
     ]
 }
 
-fn view_flow<'a>(graph: &'a GraphDefinition, name: &Name) -> Option<&'a Flow> {
+pub(super) fn view_flow<'a>(graph: &'a GraphDefinition, name: &Name) -> Option<&'a Flow> {
     let output = graph.outputs.iter().find(|output| &output.name == name)?;
     if output.view.is_none() && output.kind != OutputType::TemporaryView {
         return None;
@@ -352,18 +352,18 @@ fn view_flow<'a>(graph: &'a GraphDefinition, name: &Name) -> Option<&'a Flow> {
 }
 
 /// A streaming table's source: one file-backed table.
-struct TableSource {
-    format: String,
-    location: String,
+pub(super) struct TableSource {
+    pub format: String,
+    pub location: String,
     /// The columns stored in the files.
-    schema: spec::Schema,
+    pub schema: spec::Schema,
     /// Every column, partition columns included.
-    empty: datafusion::arrow::datatypes::SchemaRef,
-    partitions: BTreeSet<String>,
-    options: Vec<(String, String)>,
+    pub empty: datafusion::arrow::datatypes::SchemaRef,
+    pub partitions: BTreeSet<String>,
+    pub options: Vec<(String, String)>,
 }
 
-async fn table_source(ctx: &SessionContext, name: &Name) -> SparkResult<TableSource> {
+pub(super) async fn table_source(ctx: &SessionContext, name: &Name) -> SparkResult<TableSource> {
     let manager = ctx.extension::<CatalogManager>()?;
     let status = manager
         .get_table_or_view(name)
@@ -436,7 +436,10 @@ pub(super) fn spec_schema(
 }
 
 /// The table's data files, as full URLs. Hidden files are not data.
-async fn data_files(ctx: &SessionContext, location: &str) -> SparkResult<BTreeSet<String>> {
+pub(super) async fn data_files(
+    ctx: &SessionContext,
+    location: &str,
+) -> SparkResult<BTreeSet<String>> {
     let url = ListingTableUrl::parse(location)?;
     let store = ctx.runtime_env().object_store(url.object_store())?;
     let base = url.as_str().trim_end_matches('/').to_string();
@@ -465,7 +468,10 @@ async fn data_files(ctx: &SessionContext, location: &str) -> SparkResult<BTreeSe
 }
 
 /// Partition values from `key=value` directories, in Hive's escaped form.
-fn partition_values(file: &str, source: &TableSource) -> BTreeMap<String, Option<String>> {
+pub(super) fn partition_values(
+    file: &str,
+    source: &TableSource,
+) -> BTreeMap<String, Option<String>> {
     let relative = file
         .strip_prefix(source.location.trim_end_matches('/'))
         .unwrap_or(file);
@@ -482,7 +488,7 @@ fn partition_values(file: &str, source: &TableSource) -> BTreeMap<String, Option
 }
 
 /// `files` of one partition, with every column in the table's order.
-async fn partition_plan(
+pub(super) async fn partition_plan(
     ctx: &SessionContext,
     config: &Arc<PlanConfig>,
     source: &TableSource,
@@ -585,7 +591,7 @@ fn append_mode_error() -> SparkError {
 }
 
 /// Refuse what needs state between batches, which this run does not keep.
-fn check_stateless(plan: &LogicalPlan, windowed: bool) -> SparkResult<()> {
+pub(super) fn check_stateless(plan: &LogicalPlan, windowed: bool) -> SparkResult<()> {
     let mut failure = None;
     plan.apply(|node| {
         let refused = match node {

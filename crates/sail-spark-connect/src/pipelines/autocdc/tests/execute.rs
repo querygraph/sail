@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, Field, Fields, Schema};
 use datafusion::prelude::SessionContext;
-use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 
 use super::super::execute::{BoundedSources, admitted, execute_graph};
@@ -185,12 +184,7 @@ async fn a_full_refresh_is_a_reset_of_the_enrolled_target() -> TestResult {
 async fn nothing_else_is_admitted() -> TestResult {
     let (ctx, _) = context()?;
     let graph = graph_of(vec![cdc_flow()?], vec![output()]);
-    assert!(
-        !admitted(&ctx, &graph)?,
-        "no bounded sources in the session"
-    );
-
-    register(&ctx, events());
+    // What the flow reads is found when the run is prepared.
     assert!(admitted(&ctx, &graph)?);
     let batch_flow = graph_of(vec![flow()], vec![output()]);
     assert!(
@@ -198,127 +192,12 @@ async fn nothing_else_is_admitted() -> TestResult {
         "a batch flow runs beside AutoCDC flows"
     );
 
-    let sink = Output {
-        kind: OutputType::Sink,
-        ..output()
-    };
-    let with_sink = graph_of(vec![cdc_flow()?], vec![sink]);
-    assert!(!admitted(&ctx, &with_sink)?, "a sink output");
-
-    let mut unregistered = cdc_flow()?;
-    unregistered.query = spec::QueryPlan::new(spec::QueryNode::Read {
-        read_type: spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
-            name: spec::ObjectName::bare("elsewhere"),
-            temporal: None,
-            sample: None,
-            options: vec![],
-        })),
-        is_streaming: true,
-    });
-    let elsewhere = graph_of(vec![unregistered], vec![output()]);
-    assert!(!admitted(&ctx, &elsewhere)?, "an unregistered source");
-
     let mut type2 = cdc_flow()?;
     if let Some(args) = &mut type2.auto_cdc {
         args.scd_type = ScdType::Type2;
     }
     let scd2 = graph_of(vec![type2], vec![output()]);
     assert!(!admitted(&ctx, &scd2)?, "SCD type 2");
-    finish(&ctx).await?;
-    Ok(())
-}
-
-fn iggy_view(format: &str, is_streaming: bool) -> (Output, Flow) {
-    let name = vec!["changes".to_string()];
-    let output = Output {
-        name: name.clone(),
-        kind: OutputType::TemporaryView,
-        ..output()
-    };
-    let read = spec::ReadDataSource {
-        format: Some(format.to_string()),
-        schema: None,
-        options: vec![],
-        paths: vec![],
-        predicates: vec![],
-    };
-    let flow = Flow {
-        name: name.clone(),
-        target: name,
-        auto_cdc: None,
-        query: spec::QueryPlan::new(spec::QueryNode::Read {
-            read_type: spec::ReadType::DataSource(Box::new(read)),
-            is_streaming,
-        }),
-        ..flow()
-    };
-    (output, flow)
-}
-
-fn cdc_flow_over_changes() -> Result<Flow, Box<dyn std::error::Error>> {
-    let mut flow = cdc_flow()?;
-    flow.query = spec::QueryPlan::new(spec::QueryNode::Read {
-        read_type: spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
-            name: spec::ObjectName::bare("Changes"),
-            temporal: None,
-            sample: None,
-            options: vec![],
-        })),
-        is_streaming: true,
-    });
-    Ok(flow)
-}
-
-#[tokio::test]
-async fn an_iggy_view_is_a_source_and_only_a_bare_streaming_read_is_one() -> TestResult {
-    let (ctx, _) = context()?;
-    let with = |view: (Output, Flow)| -> Result<_, Box<dyn std::error::Error>> {
-        let (view_output, view_flow) = view;
-        Ok(graph_of(
-            vec![view_flow, cdc_flow_over_changes()?],
-            vec![view_output, output()],
-        ))
-    };
-    assert!(admitted(&ctx, &with(iggy_view("iggy", true))?)?);
-    assert!(admitted(&ctx, &with(iggy_view("IGGY", true))?)?);
-    assert!(
-        !admitted(&ctx, &with(iggy_view("iggy", false))?)?,
-        "a batch read has no bound"
-    );
-    assert!(
-        !admitted(&ctx, &with(iggy_view("rate", true))?)?,
-        "another streaming format"
-    );
-
-    let (view_output, mut view_flow) = iggy_view("iggy", true);
-    view_flow.query = spec::QueryPlan::new(spec::QueryNode::Limit {
-        input: Box::new(view_flow.query.clone()),
-        skip: None,
-        limit: Some(spec::Expr::Literal(spec::Literal::Int64 { value: Some(1) })),
-    });
-    assert!(
-        !admitted(&ctx, &with((view_output, view_flow))?)?,
-        "a transformed read would be run past its plan"
-    );
-
-    let (view_output, view_flow) = iggy_view("iggy", true);
-    let mut second = view_flow.clone();
-    second.name = vec!["again".to_string()];
-    let two_flows = graph_of(
-        vec![view_flow, second, cdc_flow_over_changes()?],
-        vec![view_output, output()],
-    );
-    assert!(!admitted(&ctx, &two_flows)?, "a view fed by two flows");
-
-    let (view_output, view_flow) = iggy_view("iggy", true);
-    let ordinary = Flow {
-        auto_cdc: None,
-        ..cdc_flow_over_changes()?
-    };
-    let plain = graph_of(vec![view_flow, ordinary], vec![view_output, output()]);
-    // No AutoCDC flow, so this graph never reaches the durable path; the
-    // streaming path refuses the view (`test_autocdc_iggy.py`).
-    assert!(admitted(&ctx, &plain)?, "an ordinary flow over the view");
     finish(&ctx).await?;
     Ok(())
 }

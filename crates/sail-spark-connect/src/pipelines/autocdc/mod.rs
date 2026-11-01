@@ -21,6 +21,7 @@ mod dedup;
 mod durable;
 mod errors;
 mod execute;
+mod flow_source;
 mod lookup;
 mod merge;
 mod microbatch;

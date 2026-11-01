@@ -263,3 +263,155 @@ def test_two_targets_keep_independent_state(space, pipeline_factory, broker):  #
     assert space.catalog.tableExists("__spark_autocdc_aux_state_t_b")
     space.sql("DROP TABLE IF EXISTS t_a")
     space.sql("DROP TABLE IF EXISTS t_b")
+
+
+def cdc_view_graph(spark, factory, url, transform):
+    _, registry, start = factory()
+    with graph_element_registration_context(registry):
+
+        @dp.temporary_view
+        def raw():
+            return (
+                spark.readStream.format("iggy")
+                .option("url", url)
+                .option("stream", STREAM)
+                .option("topic", TOPIC)
+                .option("timeout_ms", "5000")
+                .schema("id INT, name STRING, seq BIGINT, noise STRING")
+                .load()
+            )
+
+        @dp.temporary_view
+        def changes():
+            return transform(spark.readStream.table("raw"))
+
+        dp.create_streaming_table("target", format="delta")
+        dp.create_auto_cdc_flow(target="target", source="changes", keys=["id"], sequence_by="seq")
+    start()
+
+
+def test_a_flow_reads_through_a_transforming_view(space, pipeline_factory, broker):  # noqa: F811
+    def transform(frame):
+        return frame.where("noise <> 'skip'").select("id", sf.upper("name").alias("name"), "seq")
+
+    broker.send(
+        {"id": 1, "name": "alice", "seq": 1, "noise": "keep"},
+        {"id": 2, "name": "bob", "seq": 1, "noise": "skip"},
+    )
+    cdc_view_graph(space, pipeline_factory, broker.url, transform)
+    assert rows(space, "id", "name", "seq") == [(1, "ALICE", 1)]
+    broker.send({"id": 1, "name": "alicia", "seq": 2, "noise": "keep"})
+    cdc_view_graph(space, pipeline_factory, broker.url, transform)
+    assert rows(space, "id", "name", "seq") == [(1, "ALICIA", 2)]
+
+
+def test_a_nested_struct_merges_through_a_projection(space, pipeline_factory, broker):  # noqa: F811
+    def transform(frame):
+        return frame.select("id", "seq", sf.struct("name", "noise").alias("value"))
+
+    broker.send({"id": 1, "name": "alice", "seq": 1, "noise": "x"})
+    cdc_view_graph(space, pipeline_factory, broker.url, transform)
+    assert rows(space, "id", "value.name", "value.noise") == [(1, "alice", "x")]
+
+
+def test_a_flow_reads_a_file_table_incrementally(space, pipeline_factory):
+    space.sql("DROP TABLE IF EXISTS events")
+    space.sql("CREATE TABLE events (id INT, name STRING, seq BIGINT) USING parquet")
+    space.sql("INSERT INTO events VALUES (1, 'alice', 1), (2, 'bob', 1)")
+
+    def go():
+        _, registry, start = pipeline_factory()
+        with graph_element_registration_context(registry):
+
+            @dp.temporary_view
+            def changes():
+                return space.readStream.table("events")
+
+            dp.create_streaming_table("target", format="delta")
+            dp.create_auto_cdc_flow(target="target", source="changes", keys=["id"], sequence_by="seq")
+        start()
+
+    go()
+    assert rows(space, "id", "name") == [(1, "alice"), (2, "bob")]
+    space.sql("INSERT INTO events VALUES (1, 'alicia', 2)")
+    go()
+    assert rows(space, "id", "name") == [(1, "alicia"), (2, "bob")]
+    go()
+    assert rows(space, "id", "name") == [(1, "alicia"), (2, "bob")]
+    space.sql("DROP TABLE IF EXISTS events")
+
+
+def test_a_flow_reads_files_under_a_path(space, pipeline_factory, tmp_path):
+    path = str(tmp_path / "landing")
+    space.createDataFrame([(1, "alice", 1)], "id INT, name STRING, seq BIGINT").write.mode("append").parquet(path)
+
+    def go():
+        _, registry, start = pipeline_factory()
+        with graph_element_registration_context(registry):
+
+            @dp.temporary_view
+            def changes():
+                return space.readStream.format("parquet").schema(BASE).load(path)
+
+            dp.create_streaming_table("target", format="delta")
+            dp.create_auto_cdc_flow(target="target", source="changes", keys=["id"], sequence_by="seq")
+        start()
+
+    go()
+    assert rows(space, "id", "name") == [(1, "alice")]
+    space.createDataFrame([(2, "bob", 1)], "id INT, name STRING, seq BIGINT").write.mode("append").parquet(path)
+    go()
+    assert rows(space, "id", "name") == [(1, "alice"), (2, "bob")]
+
+
+def test_a_flow_unions_two_streams(space, pipeline_factory, tmp_path):
+    left, right = str(tmp_path / "left"), str(tmp_path / "right")
+    space.createDataFrame([(1, "left", 1)], "id INT, name STRING, seq BIGINT").write.parquet(left)
+    space.createDataFrame([(1, "right", 2), (2, "right", 1)], "id INT, name STRING, seq BIGINT").write.parquet(right)
+    _, registry, start = pipeline_factory()
+    with graph_element_registration_context(registry):
+
+        @dp.temporary_view
+        def changes():
+            one = space.readStream.format("parquet").schema(BASE).load(left)
+            two = space.readStream.format("parquet").schema(BASE).load(right)
+            return one.unionByName(two)
+
+        dp.create_streaming_table("target", format="delta")
+        dp.create_auto_cdc_flow(target="target", source="changes", keys=["id"], sequence_by="seq")
+    start()
+    assert rows(space, "id", "name") == [(1, "right"), (2, "right")]
+
+
+def test_an_unknown_streaming_format_is_refused(space, pipeline_factory):
+    _, registry, start = pipeline_factory()
+    with graph_element_registration_context(registry):
+
+        @dp.temporary_view
+        def changes():
+            return space.readStream.format("rate").load()
+
+        dp.create_streaming_table("target", format="delta")
+        dp.create_auto_cdc_flow(target="target", source="changes", keys=["value"], sequence_by="timestamp")
+    with pytest.raises(FAILURE, match="incremental pipeline execution"):
+        start()
+
+
+def test_a_flow_streams_from_a_table_the_same_pipeline_writes(space, pipeline_factory):
+    space.sql("DROP TABLE IF EXISTS bronze")
+    _, registry, start = pipeline_factory()
+    with graph_element_registration_context(registry):
+
+        @dp.materialized_view
+        def bronze():
+            return space.createDataFrame([(1, "alice", 1), (1, "alicia", 2)], BASE)
+
+        @dp.temporary_view
+        def changes():
+            return space.readStream.table("bronze")
+
+        dp.create_streaming_table("target", format="delta")
+        dp.create_auto_cdc_flow(target="target", source="changes", keys=["id"], sequence_by="seq")
+    start()
+    assert rows(space, "id", "name") == [(1, "alicia")]
+    space.sql("DROP TABLE IF EXISTS bronze")

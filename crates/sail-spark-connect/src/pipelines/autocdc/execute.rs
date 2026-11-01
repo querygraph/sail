@@ -8,13 +8,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::datasource::{MemTable, provider_as_source};
+use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
 use datafusion::prelude::SessionContext;
 use sail_catalog::error::CatalogError;
 use sail_catalog::manager::CatalogManager;
 use sail_common::spec;
 use sail_common_datafusion::extension::{SessionExtension, SessionExtensionAccessor};
 use sail_common_datafusion::task_resources::TaskResourceScope;
-use sail_iggy_bounded::{FORMAT as IGGY_FORMAT, IggyBoundedConfig, IggyBoundedSource};
 use sail_plan::config::PlanConfig;
 use sail_plan::error::PlanError;
 use sail_sdp_control::control::Control;
@@ -24,13 +25,15 @@ use tokio::runtime::Handle;
 
 use super::ScdType;
 use super::durable::{DurableOutcome, DurableRun, run_durable_flow};
+use super::flow_source::FlowSource;
 use super::run::{FlowRun, checkpoint_dir};
 use super::schema::{Case, METADATA_COLUMN};
 use super::write::{IN_COMMIT_TIMESTAMPS_PROPERTY, Scd1Write, flow_output_schema, read_table};
 use crate::error::{SparkError, SparkResult, StructuredSparkError};
-use crate::pipelines::analysis::AnalyzedGraph;
+use crate::pipelines::analysis::{AnalyzedGraph, GraphScope};
 use crate::pipelines::append::spec_schema;
 use crate::pipelines::graph::{Flow, GraphDefinition, Name, Output};
+use crate::pipelines::reanalysis::resolve_inputs;
 use crate::pipelines::schema_merge::merge_fields;
 use crate::pipelines::selection::Selection;
 use crate::pipelines::streaming::source::BoundedSource;
@@ -66,54 +69,12 @@ fn source_of(graph: &GraphDefinition, flow: &Flow) -> SparkResult<Option<Name>> 
     graph.qualify(&name).map(Some)
 }
 
-/// The Iggy read a flow is nothing but, if it is.
-fn iggy_read(flow: &Flow) -> Option<&spec::ReadDataSource> {
-    match &flow.query.node {
-        spec::QueryNode::Read {
-            read_type: spec::ReadType::DataSource(source),
-            is_streaming: true,
-        } if source
-            .format
-            .as_deref()
-            .is_some_and(|format| format.eq_ignore_ascii_case(IGGY_FORMAT)) =>
-        {
-            Some(source)
-        }
-        _ => None,
-    }
-}
-
-/// A temporary view holding one Iggy read.
-struct IggyView<'a> {
-    output: &'a Output,
-    read: &'a spec::ReadDataSource,
-}
-
-/// The graph's Iggy views, by the qualified name a flow reads them under.
-fn iggy_views(graph: &GraphDefinition) -> SparkResult<BTreeMap<Name, IggyView<'_>>> {
-    let mut views = BTreeMap::new();
-    for output in &graph.outputs {
-        if output.kind != OutputType::TemporaryView {
-            continue;
-        }
-        let mut flows = graph.flows.iter().filter(|x| x.target == output.name);
-        if let (Some(flow), None) = (flows.next(), flows.next())
-            && let Some(read) = iggy_read(flow)
-        {
-            views.insert(graph.qualify(&output.name)?, IggyView { output, read });
-        }
-    }
-    Ok(views)
-}
-
 /// Whether this graph is one the durable run can execute: only AutoCDC SCD1
 /// tables, each flow over a registered bounded source.
 pub(in crate::pipelines) fn admitted(
-    ctx: &SessionContext,
+    _ctx: &SessionContext,
     graph: &GraphDefinition,
 ) -> SparkResult<bool> {
-    let registered = ctx.extension::<BoundedSources>().ok();
-    let views = iggy_views(graph)?;
     for flow in graph.flows.iter().filter(|flow| flow.auto_cdc.is_some()) {
         let args = flow
             .auto_cdc
@@ -126,47 +87,50 @@ pub(in crate::pipelines) fn admitted(
         if target.is_none_or(|target| target.kind != OutputType::Table) {
             return Ok(false);
         }
-        match source_of(graph, flow)? {
-            Some(source)
-                if views.contains_key(&source)
-                    || registered
-                        .as_ref()
-                        .is_some_and(|x| x.0.contains_key(&source)) => {}
-            _ => return Ok(false),
-        }
     }
     Ok(true)
 }
 
-/// The sources an admitted graph reads, with the graph that remains once its
-/// Iggy views are sources rather than outputs. Every source is reached here,
-/// so a wrong address or a missing topic stops the run before its first
-/// write.
-fn sources_of(
+/// The graph inputs of a flow, resolved now.
+async fn flow_relations(
     ctx: &SessionContext,
     graph: &GraphDefinition,
     analyzed: &AnalyzedGraph,
-) -> SparkResult<(GraphDefinition, BoundedSources)> {
-    let mut sources = ctx
-        .extension::<BoundedSources>()
-        .map(|x| x.as_ref().clone())
-        .unwrap_or_default();
-    let views = iggy_views(graph)?;
-    let mut remaining = graph.clone();
-    for (name, view) in views {
-        let config = IggyBoundedConfig::from_options(view.read.options.iter().cloned())
-            .map_err(SparkError::from)?;
-        let schema = analyzed
-            .schemas
-            .get(&view.output.name)
-            .ok_or_else(|| SparkError::internal("analyzed source schema missing"))?;
-        let source = IggyBoundedSource::try_new(config, schema.clone())?;
-        source.describe()?;
-        sources.0.insert(name, Arc::new(source));
-        remaining.outputs.retain(|x| x.name != view.output.name);
-        remaining.flows.retain(|x| x.target != view.output.name);
-    }
-    Ok((remaining, sources))
+    flow: &Flow,
+    config: Arc<PlanConfig>,
+) -> SparkResult<BTreeMap<Name, LogicalPlan>> {
+    let accepted = analyzed
+        .accepted_confs
+        .get(&flow.name)
+        .ok_or_else(|| SparkError::internal("accepted flow configuration missing"))?;
+    resolve_inputs(ctx, graph, analyzed, &flow.target, config, accepted).await
+}
+
+/// Every output as an empty plan of its analyzed schema. A run is prepared
+/// before the outputs a flow reads exist, and only needs their shape.
+fn placeholder_relations(analyzed: &AnalyzedGraph) -> SparkResult<BTreeMap<Name, LogicalPlan>> {
+    analyzed
+        .schemas
+        .iter()
+        .map(|(name, schema)| {
+            let table = MemTable::try_new(schema.clone(), vec![vec![]])?;
+            let plan = LogicalPlanBuilder::scan(
+                name.join("."),
+                provider_as_source(Arc::new(table)),
+                None,
+            )?
+            .build()?;
+            Ok((name.clone(), plan))
+        })
+        .collect()
+}
+
+/// A flow's directory under the warehouse, which outlives its resets.
+fn flow_root(warehouse: &std::path::Path, flow: &Flow) -> PathBuf {
+    warehouse
+        .join("_checkpoints")
+        .join(flow.target.join("."))
+        .join(flow.name.join("."))
 }
 
 /// The local warehouse directory. The authority is a file owned by one
@@ -187,7 +151,7 @@ async fn with_output_schemas(
     ctx: &SessionContext,
     spark: &SparkSession,
     graph: &GraphDefinition,
-    sources: &BoundedSources,
+    sources: &FlowSources,
     analyzed: &AnalyzedGraph,
 ) -> SparkResult<BTreeMap<Name, SchemaRef>> {
     let mut schemas = analyzed.schemas.clone();
@@ -196,15 +160,32 @@ async fn with_output_schemas(
             .auto_cdc
             .as_ref()
             .ok_or_else(|| SparkError::internal("admitted flow is not AutoCDC"))?;
-        let source = source_of(graph, flow)?
-            .and_then(|name| sources.0.get(&name))
-            .ok_or_else(|| SparkError::internal("admitted source is not registered"))?;
+        let source = sources.of(flow)?;
         let config = flow_config(spark, analyzed, flow)?;
         let case = case_of(&config);
         let schema = flow_output_schema(ctx, config, args, case, &source.schema()).await?;
         schemas.insert(flow.target.clone(), schema);
     }
     Ok(schemas)
+}
+
+/// What each AutoCDC flow reads, by flow name.
+#[derive(Default)]
+struct FlowSources(
+    BTreeMap<Name, Arc<dyn BoundedSource + Send + Sync>>,
+    BTreeMap<Name, Arc<FlowSource>>,
+);
+
+impl FlowSources {
+    fn of(&self, flow: &Flow) -> SparkResult<Arc<dyn BoundedSource + Send + Sync>> {
+        if let Some(source) = self.1.get(&flow.name) {
+            return Ok(source.clone());
+        }
+        self.0
+            .get(&flow.name)
+            .cloned()
+            .ok_or_else(|| SparkError::internal("admitted flow has no source"))
+    }
 }
 
 /// `StructType.merge` matches names exactly, so a column that differs from
@@ -319,11 +300,10 @@ fn output_format(output: &Output) -> Option<&str> {
 /// What one pipeline run needs for its AutoCDC flows: their tables exist, and
 /// the authority that owns them is open.
 pub(in crate::pipelines) struct CdcRun {
-    /// The graph without its Iggy views, which are sources rather than outputs.
     pub graph: GraphDefinition,
     /// The outputs AutoCDC flows write. The batch path leaves these alone.
     pub targets: BTreeSet<Name>,
-    sources: BoundedSources,
+    sources: FlowSources,
     schemas: BTreeMap<Name, SchemaRef>,
     warehouse: PathBuf,
     control: Arc<Control<TursoStore>>,
@@ -340,9 +320,27 @@ impl CdcRun {
         selection: &Selection,
     ) -> SparkResult<Self> {
         let spark = ctx.extension::<SparkSession>()?;
-        let (graph, sources) = sources_of(ctx, graph, analyzed)?;
-        let schemas = with_output_schemas(ctx, &spark, &graph, &sources, analyzed).await?;
-        let graph = with_commit_timestamps(&graph);
+        let warehouse = local_warehouse(&spark.plan_config()?.default_warehouse_directory)?;
+        let registered = ctx
+            .extension::<BoundedSources>()
+            .map(|x| x.as_ref().clone())
+            .unwrap_or_default();
+        let placeholders = placeholder_relations(analyzed)?;
+        let mut sources = FlowSources::default();
+        for flow in graph.flows.iter().filter(|flow| flow.auto_cdc.is_some()) {
+            let bare = source_of(graph, flow)?.and_then(|name| registered.0.get(&name).cloned());
+            if let Some(source) = bare {
+                sources.0.insert(flow.name.clone(), source);
+                continue;
+            }
+            let config = flow_config(&spark, analyzed, flow)?;
+            let scope = GraphScope::new(graph, &placeholders, flow);
+            let root = flow_root(&warehouse, flow);
+            let source = FlowSource::discover(ctx, &config, &scope, graph, flow, &root).await?;
+            sources.1.insert(flow.name.clone(), Arc::new(source));
+        }
+        let schemas = with_output_schemas(ctx, &spark, graph, &sources, analyzed).await?;
+        let graph = with_commit_timestamps(graph);
         let targets: BTreeSet<Name> = graph
             .flows
             .iter()
@@ -390,7 +388,6 @@ impl CdcRun {
             reset: BTreeSet::new(),
         };
         crate::pipelines::materialize::tables(ctx, &graph, &schemas, &creation).await?;
-        let warehouse = local_warehouse(&spark.plan_config()?.default_warehouse_directory)?;
         let directory = warehouse.join("_control");
         std::fs::create_dir_all(&directory)
             .map_err(|e| SparkError::internal(format!("create {}: {e}", directory.display())))?;
@@ -431,13 +428,8 @@ impl CdcRun {
             .auto_cdc
             .as_ref()
             .ok_or_else(|| SparkError::internal("admitted flow is not AutoCDC"))?;
-        let source_name = source_of(graph, flow)?
-            .ok_or_else(|| SparkError::internal("admitted flow has no streaming source"))?;
-        let source = self
-            .sources
-            .0
-            .get(&source_name)
-            .ok_or_else(|| SparkError::internal("admitted source is not registered"))?;
+        let source_name = source_of(graph, flow)?.unwrap_or_default();
+        let source = self.sources.of(flow)?;
         let config = flow_config(&spark, analyzed, flow)?;
         let sequencing = sequencing_type(&self.schemas, name)?;
         let flow_name = flow.name.join(".");
@@ -450,7 +442,7 @@ impl CdcRun {
             case: case_of(&config),
         };
         let checkpoint = checkpoint_dir(&self.warehouse, name, &flow.name, false)?;
-        let relations = BTreeMap::new();
+        let relations = flow_relations(ctx, graph, analyzed, flow, config.clone()).await?;
         let run = FlowRun {
             graph,
             flow,
@@ -460,6 +452,7 @@ impl CdcRun {
             write: &write,
             checkpoint: &checkpoint,
             max_rows_per_partition: MAX_ROWS_PER_PARTITION,
+            flow_source: self.sources.1.get(&flow.name).map(Arc::as_ref),
         };
         run_durable_flow(
             ctx,

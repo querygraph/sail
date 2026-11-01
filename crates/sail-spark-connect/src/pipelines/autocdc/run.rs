@@ -134,6 +134,9 @@ pub(super) struct FlowRun<'a> {
     pub write: &'a Scd1Write<'a>,
     pub checkpoint: &'a Path,
     pub max_rows_per_partition: usize,
+    /// Set when the flow's query is read through views or from several
+    /// streams; a bare read of `source` lowers through `source_name` instead.
+    pub flow_source: Option<&'a super::flow_source::FlowSource>,
 }
 
 pub(super) struct RunOutcome {
