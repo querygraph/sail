@@ -244,6 +244,11 @@ pub trait BoundedSource: Send + Sync + fmt::Debug {
     /// seen by a run starts.
     fn earliest(&self, partition: &PartitionId) -> Result<Cursor, SourceError>;
 
+    /// Whether `earliest` is the first position the partition ever held. A
+    /// reset refuses to rebuild from a source that has lost its start, so a
+    /// partition must not answer yes when retention removed its first rows.
+    fn retains_origin(&self, partition: &PartitionId) -> Result<bool, SourceError>;
+
     /// The end position of a partition now (`prepareForTriggerAvailableNow`).
     /// Captured once per run; later batches read it from the run record.
     fn frontier(&self, partition: &PartitionId) -> Result<Cursor, SourceError>;

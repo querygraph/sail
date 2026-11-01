@@ -287,13 +287,6 @@ pub(in crate::pipelines) async fn execute_graph(
     analyzed: &AnalyzedGraph,
     selection: &Selection,
 ) -> SparkResult<Vec<DurableOutcome>> {
-    // A reset must run through the authority; the plain truncate would write
-    // around the fence.
-    if !selection.reset.is_empty() {
-        return Err(SparkError::unsupported(
-            "full refresh of a durable AutoCDC table",
-        ));
-    }
     let spark = ctx.extension::<SparkSession>()?;
     let (graph, sources) = sources_of(ctx, graph, analyzed)?;
     let schemas = with_output_schemas(ctx, &spark, &graph, &sources, analyzed).await?;
@@ -312,6 +305,8 @@ pub(in crate::pipelines) async fn execute_graph(
             Err(error) => return Err(PlanError::from(error).into()),
         }
     }
+    // A reset runs through the authority inside the flow; the plain truncate
+    // would write around the fence.
     let creation = Selection {
         refresh: missing,
         reset: BTreeSet::new(),
@@ -384,6 +379,7 @@ pub(in crate::pipelines) async fn execute_graph(
                     control: control.clone(),
                     owner: &owner,
                     lease_ms: LEASE_MS,
+                    reset: crate::pipelines::materialize::resets(output, selection),
                     stage_hook: None,
                 },
             )

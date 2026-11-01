@@ -154,6 +154,10 @@ impl BoundedSource for DeterministicSource {
         Ok(Self::cursor(self.state(partition)?.earliest))
     }
 
+    fn retains_origin(&self, partition: &PartitionId) -> Result<bool, SourceError> {
+        Ok(self.state(partition)?.earliest == 0)
+    }
+
     fn frontier(&self, partition: &PartitionId) -> Result<Cursor, SourceError> {
         Ok(Self::cursor(Self::end_of(&self.state(partition)?)))
     }

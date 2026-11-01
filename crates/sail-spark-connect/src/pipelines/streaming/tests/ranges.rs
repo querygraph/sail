@@ -236,6 +236,9 @@ impl BoundedSource for Stalling<'_> {
     fn earliest(&self, partition: &PartitionId) -> Result<Cursor, SourceError> {
         self.0.earliest(partition)
     }
+    fn retains_origin(&self, partition: &PartitionId) -> Result<bool, SourceError> {
+        self.0.retains_origin(partition)
+    }
     fn frontier(&self, partition: &PartitionId) -> Result<Cursor, SourceError> {
         self.0.frontier(partition)
     }

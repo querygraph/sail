@@ -106,7 +106,7 @@ async fn setup() -> Result<Fixture, Box<dyn std::error::Error>> {
         Some(eq_true("is_delete")),
         Some(ColumnSelection::Exclude(vec![key("is_delete")?])),
     )?;
-    let checkpoint = warehouse(&ctx)?.join("_checkpoints_test");
+    let checkpoint = warehouse(&ctx)?.join("_checkpoints_test").join("0");
     std::fs::create_dir_all(&checkpoint)?;
     Ok(Fixture {
         ctx,
@@ -124,6 +124,17 @@ impl Fixture {
         control: &Arc<Control<S>>,
         owner: &str,
         hook: Option<&(dyn Fn(Stage, u64) -> SparkResult<()> + Send + Sync)>,
+    ) -> SparkResult<DurableOutcome> {
+        self.run_with(source, control, owner, hook, false).await
+    }
+
+    async fn run_with<S: Store + 'static>(
+        &self,
+        source: &DeterministicSource,
+        control: &Arc<Control<S>>,
+        owner: &str,
+        hook: Option<&(dyn Fn(Stage, u64) -> SparkResult<()> + Send + Sync)>,
+        reset: bool,
     ) -> SparkResult<DurableOutcome> {
         let (graph, flow, relations, source_name, target) = (
             graph(),
@@ -159,6 +170,7 @@ impl Fixture {
                 control: control.clone(),
                 owner,
                 lease_ms: LEASE,
+                reset,
                 stage_hook: hook,
             },
         )
@@ -202,7 +214,8 @@ async fn assert_heads_match_the_logs<S: Store>(case: &Fixture, control: &Control
         assert_eq!(head.version, delta_version(&dir)?, "{name:?}");
     }
     let flow = FlowKey(flow_name().join("."));
-    let checkpoint = control.checkpoint(&key, 0, &flow).await?;
+    let generation = control.guard(&key).await?.ok_or("no guard")?.generation;
+    let checkpoint = control.checkpoint(&key, generation, &flow).await?;
     assert_eq!(checkpoint.map(|c| c.next_batch_sequence), Some(3));
     Ok(())
 }
@@ -227,11 +240,13 @@ async fn crash_and_recover(stage: Stage) -> TestResult {
             DurableOutcome {
                 batches: 1,
                 recovered: None,
+                reset: None,
             }
         } else {
             DurableOutcome {
                 batches: 2,
                 recovered: Some(1),
+                reset: None,
             }
         },
         "{stage:?}"
@@ -455,6 +470,157 @@ async fn the_recovery_trace_survives_an_authority_restart() -> TestResult {
     );
     case.assert_exact().await?;
     assert_heads_match_the_logs(&case, &control).await?;
+    finish(&case.ctx).await?;
+    Ok(())
+}
+
+fn target_key() -> sail_sdp_control::identity::TargetKey {
+    sail_sdp_control::identity::TargetKey(target().join("."))
+}
+
+#[tokio::test]
+async fn a_reset_rebuilds_the_tables_from_the_origin_under_a_new_generation() -> TestResult {
+    let case = setup().await?;
+    let control = Arc::new(Control::new(
+        UnfencedMemoryStore::new(),
+        Arc::new(ManualClock::default()),
+    ));
+    case.run(&source(), &control, "w1", None).await?;
+    let before = control.guard(&target_key()).await?.ok_or("no guard")?;
+    let outcome = case.run_with(&source(), &control, "w1", None, true).await?;
+    assert_eq!((outcome.batches, outcome.reset), (3, Some(1)));
+    case.assert_exact().await?;
+    assert_heads_match_the_logs(&case, &control).await?;
+    let guard = control.guard(&target_key()).await?.ok_or("no guard")?;
+    assert_eq!((guard.generation, guard.checkpoint_index), (1, 1));
+    assert_eq!(
+        (&guard.sink, &guard.auxiliary),
+        (&before.sink, &before.auxiliary)
+    );
+    // Batch numbers restart, so the new generation archives beside the old one.
+    let root = case.checkpoint.parent().ok_or("no parent")?;
+    assert!(root.join("0").join("prepared").join("2.arrow").exists());
+    assert!(root.join("1").join("prepared").join("2.arrow").exists());
+    assert_eq!(case.run(&source(), &control, "w1", None).await?.batches, 0);
+    finish(&case.ctx).await?;
+    Ok(())
+}
+
+async fn crash_during_reset(stage: Stage) -> TestResult {
+    let case = setup().await?;
+    let clock = Arc::new(ManualClock::default());
+    let control = Arc::new(Control::new(UnfencedMemoryStore::new(), clock.clone()));
+    case.run(&source(), &control, "w1", None).await?;
+    let hook = crash_at(stage, 0);
+    let crashed = case
+        .run_with(&source(), &control, "w1", Some(&hook), true)
+        .await;
+    assert!(crashed.is_err(), "{stage:?} must stop the run");
+    assert_eq!(
+        control.guard(&target_key()).await?.ok_or("no guard")?.state,
+        sail_sdp_control::records::TargetState::Resetting
+    );
+    clock.0.store(LEASE + 1, Ordering::SeqCst);
+    // The successor was not asked for a reset and finishes it anyway.
+    let outcome = case.run(&source(), &control, "w2", None).await?;
+    assert_eq!((outcome.batches, outcome.reset), (3, Some(1)), "{stage:?}");
+    case.assert_exact().await?;
+    assert_heads_match_the_logs(&case, &control).await?;
+    finish(&case.ctx).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_crash_after_beginning_a_reset_resumes_it() -> TestResult {
+    crash_during_reset(Stage::ResetBegun).await
+}
+
+#[tokio::test]
+async fn a_crash_between_the_reset_effects_resumes_it() -> TestResult {
+    crash_during_reset(Stage::ResetTargetDone).await
+}
+
+#[tokio::test]
+async fn a_reset_is_refused_before_any_effect_when_the_origin_is_gone() -> TestResult {
+    let case = setup().await?;
+    let control = Arc::new(Control::new(
+        UnfencedMemoryStore::new(),
+        Arc::new(ManualClock::default()),
+    ));
+    let source = source();
+    case.run(&source, &control, "w1", None).await?;
+    source.expire_before("p0", 1);
+    let refused = case.run_with(&source, &control, "w1", None, true).await;
+    let message = refused.err().ok_or("reset must be refused")?.to_string();
+    assert!(
+        message.contains("no longer retains its first position"),
+        "{message}"
+    );
+    assert_eq!(
+        control
+            .guard(&target_key())
+            .await?
+            .ok_or("no guard")?
+            .generation,
+        0
+    );
+    case.assert_exact().await?;
+    finish(&case.ctx).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reset_replaces_an_unfinished_batch_and_keeps_its_ratified_commit() -> TestResult {
+    let case = setup().await?;
+    let clock = Arc::new(ManualClock::default());
+    let control = Arc::new(Control::new(UnfencedMemoryStore::new(), clock.clone()));
+    let hook = crash_at(Stage::AuxiliaryDone, 1);
+    assert!(
+        case.run(&source(), &control, "w1", Some(&hook))
+            .await
+            .is_err()
+    );
+    // The batch's ratified commit never reached the log, so the head the
+    // reset must build on exists only once that commit is published.
+    let dir = table_dir(&case.ctx, &aux())?;
+    let latest = delta_version(&dir)?;
+    std::fs::remove_file(dir.join("_delta_log").join(format!("{latest:020}.json")))?;
+    clock.0.store(LEASE + 1, Ordering::SeqCst);
+    let outcome = case.run_with(&source(), &control, "w2", None, true).await?;
+    assert_eq!(
+        (outcome.batches, outcome.recovered, outcome.reset),
+        (3, None, Some(1))
+    );
+    case.assert_exact().await?;
+    assert_heads_match_the_logs(&case, &control).await?;
+    finish(&case.ctx).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_run_stopped_by_its_source_leaves_the_target_free_for_a_reset() -> TestResult {
+    let case = setup().await?;
+    let control = Arc::new(Control::new(
+        UnfencedMemoryStore::new(),
+        Arc::new(ManualClock::default()),
+    ));
+    let source = source();
+    case.run(&source, &control, "w1", None).await?;
+    source.create_partition("p0");
+    assert!(case.run(&source, &control, "w2", None).await.is_err());
+    // The clock has not moved, so w2's lease would still block this.
+    let outcome = case.run_with(&source, &control, "w3", None, true).await?;
+    assert_eq!((outcome.batches, outcome.reset), (0, Some(1)));
+    assert!(
+        rows(&case.ctx, case.config.clone(), &target())
+            .await?
+            .is_empty()
+    );
+    assert!(
+        rows(&case.ctx, case.config.clone(), &aux())
+            .await?
+            .is_empty()
+    );
     finish(&case.ctx).await?;
     Ok(())
 }

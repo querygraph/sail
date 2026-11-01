@@ -247,3 +247,30 @@ def test_a_view_over_any_streaming_data_source_is_refused_rather_than_read_as_no
 
     with pytest.raises((PySparkException, SparkConnectGrpcException), match="incremental pipeline execution"):
         start()
+
+
+def test_a_full_refresh_recovers_a_recreated_topic(pipeline_spark, pipeline_factory, broker):
+    def run(**options):
+        _, registry, start = pipeline_factory()
+        _define(pipeline_spark, registry, broker.url)
+        start(**options)
+
+    # The tombstone of key 3 outranks its row in the new history, so a reset
+    # that left the auxiliary table would drop that row.
+    broker.send(_change(1, "old", 1), _change(3, "old", 1), _change(3, "", 5, op="D"))
+    run()
+    assert _rows(pipeline_spark) == [(1, "old", 1)]
+
+    broker.delete_topic()
+    broker._request("POST", f"/streams/{STREAM}/topics", {"name": TOPIC, "partitions_count": 1})  # noqa: SLF001
+    broker.send(_change(3, "new", 1))
+    with pytest.raises((PySparkException, SparkConnectGrpcException)):
+        run()
+    assert _rows(pipeline_spark) == [(1, "old", 1)]
+
+    run(full_refresh_all=True)
+    assert _rows(pipeline_spark) == [(3, "new", 1)]
+
+    broker.send(_change(4, "new", 2))
+    run()
+    assert _rows(pipeline_spark) == [(3, "new", 1), (4, "new", 2)]
