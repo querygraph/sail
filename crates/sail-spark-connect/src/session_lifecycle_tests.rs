@@ -41,10 +41,10 @@ fn pending_executor(reattachable: bool) -> Executor {
 }
 
 fn assert_closed<T>(result: SparkResult<T>) {
-    let Err(SparkError::Structured(error)) = result else {
-        panic!("expected a structured error");
-    };
-    assert_eq!(error.condition, "INVALID_HANDLE.SESSION_CLOSED");
+    assert!(matches!(
+        result,
+        Err(SparkError::Structured(error)) if error.condition == "INVALID_HANDLE.SESSION_CLOSED"
+    ));
 }
 
 #[test]

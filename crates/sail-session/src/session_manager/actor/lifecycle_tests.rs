@@ -70,14 +70,14 @@ impl Harness {
     fn script(&self, session_id: &str, script: Script) {
         self.scripts
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(session_id.to_string(), script);
     }
 
     fn take_script(&self, session_id: &str) -> Script {
         self.scripts
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .remove(session_id)
             .unwrap_or_default()
     }
@@ -85,7 +85,7 @@ impl Harness {
     fn stop_counter(&self, session_id: &str) -> Arc<AtomicUsize> {
         self.stops
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .entry(session_id.to_string())
             .or_default()
             .clone()
@@ -137,7 +137,7 @@ impl JobRunner for ScriptedRunner {
     async fn stop(&self) -> Result<()> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.harness.stopped.notify_waiters();
-        let hold = self.hold.lock().unwrap().take();
+        let hold = self.hold.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(hold) = hold {
             let _ = hold.await;
         }
@@ -159,7 +159,11 @@ impl SessionJobRunnerFactory for ScriptedRunnerFactory {
         _: &mut ActorSystem,
         info: SessionJobRunnerInfo,
     ) -> crate::error::SessionResult<SessionJobRunner> {
-        let mut scripts = self.harness.scripts.lock().unwrap();
+        let mut scripts = self
+            .harness
+            .scripts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let script = scripts.entry(info.session_id.clone()).or_default();
         let runner = ScriptedRunner {
             harness: self.harness.clone(),
@@ -234,7 +238,8 @@ impl Fixture {
             event_reporter: SystemEventReporter::new(provider.logger("lifecycle-test")),
         };
         let mut system = ActorSystem::new();
-        let manager = SessionManager::try_new(options, components, &mut system).unwrap();
+        let manager = SessionManager::try_new(options, components, &mut system)
+            .unwrap_or_else(|e| unreachable!("{e}"));
         Self {
             system,
             manager,
@@ -283,7 +288,7 @@ impl Fixture {
     fn statuses(&self, session_id: &str) -> Vec<String> {
         self.events
             .get_emitted_logs()
-            .unwrap()
+            .unwrap_or_default()
             .iter()
             .filter_map(|log| match log.record.body() {
                 Some(AnyValue::String(body)) => {
@@ -525,7 +530,13 @@ async fn delete_during_creating_owns_the_context_and_a_late_completion_is_ignore
     };
     // This is served after the session has entered Creating.
     let wait = async {
-        while fixture.harness.scripts.lock().unwrap().contains_key("a") {
+        while fixture
+            .harness
+            .scripts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key("a")
+        {
             tokio::task::yield_now().await;
         }
     };
@@ -858,7 +869,13 @@ async fn shutdown_owns_a_session_in_creating() -> TestResult {
         })
     };
     let wait = async {
-        while fixture.harness.scripts.lock().unwrap().contains_key("a") {
+        while fixture
+            .harness
+            .scripts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key("a")
+        {
             tokio::task::yield_now().await;
         }
     };

@@ -24,8 +24,7 @@ BINARY = os.environ.get("SAIL_TEST_SERVER_BINARY")
 pytestmark = pytest.mark.skipif(not BINARY, reason="SAIL_TEST_SERVER_BINARY is not set")
 
 
-@pytest.fixture
-def server(tmp_path):
+def run_server(tmp_path, env):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -33,6 +32,7 @@ def server(tmp_path):
         process = subprocess.Popen(  # noqa: S603
             [BINARY, "spark", "server", "--port", str(port)],
             cwd=tmp_path,
+            env={**os.environ, **env},
             stdout=log,
             stderr=subprocess.STDOUT,
         )
@@ -45,6 +45,23 @@ def server(tmp_path):
         if process.poll() is None:
             process.kill()
             process.wait(10)
+
+
+@pytest.fixture
+def server(tmp_path):
+    yield from run_server(tmp_path, {})
+
+
+@pytest.fixture
+def checkpoint_root(tmp_path):
+    root = tmp_path / "checkpoints"
+    root.mkdir()
+    return root
+
+
+@pytest.fixture
+def checkpoint_server(tmp_path, checkpoint_root):
+    yield from run_server(tmp_path, {"SAIL_EXECUTION__CHECKPOINT__PATH": checkpoint_root.as_uri()})
 
 
 def execute(stub, session, plan):
@@ -155,4 +172,48 @@ def test_release_finishes_with_an_active_pipeline_run_and_the_session_stays_clos
     thread.join(10)
     assert not thread.is_alive()
     assert "INVALID_HANDLE.SESSION_CLOSED" in outcome[0].details()
+    assert_stops_cleanly(process, port)
+
+
+def checkpoint(stub, session, query):
+    relation = pb.Relation(sql=pb.SQL(query=query))
+    message = pb.Command(checkpoint_command=pb.CheckpointCommand(relation=relation, eager=True))
+    return execute(stub, session, pb.Plan(command=message))
+
+
+def files(root):
+    return [path for path in root.rglob("*") if path.is_file()]
+
+
+def test_release_removes_the_checkpoints_of_the_session(checkpoint_server, checkpoint_root):
+    process, stub, port = checkpoint_server
+    session = str(uuid4())
+    other = str(uuid4())
+    list(checkpoint(stub, session, "SELECT * FROM range(100)"))
+    list(checkpoint(stub, other, "SELECT * FROM range(100)"))
+    assert any(session in str(path) for path in files(checkpoint_root))
+    stub.ReleaseSession(pb.ReleaseSessionRequest(session_id=session, user_context=USER), timeout=30)
+    # This is known when the release is acknowledged, and it stops at the session.
+    assert not any(session in str(path) for path in files(checkpoint_root))
+    assert any(other in str(path) for path in files(checkpoint_root))
+    assert_stops_cleanly(process, port)
+    assert not files(checkpoint_root)
+
+
+def test_release_during_a_checkpoint_write_leaves_nothing_behind(checkpoint_server, checkpoint_root):
+    process, stub, port = checkpoint_server
+    session = str(uuid4())
+    thread, outcome = drain(checkpoint(stub, session, "SELECT id, id AS a, id AS b FROM range(100000000000)"))
+    deadline = time.monotonic() + 60
+    while not files(checkpoint_root):
+        assert time.monotonic() < deadline, "the checkpoint did not start writing"
+        time.sleep(0.01)
+    stub.ReleaseSession(pb.ReleaseSessionRequest(session_id=session, user_context=USER), timeout=30)
+    assert not files(checkpoint_root)
+    thread.join(10)
+    assert not thread.is_alive()
+    assert "INVALID_HANDLE.SESSION_CLOSED" in outcome[0].details()
+    # Nothing appears later either: a write that outlived the release would show up by now.
+    time.sleep(1)
+    assert not files(checkpoint_root)
     assert_stops_cleanly(process, port)

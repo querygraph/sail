@@ -279,8 +279,7 @@ pub(crate) async fn handle_execute_sql_command(
             let rx: ExecutorOutputStream = if metadata.reattachable {
                 output.push(ExecutorOutput::complete());
                 let executor = Executor::completed(metadata, output);
-                let rx = spark.add_executor(executor)?.start()?;
-                rx
+                spark.add_executor(executor)?.start()?
             } else {
                 Box::pin(stream::iter(output.into_iter().map(Ok)))
             };
