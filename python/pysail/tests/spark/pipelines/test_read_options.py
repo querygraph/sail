@@ -69,11 +69,10 @@ def b():
     ("read", "expected"),
     [
         ('spark.read.table("a")', 2),
-        (f'spark.read.option("pathGlobFilter", "{NO_FILE}").table("a")', 0),
+        pytest.param(*(f'spark.read.option("pathGlobFilter", "{NO_FILE}").table("a")', 0), marks=pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="A batch read of a graph dataset does not apply its read options")),
     ],
     ids=["control", "option"],
 )
-@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="A batch read of a graph dataset does not apply its read options")
 def test_internal_batch_read_options_are_propagated(options, read, expected):
     options.run(internal_batch(read))
     assert options.count("b") == expected
