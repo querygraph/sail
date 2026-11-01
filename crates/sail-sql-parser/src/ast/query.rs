@@ -8,16 +8,17 @@ use either::Either;
 use sail_sql_macro::{TreeParser, TreeSyntax, TreeText};
 
 use crate::ast::expression::{
-    DuplicateTreatment, Expr, FunctionArgument, GroupingExpr, OrderByExpr, WindowSpec,
+    DuplicateTreatment, Expr, FunctionArgument, GroupingExpr, IntervalLiteral, OrderByExpr,
+    WindowSpec,
 };
 use crate::ast::identifier::{Ident, ObjectName, column_ident, object_name, table_ident};
 use crate::ast::keywords::{
-    All, Anti, As, Bucket, By, Cluster, Cross, Cube, Distinct, Distribute, Except, Exclude, For,
-    From, Full, Group, Having, Identifier, In, Include, Inner, Intersect, Join, Lateral, Left,
+    All, Anti, As, Bucket, By, Cluster, Cross, Cube, Delay, Distinct, Distribute, Except, Exclude,
+    For, From, Full, Group, Having, Identifier, In, Include, Inner, Intersect, Join, Lateral, Left,
     Limit, Minus, Name, Natural, Nulls, Of, Offset, On, Order, Out, Outer, Partition, Percent,
     Pivot, Recursive, Repeatable, Right, Rollup, Rows, Select, Semi, Sort, SystemTime,
     SystemVersion, Table, Tablesample, Timestamp, Union, Unpivot, Using, Values, Version, View,
-    Where, Window, With,
+    Watermark, Where, Window, With,
 };
 use crate::ast::literal::IntegerLiteral;
 use crate::ast::operator::{Comma, HintEnd, HintStart, LeftParenthesis, RightParenthesis};
@@ -294,6 +295,8 @@ pub enum TableFactor {
     Stream {
         stream: crate::ast::keywords::Stream,
         name: Either<(LeftParenthesis, ObjectName, RightParenthesis), ObjectName>,
+        #[parser(function = |(_, e, _), o| boxed(compose(e, o)).or_not())]
+        watermark: Option<Box<WatermarkClause>>,
         alias: Option<AliasClause>,
     },
     Values {
@@ -367,6 +370,17 @@ pub enum TemporalClause {
         #[parser(function = |e, _| e)]
         value: Expr,
     },
+}
+
+#[derive(Debug, Clone, TreeParser, TreeSyntax, TreeText)]
+#[parser(dependency = "Expr")]
+pub struct WatermarkClause {
+    pub watermark: Watermark,
+    pub column: Ident,
+    pub delay: Delay,
+    pub of: Of,
+    #[parser(function = |e, o| compose(e, o))]
+    pub interval: IntervalLiteral,
 }
 
 #[derive(Debug, Clone, TreeParser, TreeSyntax, TreeText)]

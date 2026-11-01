@@ -289,7 +289,13 @@ async fn persisted_view_publishes_captured_columns_after_source_is_unavailable()
         .write()
         .config_mut()
         .set_extension(Arc::new(unavailable));
-    crate::pipelines::materialize::views(&ctx, &graph, &analyzed).await?;
+    crate::pipelines::materialize::views(
+        &ctx,
+        &graph,
+        &analyzed,
+        &tokio::sync::mpsc::unbounded_channel().0,
+    )
+    .await?;
     let status = ctx
         .extension::<sail_catalog::manager::CatalogManager>()?
         .get_table_or_view(&graph.outputs[0].name)

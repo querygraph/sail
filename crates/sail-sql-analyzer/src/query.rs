@@ -15,6 +15,7 @@ use sail_sql_parser::ast::query::{
     WithClause,
 };
 use sail_sql_parser::common::Sequence;
+use sail_sql_parser::tree::TreeText;
 
 use crate::error::{SqlError, SqlResult};
 use crate::expression::{
@@ -490,7 +491,12 @@ pub fn from_ast_table_factor_with_joins(
 
 fn from_ast_table_factor(table: TableFactor) -> SqlResult<spec::QueryPlan> {
     match table {
-        TableFactor::Stream { name, alias, .. } => {
+        TableFactor::Stream {
+            name,
+            watermark,
+            alias,
+            ..
+        } => {
             let name = match name {
                 Either::Left((_, name, _)) | Either::Right(name) => name,
             };
@@ -503,6 +509,17 @@ fn from_ast_table_factor(table: TableFactor) -> SqlResult<spec::QueryPlan> {
                     options: vec![],
                 })),
             });
+            let plan = match watermark {
+                Some(watermark) => {
+                    spec::QueryPlan::new(spec::QueryNode::WithWatermark(spec::WithWatermark {
+                        input: Box::new(plan),
+                        event_time: watermark.column.value.clone(),
+                        // Spark's `withWatermark` takes this as text.
+                        delay_threshold: watermark.interval.value.text().trim().to_string(),
+                    }))
+                }
+                None => plan,
+            };
             query_plan_with_table_alias(plan, alias)
         }
         TableFactor::Name {

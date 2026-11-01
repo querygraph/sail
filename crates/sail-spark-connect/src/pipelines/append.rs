@@ -13,16 +13,22 @@
 //! rows, because a plain file table has no idempotent commit.
 //!
 //! Flows run one at a time and each reads to the end of what it listed, as
-//! one batch. Stateful operators and sources that are not plain files are
-//! refused, not read wrongly.
+//! one batch. Sources that are not plain files are refused, not read wrongly.
+//! The only stateful query is an aggregate over a tumbling window with a
+//! watermark: a window's rows are held under the checkpoint until the
+//! watermark passes its end, and then aggregated once. Rows behind the
+//! watermark are dropped, as Spark drops late rows.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
+use datafusion::arrow::array::{Array, AsArray};
+use datafusion::arrow::datatypes::{DataType, Int64Type, TimeUnit};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, ScalarValue};
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::{MemTable, provider_as_source};
-use datafusion::logical_expr::{JoinType, LogicalPlan, LogicalPlanBuilder, cast, col, lit};
+use datafusion::functions_aggregate::expr_fn::max;
+use datafusion::logical_expr::{Expr, JoinType, LogicalPlan, LogicalPlanBuilder, cast, col, lit};
 use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
 use object_store::path::Path;
@@ -34,6 +40,7 @@ use sail_common_datafusion::catalog::TableKind;
 use sail_common_datafusion::datasource::is_lakehouse_format;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
+use sail_common_datafusion::session::job::JobService;
 use sail_plan::config::PlanConfig;
 use sail_plan::error::{PlanError, PlanResult};
 use sail_plan::resolver::PlanResolver;
@@ -57,11 +64,19 @@ struct FlowState {
     batches: u64,
     seen: BTreeMap<String, BTreeSet<String>>,
     pending: Option<BTreeMap<String, Vec<String>>>,
+    /// The event time below which rows are late, in microseconds.
+    #[serde(default)]
+    watermark: Option<i64>,
+    /// Rows of windows still open, as files under the checkpoint.
+    #[serde(default)]
+    retained: Vec<String>,
 }
 
 struct Checkpoint {
     store: Arc<dyn ObjectStore>,
     file: Path,
+    /// This checkpoint version's directory, as a URL.
+    root: String,
 }
 
 impl Checkpoint {
@@ -95,8 +110,21 @@ impl Checkpoint {
             (Some(version), true) => version + 1,
             (Some(version), false) => version,
         };
-        let file = directory.join(version.to_string()).join(STATE_FILE);
-        Ok(Self { store, file })
+        let version_directory = directory.join(version.to_string());
+        let file = version_directory.clone().join(STATE_FILE);
+        let relative = version_directory
+            .parts()
+            .skip(url.prefix().parts().count())
+            .map(|part| part.as_ref().to_string())
+            .collect::<Vec<_>>()
+            .join("/");
+        let root = format!("{}/{relative}", url.as_str().trim_end_matches('/'));
+        Ok(Self { store, file, root })
+    }
+
+    /// Where the open windows of a batch are written.
+    fn state_url(&self, batch: u64) -> SparkResult<String> {
+        Ok(format!("{}/state/{batch}", self.root))
     }
 
     async fn load(&self) -> SparkResult<FlowState> {
@@ -486,11 +514,13 @@ fn append_mode_error() -> SparkError {
 }
 
 /// Refuse what needs state between batches, which this run does not keep.
-fn check_stateless(plan: &LogicalPlan) -> SparkResult<()> {
+fn check_stateless(plan: &LogicalPlan, windowed: bool) -> SparkResult<()> {
     let mut failure = None;
     plan.apply(|node| {
         let refused = match node {
-            LogicalPlan::Aggregate(_) if reads_a_stream(node)? => Some(append_mode_error()),
+            LogicalPlan::Aggregate(_) if !windowed && reads_a_stream(node)? => {
+                Some(append_mode_error())
+            }
             LogicalPlan::Distinct(_) if reads_a_stream(node)? => {
                 Some(SparkError::unsupported("streaming deduplication"))
             }
@@ -528,6 +558,172 @@ fn check_stateless(plan: &LogicalPlan) -> SparkResult<()> {
         Ok(TreeNodeRecursion::Continue)
     })?;
     failure.map_or(Ok(()), Err)
+}
+
+/// What a watermarked aggregate needs from its query.
+struct Windowed {
+    source: Name,
+    event_time: String,
+    delay_micros: i64,
+    window_micros: i64,
+}
+
+fn duration_micros(text: &str) -> Option<i64> {
+    let text = text.trim();
+    let text = text
+        .strip_prefix("INTERVAL ")
+        .or_else(|| text.strip_prefix("interval "))
+        .unwrap_or(text)
+        .trim()
+        .trim_matches('\'');
+    let (value, unit) = text.split_once(char::is_whitespace)?;
+    let value: i64 = value.parse().ok()?;
+    let scale = match unit.trim().to_ascii_lowercase().trim_end_matches('s') {
+        "millisecond" => 1_000,
+        "second" => 1_000_000,
+        "minute" => 60_000_000,
+        "hour" => 3_600_000_000,
+        "day" => 86_400_000_000,
+        _ => return None,
+    };
+    value.checked_mul(scale)
+}
+
+fn string_literal(expression: &spec::Expr) -> Option<&str> {
+    match expression {
+        spec::Expr::Literal(spec::Literal::Utf8 { value: Some(value) })
+        | spec::Expr::Literal(spec::Literal::LargeUtf8 { value: Some(value) })
+        | spec::Expr::Literal(spec::Literal::Utf8View { value: Some(value) }) => Some(value),
+        _ => None,
+    }
+}
+
+/// The `window(eventTime, '5 seconds')` duration among the grouping keys.
+fn tumbling_window(grouping: &[spec::Expr], event_time: &str) -> SparkResult<i64> {
+    for expression in grouping {
+        let spec::Expr::UnresolvedFunction(function) = expression else {
+            continue;
+        };
+        let name: Vec<String> = function.function_name.clone().into();
+        if !name
+            .last()
+            .is_some_and(|x| x.eq_ignore_ascii_case("window"))
+        {
+            continue;
+        }
+        let [spec::Expr::UnresolvedAttribute { name, .. }, duration] =
+            function.arguments.as_slice()
+        else {
+            return Err(SparkError::unsupported("a sliding streaming window"));
+        };
+        let column: Vec<String> = name.clone().into();
+        if !column
+            .last()
+            .is_some_and(|x| x.eq_ignore_ascii_case(event_time))
+        {
+            return Err(SparkError::unsupported(
+                "a streaming window over a column other than the watermark",
+            ));
+        }
+        return string_literal(duration)
+            .and_then(duration_micros)
+            .filter(|micros| *micros > 0)
+            .ok_or_else(|| SparkError::unsupported("this streaming window duration"));
+    }
+    Err(SparkError::unsupported(
+        "a watermarked aggregate without a tumbling window",
+    ))
+}
+
+/// Find the watermarked aggregate of a query, through the nodes around it.
+fn windowed_aggregate(
+    scope: &GraphScope<'_>,
+    query: &spec::QueryPlan,
+) -> SparkResult<Option<Windowed>> {
+    let aggregate = match &query.node {
+        spec::QueryNode::Aggregate(aggregate) => aggregate,
+        spec::QueryNode::Project {
+            input: Some(input), ..
+        }
+        | spec::QueryNode::Filter { input, .. }
+        | spec::QueryNode::Sort { input, .. } => return windowed_aggregate(scope, input),
+        _ => return Ok(None),
+    };
+    let mut input = aggregate.input.as_ref();
+    loop {
+        match &input.node {
+            spec::QueryNode::WithWatermark(watermark) => {
+                let spec::QueryNode::Read {
+                    read_type: spec::ReadType::NamedTable(read),
+                    is_streaming: true,
+                } = &watermark.input.node
+                else {
+                    return Err(SparkError::unsupported(
+                        "a watermark on this streaming read",
+                    ));
+                };
+                let name: Vec<String> = read.name.clone().into();
+                let delay_micros =
+                    duration_micros(&watermark.delay_threshold).ok_or_else(|| {
+                        SparkError::unsupported(format!(
+                            "the watermark delay '{}'",
+                            watermark.delay_threshold
+                        ))
+                    })?;
+                return Ok(Some(Windowed {
+                    source: qualified(scope, &name)?,
+                    event_time: watermark.event_time.clone(),
+                    delay_micros,
+                    window_micros: tumbling_window(&aggregate.grouping, &watermark.event_time)?,
+                }));
+            }
+            spec::QueryNode::Project {
+                input: Some(next), ..
+            }
+            | spec::QueryNode::Filter { input: next, .. } => input = next,
+            spec::QueryNode::TableAlias { input: next, .. } => input = next,
+            _ => return Ok(None),
+        }
+    }
+}
+
+/// The event time as whole microseconds, for arithmetic.
+fn event_micros(plan: &LogicalPlan, column: &str) -> SparkResult<Expr> {
+    let (_, field) = plan
+        .schema()
+        .qualified_field_with_unqualified_name(column)
+        .map_err(|e| SparkError::invalid(e.to_string()))?;
+    let DataType::Timestamp(unit, timezone) = field.data_type() else {
+        return Err(SparkError::invalid(format!(
+            "the watermark column {column} is not a timestamp"
+        )));
+    };
+    let raw = col(Column::from_name(column));
+    let micros = DataType::Timestamp(TimeUnit::Microsecond, timezone.clone());
+    let _ = unit;
+    Ok(cast(cast(raw, micros), DataType::Int64))
+}
+
+async fn max_event(
+    ctx: &SessionContext,
+    plan: &LogicalPlan,
+    column: &str,
+) -> SparkResult<Option<i64>> {
+    let micros = event_micros(plan, column)?;
+    let plan = LogicalPlanBuilder::from(plan.clone())
+        .aggregate(Vec::<Expr>::new(), vec![max(micros).alias("m")])?
+        .build()?;
+    let physical = ctx.state().create_physical_plan(&plan).await?;
+    let service = ctx.extension::<JobService>()?;
+    let mut stream = service.runner().execute(ctx, physical).await?;
+    let mut value = None;
+    while let Some(batch) = stream.try_next().await? {
+        let column = batch.column(0).as_primitive::<Int64Type>();
+        if !column.is_empty() && !column.is_null(0) {
+            value = Some(column.value(0));
+        }
+    }
+    Ok(value)
 }
 
 /// Resolve the streams under a set of names: tables to their unread files, and
@@ -646,24 +842,149 @@ pub(super) async fn run(
         0,
     )
     .await?;
-    let bound = BatchScope {
-        graph: &scope,
-        streams: &streams,
-    };
-    let planned = PlanResolver::new(ctx, config.clone())
-        .with_relation_scope(&bound)
-        .resolve_named_plan(spec::Plan::Query(run.flow.query.clone()))
-        .await?;
-    check_stateless(&planned.plan)?;
+    let windowed = windowed_aggregate(&scope, &run.flow.query)?;
+    {
+        let bound = BatchScope {
+            graph: &scope,
+            streams: &streams,
+        };
+        let planned = PlanResolver::new(ctx, config.clone())
+            .with_relation_scope(&bound)
+            .resolve_named_plan(spec::Plan::Query(run.flow.query.clone()))
+            .await?;
+        check_stateless(&planned.plan, windowed.is_some())?;
+    }
     if !replay && batch.values().all(Vec::is_empty) {
         return Ok(());
     }
     state.pending = Some(batch);
     checkpoint.store(&state).await?;
-    run_command(ctx, config, run.write, Some(&bound)).await?;
+    match windowed {
+        Some(windowed) => {
+            run_windowed(
+                ctx,
+                config,
+                &run,
+                &scope,
+                &checkpoint,
+                &mut state,
+                streams,
+                &windowed,
+            )
+            .await?;
+        }
+        None => {
+            let bound = BatchScope {
+                graph: &scope,
+                streams: &streams,
+            };
+            run_command(ctx, config, run.write, Some(&bound)).await?;
+        }
+    }
     for (source, files) in state.pending.take().unwrap_or_default() {
         state.seen.entry(source).or_default().extend(files);
     }
     state.batches += 1;
     checkpoint.store(&state).await
+}
+
+/// One batch of a watermarked aggregate. The closed windows are written to the
+/// target, and the open ones are written back to the checkpoint.
+async fn run_windowed(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    run: &AppendFlow<'_>,
+    scope: &GraphScope<'_>,
+    checkpoint: &Checkpoint,
+    state: &mut FlowState,
+    mut streams: BTreeMap<Name, LogicalPlan>,
+    windowed: &Windowed,
+) -> SparkResult<()> {
+    let new_rows = streams
+        .remove(&windowed.source)
+        .ok_or_else(|| SparkError::internal("watermarked source is not bound"))?;
+    let column = windowed.event_time.as_str();
+    // Rows behind the watermark that this batch started with are late.
+    let micros = event_micros(&new_rows, column)?;
+    let on_time = match state.watermark {
+        Some(watermark) => LogicalPlanBuilder::from(new_rows.clone())
+            .filter(micros.clone().gt_eq(lit(watermark)))?
+            .build()?,
+        None => new_rows.clone(),
+    };
+    let mut rows = LogicalPlanBuilder::from(on_time);
+    if !state.retained.is_empty() {
+        let source = table_source(ctx, &windowed.source).await?;
+        let retained = source_plan(
+            ctx,
+            &config,
+            &TableSource {
+                format: "parquet".into(),
+                location: String::new(),
+                partitions: BTreeSet::new(),
+                schema: spec_schema(&source.empty)?,
+                empty: source.empty.clone(),
+            },
+            &state.retained,
+        )
+        .await?;
+        rows = rows.union(retained)?;
+    }
+    let rows = rows.build()?;
+    let latest = max_event(ctx, &new_rows, column).await?;
+    let watermark = latest
+        .map(|latest| latest - windowed.delay_micros)
+        .into_iter()
+        .chain(state.watermark)
+        .max();
+    let micros = event_micros(&rows, column)?;
+    let size = lit(windowed.window_micros);
+    let window_end = (micros / size.clone()) * size.clone() + size;
+    let limit = lit(watermark.unwrap_or(i64::MIN));
+    let closed = LogicalPlanBuilder::from(rows.clone())
+        .filter(window_end.clone().lt_eq(limit.clone()))?
+        .build()?;
+    let open = LogicalPlanBuilder::from(rows)
+        .filter(window_end.gt(limit))?
+        .build()?;
+    streams.insert(windowed.source.clone(), closed);
+    {
+        let bound = BatchScope {
+            graph: scope,
+            streams: &streams,
+        };
+        run_command(ctx, config.clone(), run.write.clone(), Some(&bound)).await?;
+    }
+    // Written under the next batch's name, so a replay starts from the last
+    // committed files.
+    streams.insert(windowed.source.clone(), open);
+    let directory = checkpoint.state_url(state.batches)?;
+    let bound = BatchScope {
+        graph: scope,
+        streams: &streams,
+    };
+    let read = spec::QueryPlan::new(spec::QueryNode::Read {
+        read_type: spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
+            name: windowed.source.clone().into(),
+            temporal: None,
+            sample: None,
+            options: vec![],
+        })),
+        is_streaming: true,
+    });
+    let write = spec::CommandNode::Write(spec::Write {
+        input: Box::new(read),
+        source: Some("parquet".into()),
+        save_type: spec::SaveType::Path(directory.clone()),
+        mode: Some(spec::SaveMode::Overwrite),
+        sort_columns: vec![],
+        partitioning_columns: vec![],
+        clustering_columns: vec![],
+        bucket_by: None,
+        options: vec![],
+    });
+    run_command(ctx, config, write, Some(&bound)).await?;
+    state.retained = data_files(ctx, &directory).await?.into_iter().collect();
+    state.watermark = watermark;
+    Ok(())
 }

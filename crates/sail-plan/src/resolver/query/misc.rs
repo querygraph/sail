@@ -270,10 +270,15 @@ impl PlanResolver<'_> {
 
     pub(super) async fn resolve_query_with_watermark(
         &self,
-        _watermark: spec::WithWatermark,
-        _state: &mut PlanResolverState,
+        watermark: spec::WithWatermark,
+        state: &mut PlanResolverState,
     ) -> PlanResult<LogicalPlan> {
-        Err(PlanError::todo("with watermark"))
+        // A pipeline's scope keeps the watermark in its own flow state, and the
+        // rows are unchanged by it. No other streaming path applies one.
+        if self.relation_scope.is_none() {
+            return Err(PlanError::todo("with watermark"));
+        }
+        self.resolve_query_plan(*watermark.input, state).await
     }
 }
 

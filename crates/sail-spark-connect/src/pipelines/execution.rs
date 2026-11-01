@@ -44,7 +44,7 @@ pub(super) async fn execute(
         return Err(SparkError::unsupported("incremental pipeline execution"));
     }
     super::materialize::tables(ctx, graph, &analyzed.schemas, &selection).await?;
-    super::materialize::views(ctx, graph, &analyzed).await?;
+    super::materialize::views(ctx, graph, &analyzed, events).await?;
     let runnable =
         |output: &Output| output.view.is_none() && output.kind != OutputType::TemporaryView;
     for name in &analyzed.order {
@@ -123,7 +123,11 @@ fn emit(events: &RunEvents, message: String) {
 }
 
 /// Whether `name` reads a failed output, directly or through views.
-fn reads_failed_output(analyzed: &AnalyzedGraph, name: &Name, failed: &BTreeSet<Name>) -> bool {
+pub(super) fn reads_failed_output(
+    analyzed: &AnalyzedGraph,
+    name: &Name,
+    failed: &BTreeSet<Name>,
+) -> bool {
     let mut pending = vec![name];
     let mut visited = BTreeSet::new();
     while let Some(next) = pending.pop() {
