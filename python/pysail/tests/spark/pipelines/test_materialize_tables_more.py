@@ -293,11 +293,6 @@ def test_materialize_only_selected_tables(suite):
     assert suite.columns("c") == [("y", "int")]
 
 
-@pytest.mark.skip(reason="needs refreshTables = NoTables; an empty selection from a client means every table")
-def test_materializing_no_tables_does_not_throw():
-    pass
-
-
 CLUSTER_SOURCE = "x1 INT, x2 INT, x3 STRING", "(1, 1, 'x'), (2, 3, 'y')"
 CLUSTER_COLUMNS = [("x1", "int"), ("x2", "int"), ("x3", "string")]
 THREE_COLUMNS = "x INT, y BOOLEAN, z STRING", "(1, true, 'a'), (2, false, 'b')"

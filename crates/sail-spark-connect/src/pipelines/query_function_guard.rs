@@ -116,6 +116,7 @@ fn is_read_only(node: &spec::CommandNode) -> bool {
     matches!(
         node,
         spec::CommandNode::DescribeTable { column: None, .. }
+            | spec::CommandNode::ShowCreateTable { .. }
             | spec::CommandNode::ShowTableProperties { .. }
             | spec::CommandNode::ShowTables { .. }
             | spec::CommandNode::ListDatabases { .. }

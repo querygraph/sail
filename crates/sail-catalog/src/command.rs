@@ -27,6 +27,7 @@ use crate::provider::{
     CreateViewOptions, DropDatabaseOptions, DropTableOptions, DropTemporaryViewOptions,
     DropViewOptions,
 };
+use crate::show_create;
 use crate::utils::{quote_names_if_needed, quote_namespace_if_needed};
 
 #[derive(Debug, Clone, Eq, PartialEq, PartialOrd, Hash, Serialize, Deserialize)]
@@ -163,6 +164,10 @@ pub enum CatalogCommand {
         table: Vec<String>,
         extended: bool,
     },
+    ShowCreateTable {
+        table: Vec<String>,
+        as_serde: bool,
+    },
     TruncateTable {
         table: Vec<String>,
     },
@@ -248,6 +253,7 @@ impl CatalogCommand {
             CatalogCommand::CreateTemporaryView { .. } => "CreateTemporaryView",
             CatalogCommand::CreateView { .. } => "CreateView",
             CatalogCommand::DescribeTable { .. } => "DescribeTable",
+            CatalogCommand::ShowCreateTable { .. } => "ShowCreateTable",
             CatalogCommand::TruncateTable { .. } => "TruncateTable",
             CatalogCommand::DescribeDatabase { .. } => "DescribeDatabase",
         }
@@ -292,6 +298,9 @@ impl CatalogCommand {
             }
             CatalogCommand::DescribeDatabase { .. } => {
                 ArrowSerializer::default().schema::<DescribeDatabaseRow>()?
+            }
+            CatalogCommand::ShowCreateTable { .. } => {
+                ArrowSerializer::default().schema::<ShowCreateTableRow>()?
             }
             CatalogCommand::DatabaseExists { .. }
             | CatalogCommand::TableExists { .. }
@@ -750,6 +759,14 @@ impl CatalogCommand {
                 }
 
                 serializer.build_record_batch(&rows)?
+            }
+            CatalogCommand::ShowCreateTable { table, as_serde } => {
+                let status = manager.get_table_or_view(&table).await?;
+                let formatter = service.plan_formatter();
+                let createtab_stmt =
+                    show_create::show_create_table(&table, &status, as_serde, formatter)?;
+                ArrowSerializer::default()
+                    .build_record_batch(&[ShowCreateTableRow { createtab_stmt }])?
             }
             CatalogCommand::FunctionExists {
                 function,
@@ -1424,6 +1441,11 @@ struct DescribeTableRow {
     col_name: String,
     data_type: String,
     comment: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ShowCreateTableRow {
+    createtab_stmt: String,
 }
 
 #[derive(Serialize, Deserialize)]

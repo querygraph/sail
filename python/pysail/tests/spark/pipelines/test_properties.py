@@ -8,6 +8,13 @@ except ImportError:
     pytest.skip("Declarative pipelines require Spark 4.1+", allow_module_level=True)
 
 
+@pytest.fixture(autouse=True)
+def drop_output(pipeline_spark):
+    # Spark's catalog and warehouse outlive the session, and a leftover directory fails the next case.
+    yield
+    pipeline_spark.sql("DROP TABLE IF EXISTS output")
+
+
 @pytest.mark.parametrize(
     "properties, dry, expected",
     [

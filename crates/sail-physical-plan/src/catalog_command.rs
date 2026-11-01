@@ -118,6 +118,8 @@ impl ExecutionPlan for CatalogCommandExec {
                         catalog_not_found_error(&name)
                     }
                     CatalogError::CommitStateUnknown(_) => DataFusionError::External(Box::new(e)),
+                    // A structured error inside stays reachable for the client.
+                    CatalogError::DataFusionError(e) => e,
                     _ => datafusion_common::exec_datafusion_err!("{e}"),
                 })?;
             Ok(batch)

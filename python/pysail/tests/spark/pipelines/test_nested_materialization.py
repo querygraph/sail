@@ -11,6 +11,14 @@ from pyspark.pipelines.graph_element_registry import graph_element_registration_
 from pyspark.sql.types import ArrayType, IntegerType, StructField, StructType
 
 
+@pytest.fixture(autouse=True)
+def drop_tables(pipeline_spark):
+    # Spark's catalog and warehouse outlive the session, and a leftover directory fails the next case.
+    yield
+    for name in ["c", "b", "a"]:
+        pipeline_spark.sql(f"DROP TABLE IF EXISTS {name}")
+
+
 @pytest.mark.parametrize("nested", [False, True], ids=["arrays-and-maps", "nested-arrays-and-maps"])
 def test_nested_table_schemas_after_two_materializations(pipeline_spark, pipeline_factory, nested):
     if nested:
