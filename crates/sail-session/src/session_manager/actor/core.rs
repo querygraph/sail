@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
 use indexmap::IndexMap;
-use log::{info, warn};
+use log::info;
 use sail_common::actor::{Actor, ActorAction, ActorContext, ActorHandle};
 use sail_execution::driver::{DriverHandle, DriverRegistryAccessor};
 use sail_execution::error::{ExecutionError, ExecutionResult};
 use sail_execution::{DriverId, IdGenerator};
 use sail_system_store::SystemEvent;
 
-use crate::session_manager::actor::SessionManagerActor;
+use crate::session_manager::actor::{ManagerState, SessionManagerActor};
+use crate::session_manager::shared::ManagerShared;
 use crate::session_manager::{
     SessionManagerComponents, SessionManagerMessage, SessionManagerOptions,
 };
@@ -34,14 +35,18 @@ impl DriverRegistryAccessor for SessionDriverRegistry {
 
 impl Actor for SessionManagerActor {
     type Message = SessionManagerMessage;
-    type Options = (SessionManagerOptions, SessionManagerComponents);
+    type Options = (
+        SessionManagerOptions,
+        SessionManagerComponents,
+        Arc<ManagerShared>,
+    );
 
     fn name() -> &'static str {
         "SessionManagerActor"
     }
 
     fn new(options: Self::Options) -> Self {
-        let (options, components) = options;
+        let (options, components, shared) = options;
         let SessionManagerComponents {
             session_factory,
             job_runner_factory,
@@ -49,6 +54,7 @@ impl Actor for SessionManagerActor {
             event_reporter,
         } = components;
         Self {
+            state: ManagerState::Open,
             options,
             session_factory,
             job_runner_factory,
@@ -56,7 +62,8 @@ impl Actor for SessionManagerActor {
             drivers: Default::default(),
             driver_gateway,
             driver_id_generator: IdGenerator::new(),
-            shutdown_notifier: None,
+            next_cleanup_attempt: 1,
+            shared,
             event_reporter,
         }
     }
@@ -90,13 +97,12 @@ impl Actor for SessionManagerActor {
             } => self.handle_get_or_create_session(ctx, session_id, user_id, result),
             SessionManagerMessage::CompleteSessionCreation {
                 session_id,
-                user_id,
-                context,
-                driver_id,
                 activation,
-            } => self.handle_complete_session_creation(
-                ctx, session_id, user_id, context, driver_id, activation,
-            ),
+            } => self.handle_complete_session_creation(ctx, session_id, activation),
+            SessionManagerMessage::CompleteSessionCleanup {
+                session_id,
+                attempt,
+            } => self.handle_complete_session_cleanup(session_id, attempt),
             SessionManagerMessage::ProbeIdleSession {
                 session_id,
                 instant,
@@ -104,35 +110,27 @@ impl Actor for SessionManagerActor {
             SessionManagerMessage::DeleteSession { session_id, result } => {
                 self.handle_delete_session(ctx, session_id, result)
             }
+            SessionManagerMessage::CheckSession { session_id, result } => {
+                self.handle_check_session(session_id, result)
+            }
             SessionManagerMessage::SetSessionFailure { session_id } => {
                 self.handle_set_session_failure(ctx, session_id)
             }
             SessionManagerMessage::GetDriver { driver_id, result } => {
                 self.handle_get_driver(driver_id, result)
             }
-            SessionManagerMessage::Shutdown { result } => {
-                self.shutdown_notifier = Some(result);
-                ActorAction::Stop
+            SessionManagerMessage::Shutdown => self.handle_shutdown(ctx),
+            SessionManagerMessage::CompleteShutdown { outcome } => {
+                self.handle_complete_shutdown(outcome)
             }
         }
     }
 
-    async fn stop(mut self, ctx: &mut ActorContext<Self>) {
-        // Keep the gateway available while drivers stop. Graceful gateway shutdown waits for
-        // active task stream connections, which are owned by the drivers.
-        let drivers = self.drivers.drain().collect::<Vec<_>>();
-        for (driver_id, driver) in drivers {
-            if let Err(e) = driver.shutdown_and_wait().await {
-                warn!("failed to shut down driver {driver_id}: {e}");
-            }
-        }
-        ctx.children_mut().join().await;
-        if let Some(mut driver_gateway) = self.driver_gateway {
-            driver_gateway.stop().await;
-            info!("driver server has stopped");
-        }
-        if let Some(result) = self.shutdown_notifier {
-            let _ = result.send(());
+    async fn stop(self, _: &mut ActorContext<Self>) {
+        // Publish from the final stop path, which is reached only through the shutdown.
+        // Everything the manager owns was stopped before this, while the actor was serving.
+        if let ManagerState::Stopped(outcome) = &self.state {
+            self.shared.complete_shutdown(outcome.clone());
         }
     }
 }

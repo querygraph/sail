@@ -6,6 +6,7 @@ use sail_common::actor::ActorSystem;
 use sail_common::config::AppConfig;
 use sail_common::runtime::RuntimeHandle;
 use sail_common::server::{ServerBuilder, ServerBuilderOptions};
+use sail_session::session_manager::serve_until_stopped;
 use tokio::net::TcpListener;
 
 use crate::service::SailFlightSqlService;
@@ -22,20 +23,17 @@ where
 {
     let mut system = ActorSystem::new();
     let session_manager = create_flight_session_manager(config, runtime, &mut system).await?;
-    let result = {
-        let service = SailFlightSqlService::new(session_manager.clone());
-        let flight_service = FlightServiceServer::new(service);
-
-        let builder = ServerBuilder::new("flight_sql", ServerBuilderOptions::default())
-            .add_service(flight_service, None)
-            .await;
-
+    let service = SailFlightSqlService::new(session_manager.clone());
+    let flight_service = FlightServiceServer::new(service);
+    let builder = ServerBuilder::new("flight_sql", ServerBuilderOptions::default())
+        .add_service(flight_service, None)
+        .await;
+    serve_until_stopped(&session_manager, &mut system, signal, |drain| async move {
         builder
-            .serve(listener, signal)
+            .serve(listener, drain)
             .await
             .map_err(|e| std::io::Error::other(e.to_string()))
-    };
-    session_manager.shutdown().await?;
-    system.join().await;
-    result.map_err(Into::into)
+    })
+    .await
+    .map_err(|e| -> Box<dyn std::error::Error> { e })
 }

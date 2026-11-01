@@ -85,6 +85,13 @@ pub trait JobRunner: Send + Sync + 'static {
     /// Stop admission/execution and report shutdown or resource-cleanup errors.
     /// Implementations specify which local or remote cleanup they can confirm.
     async fn stop(&self) -> Result<()>;
+
+    /// Whether a successful [`Self::stop`] means that no checkpoint write can still be running.
+    /// Without this, it is not safe to delete the checkpoints of the session, since an object
+    /// could be published after the deletion. A runner must opt in, based on what it owns.
+    fn confirms_checkpoint_effects(&self) -> bool {
+        false
+    }
 }
 
 pub struct JobService {

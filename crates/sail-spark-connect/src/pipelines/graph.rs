@@ -142,7 +142,7 @@ pub(crate) struct PipelineGraph {
 }
 
 impl PipelineGraph {
-    pub(super) fn new(
+    pub(crate) fn new(
         catalog: String,
         database: String,
         sql_conf: HashMap<String, String>,

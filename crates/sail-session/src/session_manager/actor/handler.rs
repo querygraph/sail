@@ -1,9 +1,12 @@
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
+
 use chrono::Utc;
+use datafusion::common::internal_datafusion_err;
 use datafusion::prelude::SessionContext;
 use fastrace::Span;
 use fastrace::collector::SpanContext;
 use log::{info, warn};
-use sail_cache::remote_checkpoint::RemoteCheckpointRegistry;
 use sail_common::actor::{ActorAction, ActorContext};
 use sail_common::telemetry::SpanAttribute;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
@@ -19,8 +22,9 @@ use tokio::time::Instant;
 use crate::error::{SessionError, SessionResult};
 use crate::session_factory::{ServerSessionInfo, SessionJobRunnerInfo};
 use crate::session_manager::SessionManagerMessage;
-use crate::session_manager::actor::SessionManagerActor;
-use crate::session_manager::session::{ServerSession, ServerSessionState};
+use crate::session_manager::actor::cleanup::SessionCleanup;
+use crate::session_manager::actor::{ManagerState, SessionManagerActor, SessionRelease};
+use crate::session_manager::session::{ServerSession, ServerSessionState, SessionOwner};
 
 impl SessionManagerActor {
     pub(super) fn handle_get_driver(
@@ -39,6 +43,14 @@ impl SessionManagerActor {
         user_id: String,
         result: oneshot::Sender<SessionResult<SessionContext>>,
     ) -> ActorAction {
+        if !matches!(self.state, ManagerState::Open) {
+            let error = match self.sessions.get(&session_id) {
+                Some(session) => session.state.unavailable(&session_id),
+                None => SessionError::internal("session manager is shutting down"),
+            };
+            let _ = result.send(Err(error));
+            return ActorAction::Continue;
+        }
         if let Some(session) = self.sessions.get_mut(&session_id) {
             let context = match &mut session.state {
                 ServerSessionState::Running { context, .. } => Some(context.clone()),
@@ -46,15 +58,16 @@ impl SessionManagerActor {
                     waiters.push(result);
                     return ActorAction::Continue;
                 }
-                ServerSessionState::Deleted | ServerSessionState::Failed => None,
+                ServerSessionState::Deleting { .. }
+                | ServerSessionState::DeletionFailed { .. }
+                | ServerSessionState::Deleted
+                | ServerSessionState::Failed { .. } => None,
             };
             if let Some(context) = context {
                 self.schedule_idle_session_probe(ctx, session_id, &context);
                 let _ = result.send(Ok(context));
             } else {
-                let _ = result.send(Err(SessionError::invalid(format!(
-                    "session {session_id} is not running"
-                ))));
+                let _ = result.send(Err(session.state.unavailable(&session_id)));
             }
             return ActorAction::Continue;
         }
@@ -92,84 +105,58 @@ impl SessionManagerActor {
                 return ActorAction::Continue;
             }
         };
-        let (runner, driver) = runner.into_parts();
+        let (runner, driver, activation) = runner.into_parts();
+        // Own the runner before anything else can fail or panic.
+        let service = Arc::new(JobService::new(runner));
         let registered_driver_id = driver.as_ref().map(|_| driver_id);
-        if let Some(driver) = &driver
-            && let Err(e) = self.drivers.insert(driver_id, driver.clone())
+        let mut owner = SessionOwner {
+            service: service.clone(),
+            driver_id: registered_driver_id,
+        };
+        if let Some(driver) = driver
+            && let Err(e) = self.drivers.insert(driver_id, driver)
         {
-            let session = ServerSession {
-                state: ServerSessionState::Failed,
-            };
-            let status = session.state.status().to_string();
-            self.sessions.insert(session_id.clone(), session);
-            self.event_reporter.report(SystemEvent::SessionCreated {
-                session_id,
-                user_id,
-                status,
-                created_at: Utc::now(),
-            });
-            let driver = driver.clone();
-            ctx.spawn(async move {
-                if let Err(e) = driver.shutdown().await {
-                    warn!("failed to shut down driver {driver_id}: {e}");
-                }
-            });
-            let _ = result.send(Err(e.into()));
+            // The registered driver with this ID belongs to another session.
+            owner.driver_id = None;
+            self.fail_session_creation(ctx, session_id, user_id, owner, e.into(), result);
             return ActorAction::Continue;
         }
         let info = ServerSessionInfo {
             session_id: session_id.clone(),
             user_id: user_id.clone(),
             session_manager: ctx.handle().clone(),
-            job_runner: Some(runner),
+            job_service: Some(service),
         };
-        let context = match self.session_factory.create(info) {
+        let session_factory = &mut self.session_factory;
+        let created = catch_unwind(AssertUnwindSafe(|| session_factory.create(info)))
+            .unwrap_or_else(|_| Err(internal_datafusion_err!("session factory panicked")));
+        let context = match created {
             Ok(context) => context,
             Err(e) => {
-                if let Some(driver_id) = registered_driver_id
-                    && let Some(driver) = self.drivers.remove(driver_id)
-                {
-                    ctx.spawn(async move {
-                        if let Err(e) = driver.shutdown().await {
-                            warn!("failed to shut down driver {driver_id}: {e}");
-                        }
-                    });
-                }
-                let session = ServerSession {
-                    state: ServerSessionState::Failed,
-                };
-                let status = session.state.status().to_string();
-                self.sessions.insert(session_id.clone(), session);
-                self.event_reporter.report(SystemEvent::SessionCreated {
-                    session_id,
-                    user_id,
-                    status,
-                    created_at: Utc::now(),
-                });
-                let _ = result.send(Err(e.into()));
+                self.fail_session_creation(ctx, session_id, user_id, owner, e.into(), result);
                 return ActorAction::Continue;
             }
         };
+        // The context is owned here, not by the message that completes the creation.
         self.sessions.insert(
             session_id.clone(),
             ServerSession {
                 state: ServerSessionState::Creating {
-                    driver_id: registered_driver_id,
+                    user_id,
+                    context,
+                    owner,
                     waiters: vec![result],
                 },
             },
         );
         let message = move |activation| SessionManagerMessage::CompleteSessionCreation {
             session_id,
-            user_id,
-            context,
-            driver_id: registered_driver_id,
             activation,
         };
-        if let Some(driver) = driver {
+        if let Some(activation) = activation {
             let session_manager = ctx.handle().clone();
             ctx.spawn(async move {
-                let message = message(driver.activate().await);
+                let message = message(activation.await);
                 if session_manager.send(message).await.is_err() {
                     warn!("failed to complete session creation");
                 }
@@ -180,34 +167,61 @@ impl SessionManagerActor {
         ActorAction::Continue
     }
 
-    pub(super) fn handle_complete_session_creation(
+    fn fail_session_creation(
         &mut self,
         ctx: &mut ActorContext<Self>,
         session_id: String,
         user_id: String,
-        context: SessionContext,
-        driver_id: Option<DriverId>,
+        owner: SessionOwner,
+        error: SessionError,
+        result: oneshot::Sender<SessionResult<SessionContext>>,
+    ) {
+        let cleanup = self.start_cleanup(ctx, &session_id, owner, None);
+        let state = ServerSessionState::Failed {
+            cleanup: Some(cleanup),
+            released: false,
+        };
+        let status = state.status().to_string();
+        self.sessions
+            .insert(session_id.clone(), ServerSession { state });
+        self.event_reporter.report(SystemEvent::SessionCreated {
+            session_id,
+            user_id,
+            status,
+            created_at: Utc::now(),
+        });
+        let _ = result.send(Err(error));
+    }
+
+    pub(super) fn handle_complete_session_creation(
+        &mut self,
+        ctx: &mut ActorContext<Self>,
+        session_id: String,
         activation: ExecutionResult<()>,
     ) -> ActorAction {
         let Some(session) = self.sessions.get_mut(&session_id) else {
             warn!("session {session_id} disappeared during creation");
             return ActorAction::Continue;
         };
-        let waiters = match &mut session.state {
-            ServerSessionState::Creating {
-                driver_id: creating_driver_id,
-                waiters,
-            } if *creating_driver_id == driver_id => std::mem::take(waiters),
-            _ => {
-                warn!("session {session_id} creation is no longer pending");
-                return ActorAction::Continue;
-            }
+        if !matches!(session.state, ServerSessionState::Creating { .. }) {
+            // The session has been closed, and its cleanup owns what the creation left.
+            info!("session {session_id} creation is no longer pending");
+            return ActorAction::Continue;
+        }
+        let ServerSessionState::Creating {
+            user_id,
+            context,
+            owner,
+            waiters,
+        } = std::mem::replace(&mut session.state, ServerSessionState::Deleted)
+        else {
+            return ActorAction::Continue;
         };
         match activation {
             Ok(()) => {
                 session.state = ServerSessionState::Running {
                     context: context.clone(),
-                    driver_id,
+                    owner,
                 };
                 self.event_reporter.report(SystemEvent::SessionCreated {
                     session_id: session_id.clone(),
@@ -221,20 +235,18 @@ impl SessionManagerActor {
                 }
             }
             Err(e) => {
-                if let Some(driver_id) = driver_id
-                    && let Some(driver) = self.drivers.remove(driver_id)
-                {
-                    ctx.spawn(async move {
-                        if let Err(e) = driver.shutdown().await {
-                            warn!("failed to shut down driver {driver_id}: {e}");
-                        }
-                    });
-                }
-                session.state = ServerSessionState::Failed;
+                let cleanup = self.start_cleanup(ctx, &session_id, owner, Some(context));
+                let state = ServerSessionState::Failed {
+                    cleanup: Some(cleanup),
+                    released: false,
+                };
+                let status = state.status().to_string();
+                self.sessions
+                    .insert(session_id.clone(), ServerSession { state });
                 self.event_reporter.report(SystemEvent::SessionCreated {
                     session_id,
                     user_id,
-                    status: session.state.status().to_string(),
+                    status,
                     created_at: Utc::now(),
                 });
                 let message = e.to_string();
@@ -272,24 +284,18 @@ impl SessionManagerActor {
         session_id: String,
         instant: Instant,
     ) -> ActorAction {
-        let session = self.sessions.get_mut(&session_id);
-        if let Some(session) = session
-            && let ServerSessionState::Running { context, driver_id } = &mut session.state
-            && let Ok(tracker) = context.extension::<ActivityTracker>()
-            && tracker.active_at().is_ok_and(|x| x <= instant)
-        {
-            info!("removing idle session {session_id}");
-            Self::delete_session(ctx, session_id.clone(), context);
-            if let Some(driver_id) = *driver_id {
-                self.drivers.remove(driver_id);
-            }
-            session.state = ServerSessionState::Deleted;
-            let status = session.state.status().to_string();
-            self.event_reporter.report(SystemEvent::SessionUpdated {
-                session_id: session_id.clone(),
-                status,
-                updated_at: Utc::now(),
+        let idle = self
+            .sessions
+            .get(&session_id)
+            .is_some_and(|session| match &session.state {
+                ServerSessionState::Running { context, .. } => context
+                    .extension::<ActivityTracker>()
+                    .is_ok_and(|tracker| tracker.active_at().is_ok_and(|x| x <= instant)),
+                _ => false,
             });
+        if idle {
+            info!("removing idle session {session_id}");
+            self.begin_session_deletion(ctx, &session_id);
         }
         ActorAction::Continue
     }
@@ -298,33 +304,43 @@ impl SessionManagerActor {
         &mut self,
         ctx: &mut ActorContext<Self>,
         session_id: String,
+        result: oneshot::Sender<SessionResult<SessionRelease>>,
+    ) -> ActorAction {
+        let release = match self.sessions.get_mut(&session_id).map(|x| &mut x.state) {
+            // Releasing a session that was never seen is a no-op, and it must not leave a
+            // tombstone, since that would prevent the session from being created later.
+            None | Some(ServerSessionState::Deleted) => SessionRelease::Nothing,
+            Some(
+                ServerSessionState::Deleting { cleanup }
+                | ServerSessionState::DeletionFailed { cleanup },
+            ) => SessionRelease::Cleanup(cleanup.clone()),
+            Some(ServerSessionState::Failed { cleanup, released }) => {
+                *released = true;
+                cleanup
+                    .clone()
+                    .map_or(SessionRelease::Nothing, SessionRelease::Cleanup)
+            }
+            Some(ServerSessionState::Creating { .. } | ServerSessionState::Running { .. }) => {
+                info!("removing session {session_id}");
+                self.begin_session_deletion(ctx, &session_id)
+                    .map_or(SessionRelease::Nothing, SessionRelease::Cleanup)
+            }
+        };
+        let _ = result.send(Ok(release));
+        ActorAction::Continue
+    }
+
+    pub(super) fn handle_check_session(
+        &self,
+        session_id: String,
         result: oneshot::Sender<SessionResult<()>>,
     ) -> ActorAction {
-        let session = self.sessions.get_mut(&session_id);
-        let output = if let Some(session) = session {
-            if let ServerSessionState::Running { context, driver_id } = &mut session.state {
-                info!("removing session {session_id}");
-                Self::delete_session(ctx, session_id.clone(), context);
-                if let Some(driver_id) = *driver_id {
-                    self.drivers.remove(driver_id);
-                }
-                session.state = ServerSessionState::Deleted;
-                let status = session.state.status().to_string();
-                self.event_reporter.report(SystemEvent::SessionUpdated {
-                    session_id: session_id.clone(),
-                    status,
-                    updated_at: Utc::now(),
-                });
+        let output = match self.sessions.get(&session_id).map(|x| &x.state) {
+            None
+            | Some(ServerSessionState::Creating { .. } | ServerSessionState::Running { .. }) => {
                 Ok(())
-            } else {
-                Err(SessionError::invalid(format!(
-                    "session {session_id} is not running"
-                )))
             }
-        } else {
-            Err(SessionError::invalid(format!(
-                "session not found: {session_id}"
-            )))
+            Some(state) => Err(state.unavailable(&session_id)),
         };
         let _ = result.send(output);
         ActorAction::Continue
@@ -339,24 +355,33 @@ impl SessionManagerActor {
             warn!("session not found: {session_id}");
             return ActorAction::Continue;
         };
-        let (driver_id, waiters) = match &mut session.state {
-            ServerSessionState::Creating { driver_id, waiters } => {
-                (*driver_id, std::mem::take(waiters))
-            }
-            ServerSessionState::Running { driver_id, .. } => (*driver_id, vec![]),
-            ServerSessionState::Deleted | ServerSessionState::Failed => (None, vec![]),
-        };
-        if let Some(driver_id) = driver_id
-            && let Some(driver) = self.drivers.remove(driver_id)
-        {
-            ctx.spawn(async move {
-                if let Err(e) = driver.shutdown().await {
-                    warn!("failed to shut down driver {driver_id}: {e}");
-                }
-            });
+        if !matches!(
+            session.state,
+            ServerSessionState::Creating { .. } | ServerSessionState::Running { .. }
+        ) {
+            // A session that is already ending keeps its state and the ownership it retains.
+            info!("ignoring failure of session {session_id}, which is no longer active");
+            return ActorAction::Continue;
         }
-        session.state = ServerSessionState::Failed;
-        let status = session.state.status().to_string();
+        let (owner, context, waiters) =
+            match std::mem::replace(&mut session.state, ServerSessionState::Deleted) {
+                ServerSessionState::Creating {
+                    context,
+                    owner,
+                    waiters,
+                    ..
+                } => (owner, context, waiters),
+                ServerSessionState::Running { context, owner } => (owner, context, vec![]),
+                _ => return ActorAction::Continue,
+            };
+        let cleanup = self.start_cleanup(ctx, &session_id, owner, Some(context));
+        let state = ServerSessionState::Failed {
+            cleanup: Some(cleanup),
+            released: false,
+        };
+        let status = state.status().to_string();
+        self.sessions
+            .insert(session_id.clone(), ServerSession { state });
         self.event_reporter.report(SystemEvent::SessionUpdated {
             session_id,
             status,
@@ -370,23 +395,128 @@ impl SessionManagerActor {
         ActorAction::Continue
     }
 
-    fn delete_session(ctx: &mut ActorContext<Self>, session_id: String, context: &SessionContext) {
-        let Ok(service) = context.extension::<JobService>() else {
-            warn!("job service not found for session {session_id}");
-            return;
+    /// Move a live session out of service and start its cleanup. The state changes first, so no
+    /// request can obtain the session once its cleanup has started.
+    /// A session being created has its waiters told that the session was closed.
+    pub(super) fn begin_session_deletion(
+        &mut self,
+        ctx: &mut ActorContext<Self>,
+        session_id: &str,
+    ) -> Option<Arc<SessionCleanup>> {
+        let session = self.sessions.get_mut(session_id)?;
+        if !matches!(
+            session.state,
+            ServerSessionState::Creating { .. } | ServerSessionState::Running { .. }
+        ) {
+            return None;
+        }
+        let (owner, context, waiters) =
+            match std::mem::replace(&mut session.state, ServerSessionState::Deleted) {
+                ServerSessionState::Running { context, owner } => (owner, context, vec![]),
+                ServerSessionState::Creating {
+                    context,
+                    owner,
+                    waiters,
+                    ..
+                } => (owner, context, waiters),
+                _ => return None,
+            };
+        let cleanup = self.start_cleanup(ctx, session_id, owner, Some(context));
+        let state = ServerSessionState::Deleting {
+            cleanup: cleanup.clone(),
         };
-        let checkpoint_registry = context.extension::<RemoteCheckpointRegistry>().ok();
-        let runtime_env = context.runtime_env();
-        ctx.spawn(async move {
-            if let Err(error) = super::cleanup::stop_and_clean_checkpoints(
-                service.runner(),
-                checkpoint_registry.as_deref(),
-                runtime_env.as_ref(),
-            )
-            .await
-            {
-                warn!("failed to clean up session {session_id}: {error}");
-            }
+        let status = state.status().to_string();
+        self.sessions
+            .insert(session_id.to_string(), ServerSession { state });
+        self.event_reporter.report(SystemEvent::SessionUpdated {
+            session_id: session_id.to_string(),
+            status,
+            updated_at: Utc::now(),
         });
+        for waiter in waiters {
+            let _ = waiter.send(Err(SessionError::SessionClosed(session_id.to_string())));
+        }
+        Some(cleanup)
+    }
+
+    /// Record the cleanup, then start it. The cleanup runs in a task since it calls foreign code
+    /// and waits for operations that may need this actor.
+    fn start_cleanup(
+        &mut self,
+        ctx: &mut ActorContext<Self>,
+        session_id: &str,
+        owner: SessionOwner,
+        context: Option<SessionContext>,
+    ) -> Arc<SessionCleanup> {
+        let attempt = self.next_cleanup_attempt;
+        // The attempt only fences stale completions of the same session.
+        self.next_cleanup_attempt = attempt.saturating_add(1);
+        let cleanup = SessionCleanup::new(session_id.to_string(), attempt, owner, context);
+        self.shared.retain_cleanup(session_id, cleanup.clone());
+        let driver = cleanup.driver();
+        let handle = ctx.handle().clone();
+        let session_id = session_id.to_string();
+        ctx.spawn(async move {
+            driver.run().await;
+            let message = SessionManagerMessage::CompleteSessionCleanup {
+                session_id,
+                attempt,
+            };
+            let _ = handle.send(message).await;
+        });
+        cleanup
+    }
+
+    pub(super) fn handle_complete_session_cleanup(
+        &mut self,
+        session_id: String,
+        attempt: u64,
+    ) -> ActorAction {
+        let Some(session) = self.sessions.get_mut(&session_id) else {
+            warn!("session {session_id} disappeared during cleanup");
+            return ActorAction::Continue;
+        };
+        let (cleanup, deleting) = match &session.state {
+            ServerSessionState::Deleting { cleanup } => (cleanup.clone(), true),
+            ServerSessionState::Failed {
+                cleanup: Some(cleanup),
+                ..
+            } => (cleanup.clone(), false),
+            _ => {
+                warn!("ignoring stale cleanup completion for session {session_id}");
+                return ActorAction::Continue;
+            }
+        };
+        if cleanup.attempt() != attempt {
+            warn!("ignoring stale cleanup completion for session {session_id}");
+            return ActorAction::Continue;
+        }
+        let Some(outcome) = cleanup.outcome() else {
+            warn!("session {session_id} cleanup has not published its outcome");
+            return ActorAction::Continue;
+        };
+        if let Err(error) = &outcome {
+            warn!("{error}");
+        }
+        if deleting {
+            session.state = match outcome {
+                Ok(()) => ServerSessionState::Deleted,
+                Err(_) => ServerSessionState::DeletionFailed {
+                    cleanup: cleanup.clone(),
+                },
+            };
+            self.event_reporter.report(SystemEvent::SessionUpdated {
+                session_id,
+                status: session.state.status().to_string(),
+                updated_at: Utc::now(),
+            });
+        }
+        // A failed cleanup keeps its driver registered, so manager shutdown can still stop it.
+        if cleanup.outcome().is_some_and(|x| x.is_ok())
+            && let Some(driver_id) = cleanup.driver_id()
+        {
+            self.drivers.remove(driver_id);
+        }
+        ActorAction::Continue
     }
 }

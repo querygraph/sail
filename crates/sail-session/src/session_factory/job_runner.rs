@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
+use futures::FutureExt;
+use futures::future::BoxFuture;
 use sail_common::actor::ActorSystem;
 use sail_common::config::{AppConfig, ExecutionMode};
 use sail_common::runtime::RuntimeHandle;
 use sail_common_datafusion::session::job::JobRunner;
 use sail_execution::DriverId;
 use sail_execution::driver::{DriverComponents, DriverHandle, DriverOptions};
+use sail_execution::error::ExecutionResult;
 use sail_execution::job_runner::{ClusterJobRunner, LocalJobRunner};
 use sail_execution::worker_manager::{
     KubernetesWorkerManager, KubernetesWorkerManagerOptions, LocalWorkerManager,
@@ -15,9 +18,13 @@ use sail_telemetry::events::SystemEventReporter;
 use crate::error::{SessionError, SessionResult};
 use crate::session_factory::{SessionFactory, WorkerSessionFactory};
 
+/// The asynchronous work needed before a new session can run.
+pub(crate) type SessionActivation = BoxFuture<'static, ExecutionResult<()>>;
+
 pub struct SessionJobRunner {
     runner: Box<dyn JobRunner>,
     driver: Option<DriverHandle>,
+    activation: Option<SessionActivation>,
 }
 
 impl SessionJobRunner {
@@ -25,19 +32,43 @@ impl SessionJobRunner {
         Self {
             runner: Box::new(runner),
             driver: None,
+            activation: None,
         }
     }
 
     fn cluster(runner: ClusterJobRunner) -> Self {
         let driver = runner.driver();
+        let activation = {
+            let driver = driver.clone();
+            async move { driver.activate().await }.boxed()
+        };
         Self {
             runner: Box::new(runner),
             driver: Some(driver),
+            activation: Some(activation),
         }
     }
 
-    pub(crate) fn into_parts(self) -> (Box<dyn JobRunner>, Option<DriverHandle>) {
-        (self.runner, self.driver)
+    #[cfg(test)]
+    pub(crate) fn with_activation(
+        runner: Box<dyn JobRunner>,
+        activation: Option<SessionActivation>,
+    ) -> Self {
+        Self {
+            runner,
+            driver: None,
+            activation,
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Box<dyn JobRunner>,
+        Option<DriverHandle>,
+        Option<SessionActivation>,
+    ) {
+        (self.runner, self.driver, self.activation)
     }
 }
 

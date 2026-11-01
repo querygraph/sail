@@ -7,6 +7,7 @@ use futures::StreamExt;
 use sail_common_datafusion::error::CommonErrorCause;
 use sail_python_udf::error::PyErrExtractor;
 use tokio::sync::{oneshot, watch};
+use tokio::task::JoinHandle;
 
 use crate::error::{SparkError, SparkResult, SparkThrowable};
 use crate::spark::connect;
@@ -17,6 +18,7 @@ pub struct StreamingQuery {
     error: watch::Receiver<Option<SparkThrowable>>,
     stopped: watch::Receiver<bool>,
     signal: Option<oneshot::Sender<()>>,
+    task: Option<JoinHandle<()>>,
     awaitable: bool,
 }
 
@@ -29,7 +31,7 @@ impl StreamingQuery {
         let (signal_tx, signal_rx) = oneshot::channel();
         let (error_tx, error_rx) = watch::channel(None);
         let (stopped_tx, stopped_rx) = watch::channel(false);
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             Self::run(signal_rx, error_tx, stopped_tx, stream).await;
         });
         Self {
@@ -38,6 +40,7 @@ impl StreamingQuery {
             error: error_rx,
             stopped: stopped_rx,
             signal: Some(signal_tx),
+            task: Some(task),
             awaitable: true,
         }
     }
@@ -135,6 +138,19 @@ impl StreamingQueryManager {
             let _ = signal.send(());
         };
         Ok(())
+    }
+
+    /// Request that every query stops, and return the tasks to wait for.
+    pub fn close_queries(&mut self) -> Vec<JoinHandle<()>> {
+        self.queries
+            .values_mut()
+            .filter_map(|query| {
+                if let Some(signal) = query.signal.take() {
+                    let _ = signal.send(());
+                }
+                query.task.take()
+            })
+            .collect()
     }
 
     pub fn explain_query(&self, id: &StreamingQueryId, extended: bool) -> SparkResult<String> {
