@@ -8457,6 +8457,7 @@ dependencies = [
  "pbjson",
  "pbjson-build",
  "pbjson-types",
+ "percent-encoding",
  "phf 0.14.0",
  "prettyplease 0.3.0",
  "prost 0.14.4",

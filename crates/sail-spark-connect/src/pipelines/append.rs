@@ -13,19 +13,21 @@
 //! rows, because a plain file table has no idempotent commit.
 //!
 //! Flows run one at a time and each reads to the end of what it listed, as
-//! one batch. Stateful operators are refused. Partitioned sources and sources
-//! that are not plain files are refused, not read wrongly.
+//! one batch. Stateful operators and sources that are not plain files are
+//! refused, not read wrongly.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::common::{Column, ScalarValue};
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::{MemTable, provider_as_source};
-use datafusion::logical_expr::{JoinType, LogicalPlan, LogicalPlanBuilder};
+use datafusion::logical_expr::{JoinType, LogicalPlan, LogicalPlanBuilder, cast, col, lit};
 use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
+use percent_encoding::percent_decode_str;
 use sail_catalog::manager::CatalogManager;
 use sail_common::spec;
 use sail_common_datafusion::catalog::TableKind;
@@ -45,6 +47,7 @@ use crate::error::{SparkError, SparkResult, StructuredSparkError};
 use crate::spark::connect::OutputType;
 
 const SOURCE_ALIAS: &str = "__sail_stream_source";
+const HIVE_DEFAULT_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
 const STATE_FILE: &str = "state.json";
 const MAX_VIEW_DEPTH: usize = 32;
 
@@ -257,8 +260,11 @@ fn view_flow<'a>(graph: &'a GraphDefinition, name: &Name) -> Option<&'a Flow> {
 struct TableSource {
     format: String,
     location: String,
+    /// The columns stored in the files.
     schema: spec::Schema,
+    /// Every column, partition columns included.
     empty: datafusion::arrow::datatypes::SchemaRef,
+    partitions: BTreeSet<String>,
 }
 
 async fn table_source(ctx: &SessionContext, name: &Name) -> SparkResult<TableSource> {
@@ -279,11 +285,6 @@ async fn table_source(ctx: &SessionContext, name: &Name) -> SparkResult<TableSou
             "a streaming read of a catalog view",
         ));
     };
-    if !partition_by.is_empty() {
-        return Err(SparkError::unsupported(
-            "a streaming read of a partitioned table",
-        ));
-    }
     if is_lakehouse_format(&format) {
         return Err(SparkError::unsupported(format!(
             "a streaming read of a {format} table"
@@ -295,13 +296,23 @@ async fn table_source(ctx: &SessionContext, name: &Name) -> SparkResult<TableSou
         .iter()
         .map(|column| column.field())
         .collect::<Vec<_>>();
+    let partitions = partition_by
+        .iter()
+        .map(|field| field.column.clone())
+        .collect::<BTreeSet<_>>();
+    let stored = fields
+        .iter()
+        .filter(|field| !partitions.contains(field.name()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let schema = spec_schema(&datafusion::arrow::datatypes::Schema::new(stored))?;
     let empty = Arc::new(datafusion::arrow::datatypes::Schema::new(fields));
-    let schema = spec_schema(&empty)?;
     Ok(TableSource {
         format,
         location,
         schema,
         empty,
+        partitions,
     })
 }
 
@@ -354,6 +365,63 @@ async fn data_files(ctx: &SessionContext, location: &str) -> SparkResult<BTreeSe
         .collect())
 }
 
+/// Partition values from `key=value` directories, in Hive's escaped form.
+fn partition_values(file: &str, source: &TableSource) -> BTreeMap<String, Option<String>> {
+    let relative = file
+        .strip_prefix(source.location.trim_end_matches('/'))
+        .unwrap_or(file);
+    relative
+        .split('/')
+        .filter_map(|part| part.split_once('='))
+        .filter(|(key, _)| source.partitions.contains(*key))
+        .map(|(key, value)| {
+            let value = (value != HIVE_DEFAULT_PARTITION)
+                .then(|| percent_decode_str(value).decode_utf8_lossy().into_owned());
+            (key.to_string(), value)
+        })
+        .collect()
+}
+
+/// `files` of one partition, with every column in the table's order.
+async fn partition_plan(
+    ctx: &SessionContext,
+    config: &Arc<PlanConfig>,
+    source: &TableSource,
+    files: &[String],
+    values: &BTreeMap<String, Option<String>>,
+) -> SparkResult<LogicalPlan> {
+    let read = spec::QueryPlan::new(spec::QueryNode::Read {
+        read_type: spec::ReadType::DataSource(Box::new(spec::ReadDataSource {
+            format: Some(source.format.clone()),
+            schema: Some(source.schema.clone()),
+            options: vec![],
+            paths: files.to_vec(),
+            predicates: vec![],
+        })),
+        is_streaming: false,
+    });
+    let resolved = PlanResolver::new(ctx, config.clone())
+        .resolve_named_plan(spec::Plan::Query(read))
+        .await?;
+    let plan = match resolved.fields {
+        Some(fields) => rename_logical_plan(resolved.plan, &fields)?,
+        None => resolved.plan,
+    };
+    let columns = source
+        .empty
+        .fields()
+        .iter()
+        .map(|field| {
+            if !source.partitions.contains(field.name()) {
+                return col(Column::from_name(field.name()));
+            }
+            let value = values.get(field.name()).cloned().flatten();
+            cast(lit(ScalarValue::Utf8(value)), field.data_type().clone()).alias(field.name())
+        })
+        .collect::<Vec<_>>();
+    Ok(LogicalPlanBuilder::from(plan).project(columns)?.build()?)
+}
+
 /// The rows of `files`, with user-facing names, marked as a stream source.
 async fn source_plan(
     ctx: &SessionContext,
@@ -361,28 +429,32 @@ async fn source_plan(
     source: &TableSource,
     files: &[String],
 ) -> SparkResult<LogicalPlan> {
-    let builder = if files.is_empty() {
-        let table = MemTable::try_new(source.empty.clone(), vec![vec![]])?;
-        LogicalPlanBuilder::scan(SOURCE_ALIAS, provider_as_source(Arc::new(table)), None)?
-    } else {
-        let read = spec::QueryPlan::new(spec::QueryNode::Read {
-            read_type: spec::ReadType::DataSource(Box::new(spec::ReadDataSource {
-                format: Some(source.format.clone()),
-                schema: Some(source.schema.clone()),
-                options: vec![],
-                paths: files.to_vec(),
-                predicates: vec![],
-            })),
-            is_streaming: false,
-        });
-        let resolved = PlanResolver::new(ctx, config.clone())
-            .resolve_named_plan(spec::Plan::Query(read))
-            .await?;
-        let plan = match resolved.fields {
-            Some(fields) => rename_logical_plan(resolved.plan, &fields)?,
-            None => resolved.plan,
-        };
-        LogicalPlanBuilder::from(plan)
+    let mut groups: BTreeMap<Vec<(String, Option<String>)>, Vec<String>> = BTreeMap::new();
+    for file in files {
+        let values = partition_values(file, source);
+        groups
+            .entry(values.into_iter().collect())
+            .or_default()
+            .push(file.clone());
+    }
+    let mut plans = vec![];
+    for (values, files) in groups {
+        let values = values.into_iter().collect();
+        plans.push(partition_plan(ctx, config, source, &files, &values).await?);
+    }
+    let mut plans = plans.into_iter();
+    let builder = match plans.next() {
+        None => {
+            let table = MemTable::try_new(source.empty.clone(), vec![vec![]])?;
+            LogicalPlanBuilder::scan(SOURCE_ALIAS, provider_as_source(Arc::new(table)), None)?
+        }
+        Some(first) => {
+            let mut builder = LogicalPlanBuilder::from(first);
+            for plan in plans {
+                builder = builder.union(plan)?;
+            }
+            builder
+        }
     };
     Ok(builder.alias(SOURCE_ALIAS)?.build()?)
 }

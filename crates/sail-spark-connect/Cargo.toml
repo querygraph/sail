@@ -38,6 +38,7 @@ url = { workspace = true }
 async-trait = { workspace = true }
 datafusion = { workspace = true }
 object_store = { workspace = true }
+percent-encoding = { workspace = true }
 arrow-schema = { workspace = true }
 parquet-variant-compute = { workspace = true }
 async-stream = { workspace = true }
