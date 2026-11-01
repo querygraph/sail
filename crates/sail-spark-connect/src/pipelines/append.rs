@@ -12,14 +12,14 @@
 //! replays exactly that batch. That is at-least-once: the replay can duplicate
 //! rows, because a plain file table has no idempotent commit.
 //!
-//! Flows run one at a time and each reads to the end of what it listed, as
-//! one batch. Sources that are not plain files are refused, not read wrongly.
+//! A streaming read of a data source lists its path the same way. Flows run
+//! one at a time and each reads to the end of what it listed, as one batch.
+//! Sources that are not plain files are refused, not read wrongly.
 //! The only stateful query is an aggregate over a tumbling window with a
 //! watermark: a window's rows are held under the checkpoint until the
 //! watermark passes its end, and then aggregated once. Rows behind the
 //! watermark are dropped, as Spark drops late rows.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use datafusion::arrow::array::{Array, AsArray};
@@ -55,6 +55,8 @@ use crate::error::{SparkError, SparkResult, StructuredSparkError};
 use crate::spark::connect::OutputType;
 
 const SOURCE_ALIAS: &str = "__sail_stream_source";
+const STREAM_SOURCE_PART: &str = "__sail_data_source";
+const FILE_FORMATS: [&str; 6] = ["parquet", "orc", "json", "csv", "text", "avro"];
 const HIVE_DEFAULT_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
 const STATE_FILE: &str = "state.json";
 const MAX_VIEW_DEPTH: usize = 32;
@@ -170,7 +172,7 @@ fn qualified(scope: &GraphScope<'_>, name: &[String]) -> PlanResult<Name> {
 struct RecordingScope<'a> {
     graph: &'a GraphScope<'a>,
     streaming: Mutex<BTreeSet<Name>>,
-    source_stream: AtomicBool,
+    sources: Mutex<Vec<spec::ReadDataSource>>,
 }
 
 impl RelationScope for RecordingScope<'_> {
@@ -178,10 +180,15 @@ impl RelationScope for RecordingScope<'_> {
         self.graph.resolve(name)
     }
 
-    fn observe_source_read(&self, is_streaming: bool) {
-        if is_streaming {
-            self.source_stream.store(true, Ordering::Relaxed);
-        }
+    fn resolve_source_stream(
+        &self,
+        source: &spec::ReadDataSource,
+    ) -> PlanResult<Option<LogicalPlan>> {
+        self.sources
+            .lock()
+            .map_err(|e| PlanError::internal(e.to_string()))?
+            .push(source.clone());
+        Ok(None)
     }
 
     fn resolve_read(&self, name: &[String], is_streaming: bool) -> PlanResult<Option<LogicalPlan>> {
@@ -239,6 +246,18 @@ impl RelationScope for BatchScope<'_> {
         self.graph.resolve(name)
     }
 
+    fn resolve_source_stream(
+        &self,
+        source: &spec::ReadDataSource,
+    ) -> PlanResult<Option<LogicalPlan>> {
+        let name = source_name(source);
+        self.streams
+            .get(&name)
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| PlanError::internal(format!("unbound stream {}", name.join("."))))
+    }
+
     fn resolve_read(&self, name: &[String], is_streaming: bool) -> PlanResult<Option<LogicalPlan>> {
         if is_streaming {
             return self.stream(name);
@@ -272,27 +291,43 @@ async fn streamed_names(
     config: &Arc<PlanConfig>,
     scope: &GraphScope<'_>,
     query: &spec::QueryPlan,
-) -> SparkResult<BTreeSet<Name>> {
+) -> SparkResult<Streamed> {
     let recording = RecordingScope {
         graph: scope,
         streaming: Mutex::default(),
-        source_stream: AtomicBool::new(false),
+        sources: Mutex::default(),
     };
     PlanResolver::new(ctx, config.clone())
         .with_relation_scope(&recording)
         .resolve_named_plan(spec::Plan::Query(query.clone()))
         .await?;
-    // Nothing below can read such a source. Without this refusal, a view over
-    // one contributes no files, and the flow would complete having read nothing.
-    if recording.source_stream.load(Ordering::Relaxed) {
-        return Err(SparkError::unsupported(
-            "incremental pipeline execution of a streaming read of a data source",
-        ));
-    }
-    recording
-        .streaming
-        .into_inner()
-        .map_err(|e| SparkError::internal(e.to_string()))
+    Ok(Streamed {
+        names: recording
+            .streaming
+            .into_inner()
+            .map_err(|e| SparkError::internal(e.to_string()))?,
+        sources: recording
+            .sources
+            .into_inner()
+            .map_err(|e| SparkError::internal(e.to_string()))?,
+    })
+}
+
+/// What a query reads as streams: named tables and views, and data sources.
+struct Streamed {
+    names: BTreeSet<Name>,
+    sources: Vec<spec::ReadDataSource>,
+}
+
+/// A streaming data source's name in the stream map, which is also its key in
+/// the checkpoint. It cannot collide with a table, which has no such part.
+fn source_name(source: &spec::ReadDataSource) -> Name {
+    let format = source.format.clone().unwrap_or_default();
+    vec![
+        STREAM_SOURCE_PART.to_string(),
+        format,
+        source.paths.join(","),
+    ]
 }
 
 fn view_flow<'a>(graph: &'a GraphDefinition, name: &Name) -> Option<&'a Flow> {
@@ -312,6 +347,7 @@ struct TableSource {
     /// Every column, partition columns included.
     empty: datafusion::arrow::datatypes::SchemaRef,
     partitions: BTreeSet<String>,
+    options: Vec<(String, String)>,
 }
 
 async fn table_source(ctx: &SessionContext, name: &Name) -> SparkResult<TableSource> {
@@ -360,6 +396,7 @@ async fn table_source(ctx: &SessionContext, name: &Name) -> SparkResult<TableSou
         schema,
         empty,
         partitions,
+        options: vec![],
     })
 }
 
@@ -441,7 +478,7 @@ async fn partition_plan(
         read_type: spec::ReadType::DataSource(Box::new(spec::ReadDataSource {
             format: Some(source.format.clone()),
             schema: Some(source.schema.clone()),
-            options: vec![],
+            options: source.options.clone(),
             paths: files.to_vec(),
             predicates: vec![],
         })),
@@ -577,6 +614,83 @@ fn check_stateless(plan: &LogicalPlan, windowed: bool) -> SparkResult<()> {
         Ok(TreeNodeRecursion::Continue)
     })?;
     failure.map_or(Ok(()), Err)
+}
+
+/// The rows of a source that this flow has not read, or of the replayed batch.
+async fn unread_plan(
+    ctx: &SessionContext,
+    config: &Arc<PlanConfig>,
+    source: &TableSource,
+    name: &Name,
+    state: &FlowState,
+    batch: &mut BTreeMap<String, Vec<String>>,
+) -> SparkResult<LogicalPlan> {
+    let key = name.join(".");
+    let files = match batch.get(&key) {
+        Some(files) => files.clone(),
+        None => {
+            let seen = state.seen.get(&key);
+            let mut files: Vec<String> = vec![];
+            for location in source.location.split(',') {
+                let listed = data_files(ctx, location).await?;
+                files.extend(
+                    listed
+                        .into_iter()
+                        .filter(|file| seen.is_none_or(|seen| !seen.contains(file))),
+                );
+            }
+            batch.insert(key, files.clone());
+            files
+        }
+    };
+    source_plan(ctx, config, source, &files).await
+}
+
+/// `readStream.format(...).load(path)` over a directory of files. Other
+/// sources have no files to list and stay refused: without this refusal a
+/// flow over one would complete having read nothing.
+async fn file_source(
+    ctx: &SessionContext,
+    config: &Arc<PlanConfig>,
+    source: spec::ReadDataSource,
+) -> SparkResult<TableSource> {
+    let format = source
+        .format
+        .clone()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !FILE_FORMATS.contains(&format.as_str()) || source.paths.is_empty() {
+        return Err(SparkError::unsupported(format!(
+            "incremental pipeline execution of a streaming read of the {format} data source"
+        )));
+    }
+    if source.paths.iter().any(|path| path.contains(',')) {
+        return Err(SparkError::unsupported("a stream path containing a comma"));
+    }
+    let read = spec::QueryPlan::new(spec::QueryNode::Read {
+        read_type: spec::ReadType::DataSource(Box::new(source.clone())),
+        is_streaming: false,
+    });
+    let resolved = PlanResolver::new(ctx, config.clone())
+        .resolve_named_plan(spec::Plan::Query(read))
+        .await?;
+    let plan = match resolved.fields {
+        Some(fields) => rename_logical_plan(resolved.plan, &fields)?,
+        None => resolved.plan,
+    };
+    let empty = Arc::new(plan.schema().as_arrow().clone());
+    let schema = source
+        .schema
+        .clone()
+        .map_or_else(|| spec_schema(&empty), Ok)?;
+    Ok(TableSource {
+        format,
+        location: source.paths.join(","),
+        schema,
+        empty,
+        partitions: BTreeSet::new(),
+        options: source.options,
+    })
 }
 
 /// What a watermarked aggregate needs from its query.
@@ -753,7 +867,7 @@ fn bind_streams<'a>(
     config: &'a Arc<PlanConfig>,
     graph: &'a GraphDefinition,
     scope: &'a GraphScope<'a>,
-    names: BTreeSet<Name>,
+    read: Streamed,
     state: &'a FlowState,
     batch: &'a mut BTreeMap<String, Vec<String>>,
     streams: &'a mut BTreeMap<Name, LogicalPlan>,
@@ -764,7 +878,16 @@ fn bind_streams<'a>(
         if depth > MAX_VIEW_DEPTH {
             return Err(SparkError::internal("streaming views nest too deeply"));
         }
-        for name in names {
+        for source in read.sources {
+            let name = source_name(&source);
+            if streams.contains_key(&name) {
+                continue;
+            }
+            let source = file_source(ctx, config, source).await?;
+            let plan = unread_plan(ctx, config, &source, &name, state, batch).await?;
+            streams.insert(name, plan);
+        }
+        for name in read.names {
             if streams.contains_key(&name) {
                 continue;
             }
@@ -798,21 +921,7 @@ fn bind_streams<'a>(
                 continue;
             }
             let source = table_source(ctx, &name).await?;
-            let key = name.join(".");
-            let files = match batch.get(&key) {
-                Some(files) => files.clone(),
-                None => {
-                    let seen = state.seen.get(&key);
-                    let files: Vec<String> = data_files(ctx, &source.location)
-                        .await?
-                        .into_iter()
-                        .filter(|file| seen.is_none_or(|seen| !seen.contains(file)))
-                        .collect();
-                    batch.insert(key, files.clone());
-                    files
-                }
-            };
-            let plan = source_plan(ctx, config, &source, &files).await?;
+            let plan = unread_plan(ctx, config, &source, &name, state, batch).await?;
             streams.insert(name, plan);
         }
         Ok(())
@@ -859,7 +968,7 @@ pub(super) async fn run(
 ) -> SparkResult<()> {
     let scope = GraphScope::new(run.graph, run.inputs, run.flow);
     let names = streamed_names(ctx, &config, &scope, &run.flow.query).await?;
-    if names.is_empty() {
+    if names.names.is_empty() && names.sources.is_empty() {
         return Err(SparkError::internal(
             "a streaming table flow has no streaming read",
         ));
@@ -967,6 +1076,7 @@ async fn run_windowed(
                 format: "parquet".into(),
                 location: String::new(),
                 partitions: BTreeSet::new(),
+                options: vec![],
                 schema: spec_schema(&source.empty)?,
                 empty: source.empty.clone(),
             },

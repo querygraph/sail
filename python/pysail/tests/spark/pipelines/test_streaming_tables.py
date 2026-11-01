@@ -174,3 +174,68 @@ def test_an_unfinished_batch_replays_exactly_its_files(space):
     assert space.rows("b") == [(1, 10), (1, 10), (2, 20), (2, 20)]
     space.run(GRAPH)
     assert space.rows("b") == [(1, 10), (1, 10), (2, 20), (2, 20), (3, 30)]
+
+
+def test_a_file_stream_reads_only_new_files(space, spark, tmp_path):
+    source = (tmp_path / "files").as_posix()
+    spark.range(2).write.parquet(source)
+    run_file_stream(space, source)
+    assert space.rows("from_files") == [(0,), (1,)]
+    run_file_stream(space, source)
+    assert space.rows("from_files") == [(0,), (1,)]
+    spark.range(2, 3).write.mode("append").parquet(source)
+    run_file_stream(space, source)
+    assert space.rows("from_files") == [(0,), (1,), (2,)]
+
+
+def test_a_file_stream_through_a_temporary_view(space, spark, tmp_path):
+    source = (tmp_path / "files").as_posix()
+    spark.range(2).write.parquet(source)
+    run_file_stream(space, source, through_view=True)
+    assert space.rows("from_files") == [(0,), (1,)]
+
+
+def run_file_stream(space, source, through_view=False):
+    import pyspark.pipelines as dp  # noqa: PLC0415
+    from pyspark.pipelines.graph_element_registry import graph_element_registration_context  # noqa: PLC0415
+
+    spark = space.spark
+    graph = create_dataflow_graph(spark, spark.catalog.currentCatalog(), space.schema, None)
+    registry = SparkConnectGraphElementRegistry(spark, graph)
+    with graph_element_registration_context(registry):
+        if through_view:
+
+            @dp.temporary_view
+            def files():
+                return spark.readStream.format("parquet").schema("id LONG").load(source)
+
+            @dp.table
+            def from_files():
+                return spark.readStream.table("files")
+
+        else:
+
+            @dp.table
+            def from_files():
+                return spark.readStream.format("parquet").schema("id LONG").load(source)
+
+    list(start_run(spark, graph, None, False, None, False, space.storage))
+
+
+def test_a_stream_from_a_source_with_no_files_is_refused(space):
+    import pyspark.pipelines as dp  # noqa: PLC0415
+    from pyspark.pipelines.graph_element_registry import graph_element_registration_context  # noqa: PLC0415
+
+    spark = space.spark
+    graph = create_dataflow_graph(spark, spark.catalog.currentCatalog(), space.schema, None)
+    registry = SparkConnectGraphElementRegistry(spark, graph)
+    with graph_element_registration_context(registry):
+
+        @dp.table
+        def from_rate():
+            return spark.readStream.format("rate").load()
+
+    if is_jvm_spark():
+        pytest.skip("Spark runs the rate source")
+    with pytest.raises(Exception, match="the rate data source"):
+        list(start_run(spark, graph, None, False, None, False, space.storage))

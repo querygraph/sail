@@ -1,5 +1,6 @@
 use datafusion_expr::LogicalPlan;
 use sail_catalog::manager::CatalogManager;
+use sail_common::spec;
 
 use crate::error::{PlanError, PlanResult};
 
@@ -41,6 +42,16 @@ pub trait RelationScope: Send + Sync {
     /// Observe a read of an external data source. It names nothing to
     /// resolve, but its mode still matters to a caller classifying a query.
     fn observe_source_read(&self, _is_streaming: bool) {}
+
+    /// Answer a streaming read of a data source with a plan of its own. On
+    /// `None` the read resolves as usual. Returned plans follow the same
+    /// naming contract as [`RelationScope::resolve`].
+    fn resolve_source_stream(
+        &self,
+        _source: &spec::ReadDataSource,
+    ) -> PlanResult<Option<LogicalPlan>> {
+        Ok(None)
+    }
 
     /// Bind an external name using the caller's captured namespace. This keeps
     /// independent planning requests from mutating shared catalog defaults.
@@ -111,6 +122,16 @@ impl RelationScope for ViewScope<'_> {
     fn observe_source_read(&self, is_streaming: bool) {
         if let Some(parent) = self.parent {
             parent.observe_source_read(is_streaming);
+        }
+    }
+
+    fn resolve_source_stream(
+        &self,
+        source: &spec::ReadDataSource,
+    ) -> PlanResult<Option<LogicalPlan>> {
+        match self.parent {
+            Some(parent) => parent.resolve_source_stream(source),
+            None => Ok(None),
         }
     }
 

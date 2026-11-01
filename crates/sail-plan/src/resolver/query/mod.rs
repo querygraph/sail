@@ -6,6 +6,7 @@ use datafusion_expr::{Expr, Extension, LogicalPlan, LogicalPlanBuilder};
 use sail_cache::remote_checkpoint::RemoteCheckpointRegistry;
 use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
+use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_logical_plan::remote_checkpoint::RemoteCheckpointRelationNode;
 
 use crate::error::{PlanError, PlanResult};
@@ -86,7 +87,19 @@ impl PlanResolver<'_> {
                     if let Some(scope) = self.relation_scope {
                         scope.observe_source_read(is_streaming);
                     }
-                    self.resolve_query_read_data_source(*source, state).await?
+                    let stream = match self.relation_scope {
+                        Some(scope) if is_streaming => scope.resolve_source_stream(&source)?,
+                        _ => None,
+                    };
+                    match stream {
+                        Some(plan) => {
+                            let names = state.register_fields(plan.schema().inner().fields());
+                            let plan = rename_logical_plan(plan, &names)?;
+                            state.register_missing_input_boundary(&plan);
+                            plan
+                        }
+                        None => self.resolve_query_read_data_source(*source, state).await?,
+                    }
                 }
                 spec::ReadType::DynamicTable(table) => {
                     self.resolve_query_read_dynamic_table(*table, state, is_streaming)
