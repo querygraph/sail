@@ -300,16 +300,18 @@ async fn a_failed_operation_drain_blocks_checkpoint_removal() -> TestResult {
     let (operation, runner) = operation_waiting_for_job(Some(failure.clone()));
     let checkpoints = RemoteCheckpointRegistry::new(None, "cleanup-test".into());
     checkpoints.insert(descriptor("existing")?)?;
-    let error = stop_and_clean_checkpoints(
+    let runtime = RuntimeEnv::default();
+    let cleanup = stop_and_clean_checkpoints(
         Some(operation.as_ref()),
         &runner,
         Some(&checkpoints),
-        &RuntimeEnv::default(),
+        &runtime,
         |_| {},
-    )
-    .await
-    .err()
-    .ok_or("failed drain reported success")?;
+    );
+    let error = tokio::time::timeout(Duration::from_secs(10), cleanup)
+        .await?
+        .err()
+        .ok_or("failed drain reported success")?;
     let DataFusionError::Shared(retained) = &error else {
         return Err("drain error was replaced".into());
     };
