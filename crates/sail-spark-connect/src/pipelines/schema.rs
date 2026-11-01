@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
@@ -13,7 +14,7 @@ use super::graph::{Name, Output, analysis, quoted};
 use super::schema_merge::merge_fields;
 use super::schema_stream::streaming_read_fields;
 use crate::config::EncoderSchemaSettings;
-use crate::error::{SparkError, SparkResult};
+use crate::error::{SparkError, SparkResult, StructuredSparkError};
 use crate::proto::data_type::parse_spark_data_type;
 use crate::schema::to_tree_string;
 use crate::session::SparkSession;
@@ -114,16 +115,23 @@ impl VirtualTableSchema {
         } else {
             ""
         };
-        analysis(
-            "USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE",
-            format!(
-                "Table '{}' has a user-specified schema that is incompatible with the schema \
-                 inferred from its query.\n{hint}\nDeclared schema:\n{}\n\nInferred schema:\n{}",
-                self.name.join("."),
-                declared,
-                inferred,
+        let table = self.name.join(".");
+        Box::new(StructuredSparkError {
+            class: "org.apache.spark.sql.AnalysisException".into(),
+            condition: "USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE".into(),
+            sql_state: "42000".into(),
+            message: format!(
+                "Table '{table}' has a user-specified schema that is incompatible with the schema \
+                 inferred from its query.\n{hint}\nDeclared schema:\n{declared}\n\nInferred schema:\n{inferred}",
             ),
-        )
+            parameters: HashMap::from([
+                ("tableName".into(), table),
+                ("streamingTableHint".into(), hint.into()),
+                ("specifiedSchema".into(), declared),
+                ("inferredDataSchema".into(), inferred),
+            ]),
+        })
+        .into()
     }
 
     /// Validate declaration compatibility after successful query resolution.

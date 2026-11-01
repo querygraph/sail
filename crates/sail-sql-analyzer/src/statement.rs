@@ -482,7 +482,19 @@ fn from_ast_statement_impl(
             let node = spec::CommandNode::ShowTableExtended { database, pattern };
             Ok(spec::Plan::Command(spec::CommandPlan::new(node)))
         }
-        Statement::ShowCreateTable { .. } => Err(SqlError::todo("SHOW CREATE TABLE")),
+        Statement::ShowCreateTable {
+            show: _,
+            create: _,
+            table: _,
+            name,
+            as_serde,
+        } => {
+            let node = spec::CommandNode::ShowCreateTable {
+                table: from_ast_object_name(name)?,
+                as_serde: as_serde.is_some(),
+            };
+            Ok(spec::Plan::Command(spec::CommandPlan::new(node)))
+        }
         Statement::ShowColumns {
             show: _,
             columns: _,

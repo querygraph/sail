@@ -393,6 +393,12 @@ impl PlanResolver<'_> {
                     extended,
                 })
             }
+            CommandNode::ShowCreateTable { table, as_serde } => {
+                self.resolve_catalog_command(CatalogCommand::ShowCreateTable {
+                    table: table.into(),
+                    as_serde,
+                })
+            }
             CommandNode::CommentOnCatalog { .. } => {
                 Err(PlanError::todo("CommandNode::CommentOnCatalog"))
             }

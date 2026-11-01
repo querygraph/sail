@@ -362,16 +362,6 @@ def test_retryable_flows_resolve_when_consumers_exceed_parallelism(suite):
         assert suite.rows(f"c{index}") == [(1,), (2,), (3,)]
 
 
-@pytest.mark.skip(reason="observes SQLConf.get from a Scala Input during FlowAnalysis, and needs a custom Input")
-def test_per_flow_confs_are_visible_to_the_analyzer_but_do_not_leak():
-    pass
-
-
-@pytest.mark.skip(reason="needs a Scala Input and a barrier inside concurrent flow analysis")
-def test_per_flow_confs_stay_isolated_when_flows_are_resolved_in_parallel():
-    pass
-
-
 def test_per_flow_confs_reach_the_analyzer(suite, spark):
     key = "spark.sql.caseSensitive"
     assert spark.conf.get(key) == "false"

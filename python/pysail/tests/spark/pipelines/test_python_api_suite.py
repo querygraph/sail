@@ -404,8 +404,8 @@ def st():
     expected = [(i, i % 2) for i in range(5)]
     for table in ["mv", "st"]:
         assert sorted((row.id, int(row.id_mod)) for row in suite.spark.table(f"{suite.schema}.{table}").collect()) == expected
-        details = suite.spark.sql(f"DESCRIBE TABLE EXTENDED {suite.schema}.{table}").collect()
-        assert any("id_mod" in str(row[0]) for row in details)
+        columns = suite.spark.catalog.listColumns(f"{suite.schema}.{table}")
+        assert [column.name for column in columns if column.isPartition] == ["id_mod"]
 
 
 def test_an_empty_cluster_by_means_no_clustering(suite):

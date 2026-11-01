@@ -445,23 +445,17 @@ impl GraphDefinition {
         }
         // `validateMultiQueryTables`, with its Auto CDC multiflow clause first.
         super::autocdc::validate_multiple_flows_globally(self)?;
+        // Then a table of any kind refuses several flows if one of them is a batch flow.
         for output in &self.outputs {
-            let Some(flows) = producers.get(&output.name) else {
-                let name = quoted(&output.name);
-                return Err(Box::new(StructuredSparkError {
-                    class: "org.apache.spark.sql.AnalysisException".into(),
-                    condition: "PIPELINE_DATASET_WITHOUT_FLOW".into(),
-                    sql_state: "0A000".into(),
-                    message: format!(
-                        "Pipeline dataset {name} does not have any defined flows. Please attach a query \
-                         with the dataset's definition, or explicitly define at least one flow that \
-                         writes to the dataset."
-                    ),
-                    parameters: HashMap::from([("identifier".into(), name)]),
-                })
-                .into());
-            };
-            if output.kind == sc::OutputType::MaterializedView && flows.len() != 1 {
+            let is_table = matches!(
+                output.kind,
+                sc::OutputType::MaterializedView | sc::OutputType::Table
+            ) && output.view.is_none();
+            let flows = producers.get(&output.name).map_or(&[][..], Vec::as_slice);
+            let batch = flows
+                .iter()
+                .any(|flow| !flow_streaming.get(&flow.name).copied().unwrap_or(false));
+            if is_table && flows.len() > 1 && batch {
                 let table = output.name.join(".");
                 let mut names = flows
                     .iter()
@@ -481,6 +475,23 @@ impl GraphDefinition {
                 })
                 .into());
             }
+        }
+        for output in &self.outputs {
+            let Some(flows) = producers.get(&output.name) else {
+                let name = quoted(&output.name);
+                return Err(Box::new(StructuredSparkError {
+                    class: "org.apache.spark.sql.AnalysisException".into(),
+                    condition: "PIPELINE_DATASET_WITHOUT_FLOW".into(),
+                    sql_state: "0A000".into(),
+                    message: format!(
+                        "Pipeline dataset {name} does not have any defined flows. Please attach a query \
+                         with the dataset's definition, or explicitly define at least one flow that \
+                         writes to the dataset."
+                    ),
+                    parameters: HashMap::from([("identifier".into(), name)]),
+                })
+                .into());
+            };
             for flow in flows {
                 let streaming = flow_streaming.get(&flow.name).copied().ok_or_else(|| {
                     SparkError::internal("validated flow has no analyzed streaming mode")

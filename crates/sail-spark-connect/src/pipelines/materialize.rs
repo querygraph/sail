@@ -8,7 +8,7 @@ use sail_catalog::error::{CatalogError, CatalogObject};
 use sail_catalog::manager::CatalogManager;
 use sail_common::spec;
 use sail_common_datafusion::catalog::{CLUSTERING_COLUMNS_PROPERTY, PartitionTransform, TableKind};
-use sail_common_datafusion::datasource::DataSourceRegistry;
+use sail_common_datafusion::datasource::{DataSourceRegistry, is_lakehouse_format};
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_plan::config::PlanConfig;
 use sail_plan::error::PlanError;
@@ -114,7 +114,8 @@ pub(super) async fn tables(
         columns.retain(|column| !column.name.starts_with(DUPLICATE_COLUMN_MARK));
         for column in &details.clustering_columns {
             if !columns.iter().any(|x| x.name.eq_ignore_ascii_case(column)) {
-                return Err(errors::missing_cluster_column(column, &output.name));
+                let columns = columns.iter().map(|x| x.name.clone()).collect::<Vec<_>>();
+                return Err(errors::missing_cluster_column(column, &columns));
             }
         }
         if !details.clustering_columns.is_empty() {
@@ -147,6 +148,15 @@ pub(super) async fn tables(
             Err(CatalogError::NotFound(CatalogObject::Table | CatalogObject::View, _)) => None,
             Err(error) => return Err(PlanError::from(error).into()),
         };
+        // PreprocessTableCreation: a new file table needs a column outside its partition.
+        let format = details.format.as_deref().unwrap_or_default();
+        if existing.is_none()
+            && !is_lakehouse_format(format)
+            && !columns.is_empty()
+            && details.partition_cols.len() == columns.len()
+        {
+            return Err(errors::all_partition_columns());
+        }
         if let Some(existing) = existing {
             let TableKind::Table {
                 columns: old_columns,
