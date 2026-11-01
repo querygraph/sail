@@ -1,7 +1,9 @@
 //! The two analysis calls of a flow, with success-only configuration validation.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::logical_expr::type_coercion::binary::comparison_coercion;
 use datafusion::prelude::SessionContext;
 use sail_catalog::provider::CreateViewOptions;
 use sail_common::spec;
@@ -229,6 +231,10 @@ impl FlowContext<'_> {
                 .await
                 .map(|plan| (plan, None)),
         };
+        let result = result.and_then(|(plan, options)| {
+            check_unions(&plan.plan)?;
+            Ok((plan, options))
+        });
         let streaming = scope.reads_streaming_input() || reads_streaming_source(&flow.query);
         let actual = scope.reads.into_inner()?;
         match result {
@@ -322,4 +328,47 @@ impl FlowContext<'_> {
             accepted: merged.map,
         })))
     }
+}
+
+const ORDINALS: [&str; 9] = [
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth",
+];
+
+fn ordinal(index: usize) -> String {
+    ORDINALS
+        .get(index)
+        .map_or_else(|| format!("{}th", index + 1), |name| (*name).to_string())
+}
+
+/// Report a union's incompatible columns during analysis, as Spark does. The
+/// planner refuses them too, but only a real run reaches it.
+fn check_unions(plan: &LogicalPlan) -> Result<(), PlanError> {
+    let mut failure = None;
+    plan.apply(|node| {
+        let LogicalPlan::Union(union) = node else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let Some(first) = union.inputs.first() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        for (table, input) in union.inputs.iter().enumerate().skip(1) {
+            let fields = first.schema().fields().iter().zip(input.schema().fields());
+            for (column, (left, right)) in fields.enumerate() {
+                if comparison_coercion(left.data_type(), right.data_type()).is_none() {
+                    failure = Some(PlanError::invalid(format!(
+                        "[INCOMPATIBLE_COLUMN_TYPE] UNION can only be performed on tables with \
+                         compatible column types. The {} column of the {} table is {} type which \
+                         is not compatible with {} at the same column of the first table.",
+                        ordinal(column),
+                        ordinal(table),
+                        right.data_type(),
+                        left.data_type(),
+                    )));
+                    return Ok(TreeNodeRecursion::Stop);
+                }
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    failure.map_or(Ok(()), Err)
 }

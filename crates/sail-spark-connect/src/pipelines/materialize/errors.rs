@@ -65,3 +65,29 @@ fn transform(field: &CatalogPartitionField) -> String {
         PartitionTransform::Truncate(n) => format!("truncate({n}, {column})"),
     }
 }
+
+pub(super) fn cluster_change(existing: &[String], requested: &[String]) -> SparkError {
+    let format = |columns: &[String]| format!("[{}]", columns.join(", "));
+    let (existing, requested) = (format(existing), format(requested));
+    Box::new(StructuredSparkError {
+        class: "org.apache.spark.sql.AnalysisException".into(),
+        condition: "CANNOT_UPDATE_PARTITION_COLUMNS".into(),
+        sql_state: "42000".into(),
+        message: format!(
+            "Declared clustering {requested} conflicts with existing table clustering {existing}.\n\
+             Please delete the table or change the declared clustering to match its columns."
+        ),
+        parameters: HashMap::from([
+            ("existingPartitionColumns".into(), existing),
+            ("requestedPartitionColumns".into(), requested),
+        ]),
+    })
+    .into()
+}
+
+pub(super) fn missing_cluster_column(column: &str, table: &[String]) -> SparkError {
+    SparkError::invalid(format!(
+        "Cluster column `{column}` is not defined in the table {}.",
+        table.join(".")
+    ))
+}

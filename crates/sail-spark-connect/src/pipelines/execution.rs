@@ -186,6 +186,27 @@ impl FlowRun<'_> {
                     emit(self.events, format!("Flow {display} has COMPLETED."));
                     return Ok(());
                 }
+                Err(error) if super::append::sources_changed(&error) => {
+                    emit(
+                        self.events,
+                        format!(
+                            "Flow '{display}' had streaming sources added or removed. It will \
+                             not be retried. Please perform a full refresh to rebuild it \
+                             against the current sources."
+                        ),
+                    );
+                    return Err(error);
+                }
+                Err(error) if attempt >= retries && !batch => {
+                    emit(
+                        self.events,
+                        format!(
+                            "Flow '{display}' has FAILED more than {retries} times and will \
+                             not be restarted.\nError: {error}"
+                        ),
+                    );
+                    return Err(error);
+                }
                 Err(error) => {
                     emit(
                         self.events,
@@ -336,11 +357,8 @@ fn table_write_command(output: &Output, flow: &Flow) -> spec::CommandNode {
                 is_metadata_column: false,
             })
             .collect(),
-        clustering_columns: details
-            .clustering_columns
-            .into_iter()
-            .map(Into::into)
-            .collect(),
+        // Recorded on the table when it is materialized; no writer lays it out.
+        clustering_columns: vec![],
         options: vec![],
         table_properties: vec![],
     })

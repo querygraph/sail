@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use grust_topology::{DirectedGraph, Outcome, Scratch, Visit};
 
-use super::graph::{Name, analysis, quoted};
+use super::graph::Name;
 use crate::error::SparkResult;
 
 struct Topology {
@@ -24,7 +24,11 @@ impl DirectedGraph for Topology {
     }
 }
 
-pub(super) fn order(dependencies: &BTreeMap<Name, BTreeSet<Name>>) -> SparkResult<Vec<Name>> {
+/// A cycle is reported between datasets, so a flow stands for its target.
+pub(super) fn order(
+    dependencies: &BTreeMap<Name, BTreeSet<Name>>,
+    targets: &BTreeMap<Name, Name>,
+) -> SparkResult<Vec<Name>> {
     let names: Vec<_> = dependencies.keys().cloned().collect();
     let indices: BTreeMap<_, _> = names
         .iter()
@@ -61,14 +65,15 @@ pub(super) fn order(dependencies: &BTreeMap<Name, BTreeSet<Name>>) -> SparkResul
         |_| Ok::<_, crate::error::SparkError>(()),
     )?;
     if let Outcome::Cycle { entry } = outcome {
-        let witness = stack
-            .iter()
-            .skip_while(|(node, _)| *node != entry)
-            .map(|(node, _)| quoted(&names[*node]))
-            .chain([quoted(&names[entry])])
-            .collect::<Vec<_>>()
-            .join(" -> ");
-        return Err(analysis("PIPELINE_CIRCULAR_DEPENDENCY", witness));
+        // The last dataset on the path reads the first, which closes the cycle.
+        let upstream = stack.last().map_or(entry, |(node, _)| *node);
+        let dataset = |node: usize| targets.get(&names[node]).unwrap_or(&names[node]).join(".");
+        let (downstream, upstream) = (dataset(entry), dataset(upstream));
+        return Err(crate::error::SparkError::AnalysisError(format!(
+            "The downstream table '{downstream}' is referenced when creating the upstream table \
+             or view '{upstream}'. Circular dependencies are not supported in a pipeline. Please \
+             remove the dependency between '{upstream}' and '{downstream}'."
+        )));
     }
     Ok(order.into_iter().map(|i| names[i].clone()).collect())
 }

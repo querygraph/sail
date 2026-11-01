@@ -7,7 +7,7 @@ use sail_catalog::command::CatalogCommand;
 use sail_catalog::error::{CatalogError, CatalogObject};
 use sail_catalog::manager::CatalogManager;
 use sail_common::spec;
-use sail_common_datafusion::catalog::{PartitionTransform, TableKind};
+use sail_common_datafusion::catalog::{CLUSTERING_COLUMNS_PROPERTY, PartitionTransform, TableKind};
 use sail_common_datafusion::datasource::DataSourceRegistry;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_plan::config::PlanConfig;
@@ -97,17 +97,25 @@ pub(super) async fn tables(
                 properties.insert(key.to_string(), value.clone());
             }
         }
-        if !details.clustering_columns.is_empty() {
-            if !details.partition_cols.is_empty() {
-                return Err(errors::partition_and_cluster());
-            }
-            return Err(SparkError::unsupported("pipeline table clustering"));
+        if !details.clustering_columns.is_empty() && !details.partition_cols.is_empty() {
+            return Err(errors::partition_and_cluster());
         }
         let schema = schemas
             .get(&output.name)
             .ok_or_else(|| SparkError::internal("analyzed output missing"))?
             .as_ref();
         let mut columns = super::schema::table_columns(output, schema)?;
+        for column in &details.clustering_columns {
+            if !columns.iter().any(|x| x.name.eq_ignore_ascii_case(column)) {
+                return Err(errors::missing_cluster_column(column, &output.name));
+            }
+        }
+        if !details.clustering_columns.is_empty() {
+            properties.insert(
+                CLUSTERING_COLUMNS_PROPERTY.to_string(),
+                details.clustering_columns.join(","),
+            );
+        }
         let table: spec::ObjectName = output.name.clone().into();
         let existing = match manager.get_table_or_view(&output.name).await {
             Ok(status) => Some(status),
@@ -118,6 +126,7 @@ pub(super) async fn tables(
             let TableKind::Table {
                 columns: old_columns,
                 partition_by,
+                properties: old_properties,
                 ..
             } = existing.kind
             else {
@@ -126,6 +135,17 @@ pub(super) async fn tables(
                     quoted(&output.name),
                 ));
             };
+            let clusters = old_properties
+                .iter()
+                .find(|(key, _)| key == CLUSTERING_COLUMNS_PROPERTY)
+                .map(|(_, value)| value.split(',').map(str::to_string).collect::<Vec<_>>())
+                .unwrap_or_default();
+            if clusters != details.clustering_columns {
+                return Err(errors::cluster_change(
+                    &clusters,
+                    &details.clustering_columns,
+                ));
+            }
             if partition_by.len() != details.partition_cols.len()
                 || partition_by
                     .iter()

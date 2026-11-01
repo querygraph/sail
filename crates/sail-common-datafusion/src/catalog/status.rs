@@ -114,6 +114,10 @@ impl FunctionStatus {
     }
 }
 
+/// The table property that records clustering columns, comma separated.
+/// A stored column has no clustering flag of its own.
+pub const CLUSTERING_COLUMNS_PROPERTY: &str = "clusteringColumns";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TableKind {
     Table {
@@ -176,8 +180,23 @@ pub struct TemporaryViewSource {
 impl TableKind {
     pub fn columns(&self) -> Vec<TableColumnStatus> {
         match &self {
-            TableKind::Table { columns, .. }
-            | TableKind::View { columns, .. }
+            TableKind::Table {
+                columns,
+                properties,
+                ..
+            } => {
+                let clusters = properties
+                    .iter()
+                    .find(|(key, _)| key == CLUSTERING_COLUMNS_PROPERTY)
+                    .map(|(_, value)| value.split(',').collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let mut columns = columns.clone();
+                for column in &mut columns {
+                    column.is_cluster |= clusters.contains(&column.name.as_str());
+                }
+                columns
+            }
+            TableKind::View { columns, .. }
             | TableKind::TemporaryView { columns, .. }
             | TableKind::GlobalTemporaryView { columns, .. } => columns.clone(),
         }

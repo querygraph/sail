@@ -48,7 +48,12 @@ impl ResolutionFailures {
                 (name.clone(), inputs)
             })
             .collect();
-        super::super::topology::order(&dependencies)?;
+        let targets = graph
+            .flows
+            .iter()
+            .map(|flow| (flow.name.clone(), flow.target.clone()))
+            .collect();
+        super::super::topology::order(&dependencies, &targets)?;
         let mut direct = BTreeMap::new();
         let mut downstream = BTreeMap::new();
         for (name, failure) in failures {

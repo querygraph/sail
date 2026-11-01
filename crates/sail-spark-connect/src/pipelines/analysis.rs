@@ -378,7 +378,11 @@ async fn analyze_queries(
                             .iter()
                             .map(|plan| Arc::new(plan.schema().as_arrow().clone()))
                             .collect(),
-                    ),
+                    )
+                    .with_streaming_flow(graph.flows.iter().any(|flow| {
+                        flow.target == output.name
+                            && flow_streaming.get(&flow.name).copied().unwrap_or(false)
+                    })),
                 );
             }
             order.push(output.name.clone());
@@ -455,7 +459,14 @@ async fn analyze_queries(
         schemas.insert(name, Arc::new(table.final_schema(ctx)?));
     }
     Ok(Ok(AnalyzedGraph {
-        order: super::topology::order(&dependencies)?,
+        order: super::topology::order(
+            &dependencies,
+            &graph
+                .flows
+                .iter()
+                .map(|flow| (flow.name.clone(), flow.target.clone()))
+                .collect(),
+        )?,
         dependencies,
         schemas,
         publications,
