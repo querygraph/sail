@@ -23,19 +23,19 @@ pub(super) async fn execute(
     graph: &GraphDefinition,
     analyzed: AnalyzedGraph,
     selection: Selection,
+    storage: String,
 ) -> SparkResult<()> {
     // Reject unsupported modes before the first write, rather than partially
-    // publishing a batch graph that contains an incremental or sink output.
-    if graph
-        .outputs
-        .iter()
-        .any(|x| matches!(x.kind, OutputType::Table | OutputType::Sink))
-    {
+    // publishing a graph that contains an output this run cannot produce.
+    if graph.flows.iter().any(|flow| flow.auto_cdc.is_some()) {
         if super::autocdc::admitted(ctx, graph)? {
             super::autocdc::execute_graph(ctx, graph, &analyzed, &selection).await?;
             return Ok(());
         }
         return Err(SparkError::unsupported("incremental pipeline execution"));
+    }
+    if graph.outputs.iter().any(|x| x.kind == OutputType::Sink) {
+        return Err(SparkError::unsupported("pipeline sink execution"));
     }
     let spark = ctx.extension::<SparkSession>()?;
     super::materialize::tables(ctx, graph, &analyzed.schemas, &selection).await?;
@@ -52,27 +52,46 @@ pub(super) async fn execute(
         {
             continue;
         }
-        let flow = graph
+        let flows = graph
             .flows
             .iter()
-            .find(|x| &x.target == name)
-            .ok_or_else(|| analysis("PIPELINE_DATASET_WITHOUT_FLOW", name.join(".")))?;
-        let accepted = analyzed
-            .accepted_confs
-            .get(&flow.name)
-            .ok_or_else(|| SparkError::internal("accepted flow configuration missing"))?;
-        let config = spark.plan_config_with_overrides(accepted.clone())?;
-        let resolved = super::reanalysis::resolve_inputs(
-            ctx,
-            graph,
-            &analyzed,
-            name,
-            config.clone(),
-            accepted,
-        )
-        .await?;
-        let scope = GraphScope::new(graph, &resolved, flow);
-        run_command(ctx, config, table_write_command(output, flow), Some(&scope)).await?;
+            .filter(|x| &x.target == name)
+            .collect::<Vec<_>>();
+        if flows.is_empty() {
+            return Err(analysis("PIPELINE_DATASET_WITHOUT_FLOW", name.join(".")));
+        }
+        for flow in flows {
+            let accepted = analyzed
+                .accepted_confs
+                .get(&flow.name)
+                .ok_or_else(|| SparkError::internal("accepted flow configuration missing"))?;
+            let config = spark.plan_config_with_overrides(accepted.clone())?;
+            let resolved = super::reanalysis::resolve_inputs(
+                ctx,
+                graph,
+                &analyzed,
+                name,
+                config.clone(),
+                accepted,
+            )
+            .await?;
+            let write = table_write_command(output, flow);
+            if output.kind == OutputType::Table {
+                let run = super::append::AppendFlow {
+                    graph,
+                    flow,
+                    destination: name,
+                    inputs: &resolved,
+                    write,
+                    storage: &storage,
+                    reset: super::materialize::resets(output, &selection),
+                };
+                super::append::run(ctx, config, run).await?;
+            } else {
+                let scope = GraphScope::new(graph, &resolved, flow);
+                run_command(ctx, config, write, Some(&scope)).await?;
+            }
+        }
     }
     Ok(())
 }

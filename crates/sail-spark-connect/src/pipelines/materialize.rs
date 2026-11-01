@@ -15,7 +15,7 @@ use sail_plan::error::PlanError;
 
 use super::analysis::AnalyzedGraph;
 use super::execution::{run_catalog_command, run_command};
-use super::graph::{GraphDefinition, Name, analysis, quoted};
+use super::graph::{GraphDefinition, Name, Output, analysis, quoted};
 use super::selection::Selection;
 use crate::error::{SparkError, SparkResult};
 use crate::session::SparkSession;
@@ -25,6 +25,20 @@ mod errors;
 
 /// Materialize the selected table metadata before executing any batch flow,
 /// matching Spark's DatasetManager. A failed write can leave an empty target.
+/// `DatasetManager.constructFullRefreshSet` (:397–430): a table selected for
+/// full refresh whose `pipelines.reset.allowed` is false is refreshed instead.
+pub(super) fn resets(output: &Output, selection: &Selection) -> bool {
+    if !selection.reset.contains(&output.name) {
+        return false;
+    }
+    let Some(pc::define_output::Details::TableDetails(details)) = &output.definition.details else {
+        return true;
+    };
+    !details.table_properties.iter().any(|(key, value)| {
+        key.eq_ignore_ascii_case("pipelines.reset.allowed") && value.eq_ignore_ascii_case("false")
+    })
+}
+
 pub(super) async fn tables(
     ctx: &SessionContext,
     graph: &GraphDefinition,

@@ -12,6 +12,7 @@ use super::*;
 use crate::config::ConfigKeyValue;
 use crate::pipelines::graph::PipelineGraph;
 use crate::pipelines::{analysis, catalog_preparation_tests, execution, sql};
+use crate::spark::connect::OutputType;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -175,6 +176,7 @@ async fn ordinary_streaming_refresh_merges_schema_without_truncating_rows() -> T
         &seed,
         analyzed,
         Selection::new(&seed, &pc::StartRun::default())?,
+        String::new(),
     )
     .await?;
     assert_eq!(row_count(&ctx, "target").await?, 1);
@@ -229,7 +231,7 @@ async fn ordinary_streaming_refresh_merges_schema_without_truncating_rows() -> T
 }
 
 #[tokio::test]
-async fn public_execution_rejects_incremental_outputs_before_catalog_effects() -> TestResult {
+async fn public_execution_rejects_sink_outputs_before_catalog_effects() -> TestResult {
     let ctx = context()?;
     let graph = graph("CREATE MATERIALIZED VIEW batch AS SELECT 1 AS x; CREATE STREAMING TABLE streaming AS SELECT 2 AS x").await?;
     let schemas = metadata_schemas(&ctx, &graph).await?;
@@ -245,8 +247,10 @@ async fn public_execution_rejects_incremental_outputs_before_catalog_effects() -
         accepted_confs: Default::default(),
     };
     let selection = Selection::new(&graph, &pc::StartRun::default())?;
+    let mut with_sink = graph.clone();
+    with_sink.outputs[1].kind = OutputType::Sink;
     assert!(
-        execution::execute(&ctx, &graph, analyzed, selection)
+        execution::execute(&ctx, &with_sink, analyzed, selection, String::new())
             .await
             .is_err()
     );
@@ -296,6 +300,7 @@ async fn full_refresh_truncates_resets_schema_and_drops_only_its_auxiliary_state
         &seed,
         analyzed,
         Selection::new(&seed, &pc::StartRun::default())?,
+        String::new(),
     )
     .await?;
     assert_eq!(row_count(&ctx, "target").await?, 1);

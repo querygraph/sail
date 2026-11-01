@@ -1,4 +1,5 @@
 mod analysis;
+mod append;
 mod autocdc;
 mod config;
 mod execution;
@@ -162,12 +163,13 @@ pub(crate) async fn handle_command(
                 (definition, cancelled, selection)
             };
             let ctx = ctx.clone();
+            let storage = command.storage.clone().unwrap_or_default();
             let inner = async_stream::try_stream! {
                 yield event("Starting pipeline analysis");
                 let run = async {
                     let analyzed = analysis::analyze(&ctx, &definition).await?;
                     if !command.dry.unwrap_or(false) {
-                        execution::execute(&ctx, &definition, analyzed, selection).await?;
+                        execution::execute(&ctx, &definition, analyzed, selection, storage).await?;
                     }
                     Ok::<_, analysis::AnalysisError>(())
                 };

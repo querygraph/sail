@@ -53,6 +53,29 @@ pub(super) fn analysis(condition: &str, message: impl std::fmt::Display) -> Spar
     SparkError::AnalysisError(format!("[{condition}] {message}"))
 }
 
+/// `validateFlowStreamingness`. `detail` names the flow and target by placeholder.
+fn flow_query_type_error(
+    sub_class: &str,
+    target_parameter: &str,
+    flow: &[String],
+    target: &[String],
+    detail: &str,
+) -> SparkError {
+    let (flow, target) = (quoted(flow), quoted(target));
+    let detail = detail.replace("{flow}", &flow).replace("{target}", &target);
+    Box::new(StructuredSparkError {
+        class: "org.apache.spark.sql.AnalysisException".into(),
+        condition: format!("INVALID_FLOW_QUERY_TYPE.{sub_class}"),
+        sql_state: "42000".into(),
+        message: format!("Flow {flow} returns an invalid relation type. {detail}"),
+        parameters: HashMap::from([
+            ("flowIdentifier".into(), flow),
+            (target_parameter.into(), target),
+        ]),
+    })
+    .into()
+}
+
 #[derive(Clone)]
 pub(super) struct Output {
     pub name: Name,
@@ -434,19 +457,38 @@ impl GraphDefinition {
                 })?;
                 match output.kind {
                     sc::OutputType::Table if !streaming => {
-                        return Err(analysis(
-                            "INVALID_FLOW_QUERY_TYPE.BATCH_RELATION_FOR_STREAMING_TABLE",
-                            quoted(&flow.name),
+                        return Err(flow_query_type_error(
+                            "BATCH_RELATION_FOR_STREAMING_TABLE",
+                            "tableIdentifier",
+                            &flow.name,
+                            &output.name,
+                            "Streaming tables may only be defined by streaming relations, but \
+                             the flow {flow} attempts to write a batch relation to the streaming \
+                             table {target}. Consider using the STREAM operator in Spark-SQL to \
+                             convert the batch relation into a streaming relation, or populating \
+                             the streaming table with an append once-flow instead.",
+                        ));
+                    }
+                    sc::OutputType::MaterializedView if streaming && output.view.is_some() => {
+                        return Err(flow_query_type_error(
+                            "STREAMING_RELATION_FOR_PERSISTED_VIEW",
+                            "viewIdentifier",
+                            &flow.name,
+                            &output.name,
+                            "Persisted views may only be defined by a batch relation, but the \
+                             flow {flow} attempts to write a streaming relation to the persisted \
+                             view {target}.",
                         ));
                     }
                     sc::OutputType::MaterializedView if streaming => {
-                        return Err(analysis(
-                            if output.view.is_some() {
-                                "INVALID_FLOW_QUERY_TYPE.STREAMING_RELATION_FOR_PERSISTED_VIEW"
-                            } else {
-                                "INVALID_FLOW_QUERY_TYPE.STREAMING_RELATION_FOR_MATERIALIZED_VIEW"
-                            },
-                            quoted(&flow.name),
+                        return Err(flow_query_type_error(
+                            "STREAMING_RELATION_FOR_MATERIALIZED_VIEW",
+                            "tableIdentifier",
+                            &flow.name,
+                            &output.name,
+                            "Materialized views may only be defined by a batch relation, but \
+                             the flow {flow} attempts to write a streaming relation to the \
+                             materialized view {target}.",
                         ));
                     }
                     sc::OutputType::Sink if !streaming => {
