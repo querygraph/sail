@@ -55,6 +55,34 @@ fn event(message: &str) -> ExecutorOutput {
     )))
 }
 
+/// `PipelineUpdateContextImpl.validateStorageRoot`: absolute, with a scheme.
+fn validate_storage_root(root: &str) -> SparkResult<()> {
+    let scheme = root.split_once(':').map(|(scheme, _)| scheme);
+    let has_scheme = scheme.is_some_and(|scheme| {
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    });
+    let is_absolute = root
+        .split_once(':')
+        .is_some_and(|(_, path)| path.starts_with('/'));
+    if has_scheme && is_absolute {
+        return Ok(());
+    }
+    Err(Box::new(crate::error::StructuredSparkError {
+        class: "org.apache.spark.SparkException".into(),
+        condition: "PIPELINE_STORAGE_ROOT_INVALID".into(),
+        sql_state: "42K03".into(),
+        message: format!(
+            "Pipeline storage root must be an absolute path with a URI scheme (e.g., file://, \
+             s3a://, hdfs://). Got: `{root}`."
+        ),
+        parameters: std::collections::HashMap::from([("storage_root".into(), root.to_string())]),
+    })
+    .into())
+}
+
 enum RunStep {
     Event(Option<String>),
     Finished(Result<(), analysis::AnalysisError>),
@@ -164,6 +192,7 @@ pub(crate) async fn handle_command(
                         "Storage must be specified to start a run.",
                     ));
                 }
+                validate_storage_root(command.storage.as_deref().unwrap_or_default())?;
                 let (definition, cancelled) = graph.start(graph_id)?;
                 (definition, cancelled, selection)
             };

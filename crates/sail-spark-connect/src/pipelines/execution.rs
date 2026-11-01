@@ -43,9 +43,6 @@ pub(super) async fn execute(
         }
         return Err(SparkError::unsupported("incremental pipeline execution"));
     }
-    if graph.outputs.iter().any(|x| x.kind == OutputType::Sink) {
-        return Err(SparkError::unsupported("pipeline sink execution"));
-    }
     super::materialize::tables(ctx, graph, &analyzed.schemas, &selection).await?;
     super::materialize::views(ctx, graph, &analyzed).await?;
     let runnable =
@@ -169,7 +166,7 @@ impl FlowRun<'_> {
             .transpose()?
             .unwrap_or(DEFAULT_MAX_FLOW_RETRY_ATTEMPTS);
         let display = flow.name.join(".");
-        let batch = output.kind != OutputType::Table;
+        let batch = output.kind == OutputType::MaterializedView;
         let mut attempt = 0;
         loop {
             if batch {
@@ -218,8 +215,11 @@ impl FlowRun<'_> {
             accepted,
         )
         .await?;
-        let write = table_write_command(output, flow);
-        if output.kind == OutputType::Table {
+        let write = match output.kind {
+            OutputType::Sink => sink_write_command(output, flow)?,
+            _ => table_write_command(output, flow),
+        };
+        if output.kind != OutputType::MaterializedView {
             let run = super::append::AppendFlow {
                 graph: self.graph,
                 flow,
@@ -279,6 +279,38 @@ async fn execute_command_plan(
     let mut stream = service.runner().execute(ctx, physical).await?;
     while stream.try_next().await?.is_some() {}
     Ok(())
+}
+
+/// A streaming write to a sink's path, in the sink's format.
+fn sink_write_command(output: &Output, flow: &Flow) -> SparkResult<spec::CommandNode> {
+    let Some(pc::define_output::Details::SinkDetails(details)) = &output.definition.details else {
+        return Err(SparkError::internal("sink output without sink details"));
+    };
+    let format = details
+        .format
+        .clone()
+        .ok_or_else(|| SparkError::invalid("a pipeline sink needs a format"))?;
+    let path = details
+        .options
+        .get("path")
+        .cloned()
+        .ok_or_else(|| SparkError::unsupported(format!("a {format} sink without a path")))?;
+    Ok(spec::CommandNode::Write(spec::Write {
+        input: Box::new(flow.query.clone()),
+        source: Some(format),
+        save_type: spec::SaveType::Path(path),
+        mode: Some(spec::SaveMode::Append),
+        sort_columns: vec![],
+        partitioning_columns: vec![],
+        clustering_columns: vec![],
+        bucket_by: None,
+        options: details
+            .options
+            .iter()
+            .filter(|(key, _)| key.as_str() != "path")
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    }))
 }
 
 fn table_write_command(output: &Output, flow: &Flow) -> spec::CommandNode {

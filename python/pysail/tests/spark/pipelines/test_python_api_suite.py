@@ -474,3 +474,31 @@ def table_with_wrong_schema():
         suite.run(body)
     assert "has a user-specified schema that is incompatible" in str(error.value)
     assert "table_with_wrong_schema" in str(error.value)
+
+
+@pytest.mark.parametrize("sink_format", ["parquet", "json"])
+def test_a_sink_writes_a_stream_to_its_path(suite, spark, tmp_path, sink_format):
+    spark.sql(f"CREATE TABLE {suite.schema}.ext AS SELECT * FROM RANGE(5)")
+    target = (tmp_path / "sink").as_posix()
+    body = f"""
+dp.create_sink("mySink", format = "{sink_format}", options = {{"path": "{target}"}})
+
+@dp.append_flow(target = "mySink")
+def mySinkFlow():
+  return spark.readStream.table("{suite.catalog}.{suite.schema}.ext")
+"""
+    suite.run(body)
+    read = spark.read.format(sink_format).load(target)
+    assert sorted(row.id for row in read.collect()) == list(range(5))
+    spark.sql(f"INSERT INTO {suite.schema}.ext VALUES (5)")
+    suite.run(body)
+    assert sorted(row.id for row in spark.read.format(sink_format).load(target).collect()) == list(range(6))
+
+
+@pytest.mark.parametrize("root", ["relative/path", "./relative/path", "pipelines", "/tmp/test", "/absolute/path"])
+def test_a_storage_root_needs_a_scheme_and_an_absolute_path(suite, spark, root):
+    graph = suite.build("@dp.materialized_view\ndef a():\n  return spark.range(1)\n")
+    with pytest.raises(Exception) as error:  # noqa: PT011 the condition is the assertion
+        list(start_run(spark, graph, None, False, None, False, root))
+    assert error.value.getCondition() == "PIPELINE_STORAGE_ROOT_INVALID"
+    assert root in str(error.value)

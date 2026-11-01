@@ -232,45 +232,10 @@ async fn ordinary_streaming_refresh_merges_schema_without_truncating_rows() -> T
 }
 
 #[tokio::test]
-async fn public_execution_rejects_sink_outputs_before_catalog_effects() -> TestResult {
+async fn full_refresh_metadata_materialization_creates_absent_tables() -> TestResult {
     let ctx = context()?;
     let graph = graph("CREATE MATERIALIZED VIEW batch AS SELECT 1 AS x; CREATE STREAMING TABLE streaming AS SELECT 2 AS x").await?;
     let schemas = metadata_schemas(&ctx, &graph).await?;
-    let analyzed = AnalyzedGraph {
-        order: graph
-            .outputs
-            .iter()
-            .map(|output| output.name.clone())
-            .collect(),
-        schemas: schemas.clone(),
-        dependencies: Default::default(),
-        publications: Default::default(),
-        accepted_confs: Default::default(),
-    };
-    let selection = Selection::new(&graph, &pc::StartRun::default())?;
-    let mut with_sink = graph.clone();
-    with_sink.outputs[1].kind = OutputType::Sink;
-    assert!(
-        execution::execute(
-            &ctx,
-            &with_sink,
-            analyzed,
-            selection,
-            String::new(),
-            &tokio::sync::mpsc::unbounded_channel().0,
-        )
-        .await
-        .is_err()
-    );
-    for table in ["batch", "streaming"] {
-        assert!(
-            ctx.extension::<CatalogManager>()?
-                .get_table_or_view(&[table])
-                .await
-                .is_err()
-        );
-    }
-
     // Metadata materialization under full refresh is DatasetManager's own
     // behaviour for absent targets: both tables are created empty, and the
     // auxiliary drop is a no-op.

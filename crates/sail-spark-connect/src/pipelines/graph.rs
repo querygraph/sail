@@ -254,6 +254,22 @@ impl PipelineGraph {
                 self.definition.qualify(&target)?,
             )
         };
+        if definition.once.is_some() {
+            return Err(Box::new(StructuredSparkError {
+                class: "org.apache.spark.sql.AnalysisException".into(),
+                condition: "DEFINE_FLOW_ONCE_OPTION_NOT_SUPPORTED".into(),
+                sql_state: "0A000".into(),
+                message: format!(
+                    "Defining a one-time flow {} with the 'once' option is not supported.",
+                    definition.flow_name.clone().unwrap_or_default()
+                ),
+                parameters: HashMap::from([(
+                    "flowName".into(),
+                    definition.flow_name.clone().unwrap_or_default(),
+                )]),
+            })
+            .into());
+        }
         let (query, auto_cdc) = match definition.details.required("flow details")? {
             pc::define_flow::Details::RelationFlowDetails(details) => {
                 let plan: spec::Plan = details.relation.required("flow relation")?.try_into()?;
