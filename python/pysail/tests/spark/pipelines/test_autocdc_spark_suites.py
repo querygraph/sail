@@ -404,7 +404,7 @@ def test_a_flow_streams_from_a_table_the_same_pipeline_writes(space, pipeline_fa
 
         @dp.materialized_view
         def bronze():
-            return space.createDataFrame([(1, "alice", 1), (1, "alicia", 2)], BASE)
+            return space.sql("SELECT * FROM VALUES (1, 'alice', 1L), (1, 'alicia', 2L) AS t(id, name, seq)")
 
         @dp.temporary_view
         def changes():
