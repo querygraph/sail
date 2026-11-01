@@ -356,12 +356,11 @@ pub(super) async fn views(
             failed.insert(name.clone());
             continue;
         }
-        if let Some(flow) = graph.flows.iter().find(|flow| &flow.target == name) {
-            if let Err(error) = check_view_aliases(name, &flow.query) {
-                let _ = events.send(format!("Flow '{display}' has FAILED.\nError: {error}"));
-                failed.insert(name.clone());
-                continue;
-            }
+        let flow = graph.flows.iter().find(|flow| &flow.target == name);
+        if let Some(Err(error)) = flow.map(|flow| check_view_aliases(name, &flow.query)) {
+            let _ = events.send(format!("Flow '{display}' has FAILED.\nError: {error}"));
+            failed.insert(name.clone());
+            continue;
         }
         let mut options = analyzed
             .publications
