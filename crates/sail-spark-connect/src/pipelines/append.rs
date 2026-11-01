@@ -14,7 +14,9 @@
 //!
 //! A streaming read of a data source lists its path the same way. Flows run
 //! one at a time and each reads to the end of what it listed, as one batch.
-//! Sources that are not plain files are refused, not read wrongly.
+//! A Delta source, as a table or a path, is read from its log instead, and its
+//! progress is a version: see [`sail_delta_lake::stream`]. Other sources that
+//! are not plain files are refused, not read wrongly.
 //! The only stateful query is an aggregate over a tumbling window with a
 //! watermark: a window's rows are held under the checkpoint until the
 //! watermark passes its end, and then aggregated once. Rows behind the
@@ -42,6 +44,9 @@ use sail_common_datafusion::datasource::is_lakehouse_format;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_common_datafusion::session::job::JobService;
+use sail_delta_lake::stream::{
+    DeltaStream, DeltaStreamError, DeltaStreamFailure, DeltaStreamOffset, DeltaStreamRange,
+};
 use sail_plan::config::PlanConfig;
 use sail_plan::error::{PlanError, PlanResult};
 use sail_plan::resolver::PlanResolver;
@@ -76,6 +81,35 @@ struct FlowState {
     /// Rows of windows still open, as files under the checkpoint.
     #[serde(default)]
     retained: Vec<String>,
+    /// How far each Delta source has been read.
+    #[serde(default)]
+    delta: BTreeMap<String, DeltaStreamOffset>,
+    /// The ranges of the batch being written. `None` is a source with nothing
+    /// to read yet, which still counts as one of this flow's sources.
+    #[serde(default)]
+    pending_delta: Option<BTreeMap<String, Option<DeltaStreamRange>>>,
+}
+
+/// What one batch reads from each source.
+#[derive(Default)]
+struct Batch {
+    files: BTreeMap<String, Vec<String>>,
+    delta: BTreeMap<String, Option<DeltaStreamRange>>,
+    delta_rows: bool,
+}
+
+impl Batch {
+    fn has_rows(&self) -> bool {
+        self.delta_rows || self.files.values().any(|files| !files.is_empty())
+    }
+
+    fn sources(&self) -> BTreeSet<String> {
+        self.files
+            .keys()
+            .chain(self.delta.keys())
+            .cloned()
+            .collect()
+    }
 }
 
 struct Checkpoint {
@@ -239,6 +273,10 @@ struct BatchScope<'a> {
 
 impl BatchScope<'_> {
     fn stream(&self, name: &[String]) -> PlanResult<Option<LogicalPlan>> {
+        // A data source's key holds a path, which normalizing would change.
+        if let Some(plan) = self.streams.get(name) {
+            return Ok(Some(plan.clone()));
+        }
         let name = qualified(self.graph, name)?;
         self.streams
             .get(&name)
@@ -381,7 +419,7 @@ async fn table_source(ctx: &SessionContext, name: &Name) -> SparkResult<TableSou
             "a streaming read of a catalog view",
         ));
     };
-    if is_lakehouse_format(&format) {
+    if is_lakehouse_format(&format) && !is_delta(&format) {
         return Err(SparkError::unsupported(format!(
             "a streaming read of a {format} table"
         )));
@@ -411,6 +449,10 @@ async fn table_source(ctx: &SessionContext, name: &Name) -> SparkResult<TableSou
         partitions,
         options: vec![],
     })
+}
+
+fn is_delta(format: &str) -> bool {
+    format.eq_ignore_ascii_case("delta")
 }
 
 fn spec_schema(schema: &datafusion::arrow::datatypes::Schema) -> SparkResult<spec::Schema> {
@@ -649,10 +691,10 @@ async fn unread_plan(
     source: &TableSource,
     name: &Name,
     state: &FlowState,
-    batch: &mut BTreeMap<String, Vec<String>>,
+    batch: &mut Batch,
 ) -> SparkResult<LogicalPlan> {
     let key = name.join(".");
-    let files = match batch.get(&key) {
+    let files = match batch.files.get(&key) {
         Some(files) => files.clone(),
         None => {
             let seen = state.seen.get(&key);
@@ -665,11 +707,78 @@ async fn unread_plan(
                         .filter(|file| seen.is_none_or(|seen| !seen.contains(file))),
                 );
             }
-            batch.insert(key, files.clone());
+            batch.files.insert(key, files.clone());
             files
         }
     };
     source_plan(ctx, config, source, &files).await
+}
+
+/// A failure of a Delta source, which Spark reports as the stream's failure.
+fn delta_error(flow: &Flow, error: DeltaStreamError) -> SparkError {
+    let DeltaStreamFailure {
+        condition,
+        sql_state,
+        message,
+        analysis,
+    } = match error {
+        DeltaStreamError::Failure(failure) => failure,
+        DeltaStreamError::Other(error) => return error.into(),
+    };
+    if analysis {
+        return Box::new(StructuredSparkError {
+            class: "org.apache.spark.sql.AnalysisException".into(),
+            condition: condition.into(),
+            sql_state: sql_state.into(),
+            message,
+            parameters: HashMap::new(),
+        })
+        .into();
+    }
+    let cause = format!("[{condition}] {message} SQLSTATE: {sql_state}");
+    Box::new(StructuredSparkError {
+        class: "org.apache.spark.sql.streaming.StreamingQueryException".into(),
+        condition: "STREAM_FAILED".into(),
+        sql_state: "XXKST".into(),
+        message: format!(
+            "Query [id = {flow}] terminated with exception: {cause}",
+            flow = flow.name.join(".")
+        ),
+        parameters: HashMap::from([("message".into(), cause)]),
+    })
+    .into()
+}
+
+/// The rows of a Delta source that this flow has not read, or of the replayed
+/// batch.
+async fn delta_plan(
+    ctx: &SessionContext,
+    flow: &Flow,
+    paths: Vec<String>,
+    options: &[(String, String)],
+    name: &Name,
+    state: &FlowState,
+    batch: &mut Batch,
+) -> SparkResult<LogicalPlan> {
+    let key = name.join(".");
+    let session = ctx.state();
+    let fail = |error| delta_error(flow, error);
+    let stream = DeltaStream::open(&session, paths, options)
+        .await
+        .map_err(fail)?;
+    let range = match batch.delta.get(&key) {
+        Some(range) => range.clone(),
+        None => stream
+            .next_range(state.delta.get(&key))
+            .await
+            .map_err(fail)?,
+    };
+    let read = stream.read(range.as_ref()).await.map_err(fail)?;
+    batch.delta.insert(key, range);
+    batch.delta_rows |= read.has_rows;
+    Ok(LogicalPlanBuilder::scan(SOURCE_ALIAS, read.source, None)?
+        .alias(SOURCE_ALIAS)?
+        .build()?)
 }
 
 /// `readStream.format(...).load(path)` over a directory of files. Other
@@ -812,16 +921,24 @@ fn windowed_aggregate(
     loop {
         match &input.node {
             spec::QueryNode::WithWatermark(watermark) => {
-                let spec::QueryNode::Read {
-                    read_type: spec::ReadType::NamedTable(read),
-                    is_streaming: true,
-                } = &watermark.input.node
-                else {
-                    return Err(SparkError::unsupported(
-                        "a watermark on this streaming read",
-                    ));
+                let source = match &watermark.input.node {
+                    spec::QueryNode::Read {
+                        read_type: spec::ReadType::NamedTable(read),
+                        is_streaming: true,
+                    } => {
+                        let name: Vec<String> = read.name.clone().into();
+                        qualified(scope, &name)?
+                    }
+                    spec::QueryNode::Read {
+                        read_type: spec::ReadType::DataSource(source),
+                        is_streaming: true,
+                    } => source_name(source),
+                    _ => {
+                        return Err(SparkError::unsupported(
+                            "a watermark on this streaming read",
+                        ));
+                    }
                 };
-                let name: Vec<String> = read.name.clone().into();
                 let delay_micros =
                     duration_micros(&watermark.delay_threshold).ok_or_else(|| {
                         SparkError::unsupported(format!(
@@ -830,7 +947,7 @@ fn windowed_aggregate(
                         ))
                     })?;
                 return Ok(Some(Windowed {
-                    source: qualified(scope, &name)?,
+                    source,
                     event_time: watermark.event_time.clone(),
                     delay_micros,
                     window_micros: tumbling_window(&aggregate.grouping, &watermark.event_time)?,
@@ -891,11 +1008,12 @@ async fn max_event(
 fn bind_streams<'a>(
     ctx: &'a SessionContext,
     config: &'a Arc<PlanConfig>,
+    flow: &'a Flow,
     graph: &'a GraphDefinition,
     scope: &'a GraphScope<'a>,
     read: Streamed,
     state: &'a FlowState,
-    batch: &'a mut BTreeMap<String, Vec<String>>,
+    batch: &'a mut Batch,
     streams: &'a mut BTreeMap<Name, LogicalPlan>,
     depth: usize,
 ) -> futures::future::BoxFuture<'a, SparkResult<()>> {
@@ -907,6 +1025,20 @@ fn bind_streams<'a>(
         for source in read.sources {
             let name = source_name(&source);
             if streams.contains_key(&name) {
+                continue;
+            }
+            if source.format.as_deref().is_some_and(is_delta) {
+                let plan = delta_plan(
+                    ctx,
+                    flow,
+                    source.paths,
+                    &source.options,
+                    &name,
+                    state,
+                    batch,
+                )
+                .await?;
+                streams.insert(name, plan);
                 continue;
             }
             let source = file_source(ctx, config, source).await?;
@@ -923,6 +1055,7 @@ fn bind_streams<'a>(
                 bind_streams(
                     ctx,
                     config,
+                    flow,
                     graph,
                     scope,
                     inner,
@@ -949,6 +1082,13 @@ fn bind_streams<'a>(
             }
             let mut source = table_source(ctx, &name).await?;
             source.options = read.options.get(&name).cloned().unwrap_or_default();
+            if is_delta(&source.format) {
+                let paths = vec![source.location.clone()];
+                let plan =
+                    delta_plan(ctx, flow, paths, &source.options, &name, state, batch).await?;
+                streams.insert(name, plan);
+                continue;
+            }
             check_stream_options(&source.options)?;
             let plan = unread_plan(ctx, config, &source, &name, state, batch).await?;
             streams.insert(name, plan);
@@ -959,6 +1099,7 @@ fn bind_streams<'a>(
 }
 
 const SOURCES_CHANGED: &str = "STREAMING_SOURCES_CHANGED";
+const TIME_TRAVEL: &str = "DELTA_UNSUPPORTED_TIME_TRAVEL_VIEWS";
 
 fn sources_changed_error(flow: &Flow) -> SparkError {
     Box::new(StructuredSparkError {
@@ -976,7 +1117,8 @@ fn sources_changed_error(flow: &Flow) -> SparkError {
 
 /// Whether this failure needs a full refresh, which no retry can stand in for.
 pub(super) fn sources_changed(error: &SparkError) -> bool {
-    matches!(error, SparkError::Structured(error) if error.condition == SOURCES_CHANGED)
+    matches!(error, SparkError::Structured(error)
+        if error.condition == SOURCES_CHANGED || error.condition == TIME_TRAVEL)
 }
 
 pub(super) struct AppendFlow<'a> {
@@ -1006,11 +1148,16 @@ pub(super) async fn run(
         Checkpoint::open(ctx, run.storage, run.destination, &run.flow.name, run.reset).await?;
     let mut state = checkpoint.load().await?;
     let replay = state.pending.is_some();
-    let mut batch = state.pending.take().unwrap_or_default();
+    let mut batch = Batch {
+        files: state.pending.take().unwrap_or_default(),
+        delta: state.pending_delta.take().unwrap_or_default(),
+        delta_rows: false,
+    };
     let mut streams = BTreeMap::new();
     bind_streams(
         ctx,
         &config,
+        run.flow,
         run.graph,
         &scope,
         names,
@@ -1020,7 +1167,7 @@ pub(super) async fn run(
         0,
     )
     .await?;
-    let sources = batch.keys().cloned().collect::<BTreeSet<_>>();
+    let sources = batch.sources();
     if !state.sources.is_empty() && state.sources != sources {
         return Err(sources_changed_error(run.flow));
     }
@@ -1041,11 +1188,18 @@ pub(super) async fn run(
             fields.iter().map(|field| field.name().clone()).collect()
         })
     };
-    if !replay && batch.values().all(Vec::is_empty) {
+    if !replay && !batch.has_rows() {
+        // Commits without rows still count as read, and a first run still
+        // records where its source starts.
+        if batch.delta.values().any(Option::is_some) {
+            advance_delta(&mut state, batch.delta);
+            checkpoint.store(&state).await?;
+        }
         return Ok(());
     }
     let write = pad_dropped_columns(ctx, run.destination, run.write, &outputs).await?;
-    state.pending = Some(batch);
+    state.pending = Some(batch.files);
+    state.pending_delta = Some(batch.delta);
     checkpoint.store(&state).await?;
     match windowed {
         Some(windowed) => {
@@ -1072,8 +1226,18 @@ pub(super) async fn run(
     for (source, files) in state.pending.take().unwrap_or_default() {
         state.seen.entry(source).or_default().extend(files);
     }
+    let ranges = state.pending_delta.take().unwrap_or_default();
+    advance_delta(&mut state, ranges);
     state.batches += 1;
     checkpoint.store(&state).await
+}
+
+fn advance_delta(state: &mut FlowState, ranges: BTreeMap<String, Option<DeltaStreamRange>>) {
+    for (source, range) in ranges {
+        if let Some(range) = range {
+            state.delta.insert(source, range.next_offset());
+        }
+    }
 }
 
 /// A streaming table keeps a column its query no longer produces, so new rows
@@ -1154,7 +1318,7 @@ async fn run_windowed(
     };
     let mut rows = LogicalPlanBuilder::from(on_time);
     if !state.retained.is_empty() {
-        let source = table_source(ctx, &windowed.source).await?;
+        let empty = Arc::new(new_rows.schema().as_arrow().clone());
         let retained = source_plan(
             ctx,
             &config,
@@ -1163,8 +1327,8 @@ async fn run_windowed(
                 location: String::new(),
                 partitions: BTreeSet::new(),
                 options: vec![],
-                schema: spec_schema(&source.empty)?,
-                empty: source.empty.clone(),
+                schema: spec_schema(&empty)?,
+                empty,
             },
             &state.retained,
         )

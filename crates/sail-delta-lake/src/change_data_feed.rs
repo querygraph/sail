@@ -111,11 +111,45 @@ impl TableSource for ChangeDataFeedSource {
 }
 
 impl ChangeDataFeedSource {
+    /// Files read as inserts at the snapshot's version, which is how a stream
+    /// of changes starts.
+    pub(crate) fn from_snapshot(
+        snapshot: Arc<DeltaSnapshot>,
+        log_store: LogStoreRef,
+        files: Vec<Add>,
+        timestamp: i64,
+    ) -> Result<Self> {
+        validate_schema(snapshot.schema())?;
+        let changes = (!files.is_empty())
+            .then(|| ChangeFiles {
+                snapshot: snapshot.clone(),
+                files,
+                exclude: None,
+                change_type: Some("insert"),
+                timestamp,
+            })
+            .into_iter()
+            .collect();
+        Ok(Self {
+            schema: feed_schema(snapshot.schema()),
+            snapshot,
+            log_store,
+            changes,
+        })
+    }
+
+    pub(crate) fn has_changes(&self) -> bool {
+        !self.changes.is_empty()
+    }
+
     pub(crate) async fn try_new(
         snapshot: Arc<DeltaSnapshot>,
         log_store: LogStoreRef,
         options: &DeltaReadOptions,
     ) -> Result<Self> {
+        if options.stream_schema_only {
+            return Self::from_snapshot(snapshot, log_store, vec![], 0);
+        }
         if options.version_as_of.is_some() || options.timestamp_as_of.is_some() {
             return plan_err!("Change data feed cannot be combined with time travel options");
         }
@@ -599,7 +633,7 @@ impl ChangeDataFeedSource {
     }
 }
 
-fn validate_read_schema(historical: &Schema, read: &Schema, version: i64) -> Result<()> {
+pub(crate) fn validate_read_schema(historical: &Schema, read: &Schema, version: i64) -> Result<()> {
     for field in historical.fields() {
         let compatible = read
             .field_with_name(field.name())

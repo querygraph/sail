@@ -143,6 +143,7 @@ impl ExtensionPlanner for DeltaPhysicalPlanner {
             snapshot.load_config().require_files,
             source.file_selection(),
         ) {
+            (_, DeltaFileSelection::Files(files)) => DeltaFileSource::Eager(files.clone()),
             (true, DeltaFileSelection::Snapshot) => DeltaFileSource::Eager(snapshot.shared_adds()),
             (true, DeltaFileSelection::Selected(indices)) => {
                 let files = indices
