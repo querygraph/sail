@@ -284,7 +284,7 @@ def test_interrupting_a_run_cancels_the_operation_and_not_the_flows(suite):
 @pytest.mark.xfail(
     not is_jvm_spark(),
     strict=True,
-    reason="depends on the session lifecycle change: removing a session cancels its flows, which then fail and retry",
+    reason="Sail cancels the flows of a released session, and Spark lets the run finish",
 )
 def test_releasing_a_session_lets_its_run_finish(suite, remote):
     """TriggeredGraphExecutionSuite:551: the other way a client can try to stop a run."""

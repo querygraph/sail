@@ -12,7 +12,6 @@ from uuid import uuid4
 import grpc
 import pytest
 from google.protobuf import any_pb2
-from pysail.testing.spark.utils.common import is_jvm_spark
 from pyspark.errors.exceptions import connect as errors
 from pyspark.pipelines.spark_connect_graph_element_registry import SparkConnectGraphElementRegistry
 from pyspark.pipelines.spark_connect_pipeline import create_dataflow_graph, start_run
@@ -352,11 +351,6 @@ def test_closing_a_session_ends_its_run(audit):
     assert not any("Run is COMPLETED" in message for message in seen), seen
 
 
-@pytest.mark.xfail(
-    not is_jvm_spark(),
-    strict=True,
-    reason="depends on the session lifecycle change: the stream of a released session ends without an error",
-)
 def test_closing_a_session_fails_the_stream_of_its_run(audit):
     """SparkConnectSessionManagerSuite:158: the client reading the run gets an error."""
     seen, failure = release_during_a_run(audit)
