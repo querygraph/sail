@@ -9,6 +9,7 @@ use datafusion_common::{DataFusionError, Result, plan_err};
 use futures::StreamExt;
 use object_store::path::Path;
 use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, PutOptions};
+use sha2::{Digest, Sha256};
 use url::Url;
 
 use crate::delta_log::{StorageConfig, get_object_store_from_context};
@@ -17,6 +18,15 @@ use crate::table::{create_logstore_with_object_store, open_table_with_object_sto
 
 fn external<E: std::error::Error + Send + Sync + 'static>(error: E) -> DataFusionError {
     DataFusionError::External(Box::new(error))
+}
+
+/// What ratification binds a staged entry by: its exact bytes.
+pub(crate) fn action_digest(staged: &[u8]) -> String {
+    let hash: String = Sha256::digest(staged)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("sha256:{hash}")
 }
 
 /// The table's immutable identity and published head, or `None` for a table
@@ -56,14 +66,16 @@ pub async fn table_state(
     )))
 }
 
-/// Publish a ratified staged entry. Publishing it twice is a no-op; a
-/// different entry already at that version means something wrote the log
-/// outside the authority, and is refused.
+/// Publish a ratified staged entry, which must still be the bytes that were
+/// ratified. Publishing it twice is a no-op; a different entry already at
+/// that version means something wrote the log outside the authority, and is
+/// refused.
 pub async fn publish_ratified(
     context: &Arc<TaskContext>,
     table_url: &Url,
     version: i64,
     staged_path: &str,
+    ratified_digest: &str,
 ) -> Result<()> {
     let store = get_object_store_from_context(context, table_url)?;
     // Log paths are relative to the table root.
@@ -77,6 +89,11 @@ pub async fn publish_ratified(
         .bytes()
         .await
         .map_err(external)?;
+    if action_digest(&bytes) != ratified_digest {
+        return plan_err!(
+            "the staged entry for log version {version} is not the one the authority ratified"
+        );
+    }
     let published = commit_path(version);
     let options = PutOptions {
         mode: PutMode::Create,
@@ -102,5 +119,19 @@ pub async fn publish_ratified(
             }
         }
         Err(error) => Err(external(error)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_digest_is_of_the_bytes_and_names_its_algorithm() {
+        assert_eq!(
+            action_digest(b""),
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_ne!(action_digest(b"{\"add\":1}"), action_digest(b"{\"add\":2}"));
     }
 }

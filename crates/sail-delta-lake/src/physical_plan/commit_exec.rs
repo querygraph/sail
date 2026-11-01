@@ -1014,9 +1014,17 @@ impl ExecutionPlan for DeltaCommitExec {
                 .into_staged_commit_future_with_catalog_latest_version(version)
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                let bytes = log_store
+                    .object_store(None)
+                    .get(&staged.staged_path)
+                    .await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?
+                    .bytes()
+                    .await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
                 let effect = FencedEffect::Data {
                     version: staged.version,
-                    action_digest: format!("{}:{}", staged.file_name, staged.file_size),
+                    action_digest: crate::fenced::action_digest(&bytes),
                     staged_path: staged.staged_path.to_string(),
                 };
                 match authority.0.ratify(fence, &effect).await? {

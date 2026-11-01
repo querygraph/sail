@@ -392,7 +392,14 @@ async fn publish_receipts<S: Store>(
             })?;
         let published = i64::try_from(ratified_version)
             .map_err(|_| SparkError::internal("Delta version overflow"))?;
-        publish_ratified(&ctx.task_ctx(), &table.url, published, &commit.staged_path).await?;
+        publish_ratified(
+            &ctx.task_ctx(),
+            &table.url,
+            published,
+            &commit.staged_path,
+            &commit.action_digest,
+        )
+        .await?;
     }
     Ok(())
 }
