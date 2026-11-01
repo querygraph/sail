@@ -302,6 +302,12 @@ impl JobRunner for LocalJobRunner {
     async fn stop(&self) -> Result<()> {
         self.stop_jobs().await
     }
+
+    /// Checkpoint writers run as jobs of this runner, with their storage
+    /// operations registered in the job's resource scope.
+    fn confirms_checkpoint_effects(&self) -> bool {
+        true
+    }
 }
 
 fn panic_error(operation: &str, payload: Box<dyn Any + Send>) -> DataFusionError {
@@ -316,5 +322,6 @@ fn panic_error(operation: &str, payload: Box<dyn Any + Send>) -> DataFusionError
 #[cfg(test)]
 mod tests;
 
+mod checkpoint_effects;
 mod preparation;
 pub use preparation::LocalJobPreparation;

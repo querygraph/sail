@@ -100,8 +100,11 @@ impl DriverRegistry {
             .ok_or_else(|| ExecutionError::InvalidArgument(format!("driver {driver_id} not found")))
     }
 
-    pub fn drain(&mut self) -> impl Iterator<Item = (DriverId, DriverHandle)> + '_ {
-        self.drivers.drain()
+    pub fn handles(&self) -> Vec<(DriverId, DriverHandle)> {
+        self.drivers
+            .iter()
+            .map(|(driver_id, driver)| (*driver_id, driver.clone()))
+            .collect()
     }
 }
 

@@ -14,7 +14,7 @@ use sail_common::actor::ActorHandle;
 use sail_common::config::{AppConfig, ExecutionMode};
 use sail_common::runtime::RuntimeHandle;
 use sail_common_datafusion::session::activity::ActivityTracker;
-use sail_common_datafusion::session::job::{JobRunner, JobService};
+use sail_common_datafusion::session::job::JobService;
 use sail_common_datafusion::session::repartition::RepartitionBufferConfig;
 use sail_delta_lake::session_extension::DeltaTableCache;
 use sail_physical_optimizer::{PhysicalOptimizerOptions, get_physical_optimizers};
@@ -32,7 +32,9 @@ pub struct ServerSessionInfo {
     pub session_id: String,
     pub user_id: String,
     pub session_manager: ActorHandle<SessionManagerActor>,
-    pub job_runner: Option<Box<dyn JobRunner>>,
+    /// The session manager retains this service, so it can stop the job runner
+    /// even if creating the session fails after this has been taken.
+    pub job_service: Option<Arc<JobService>>,
 }
 
 pub trait ServerSessionMutator: Send {
@@ -103,8 +105,8 @@ impl SessionFactory<ServerSessionInfo> for ServerSessionFactory {
 
 impl ServerSessionFactory {
     fn create_session_config(&mut self, info: &mut ServerSessionInfo) -> Result<SessionConfig> {
-        let Some(job_runner) = info.job_runner.take() else {
-            return internal_err!("job runner is missing from server session information");
+        let Some(job_service) = info.job_service.take() else {
+            return internal_err!("job service is missing from server session information");
         };
         let mut config = SessionConfig::new()
             // We do not use the DataFusion catalog and schema since we manage catalogs ourselves.
@@ -118,7 +120,7 @@ impl ServerSessionFactory {
                 &self.memory_catalogs,
             )?))
             .with_extension(Arc::new(ActivityTracker::new()))
-            .with_extension(Arc::new(JobService::new(job_runner)))
+            .with_extension(job_service)
             .with_extension(Arc::new(RemoteCheckpointRegistry::new(
                 self.config.execution.checkpoint.path.clone(),
                 info.session_id.clone(),

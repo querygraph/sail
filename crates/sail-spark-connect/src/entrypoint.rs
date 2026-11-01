@@ -5,6 +5,7 @@ use sail_common::actor::ActorSystem;
 use sail_common::config::{AppConfig, GRPC_MAX_MESSAGE_LENGTH_DEFAULT};
 use sail_common::runtime::RuntimeHandle;
 use sail_common::server::ServerBuilder;
+use sail_session::session_manager::serve_until_stopped;
 pub use sail_session::session_manager::{ServerSessionFactoryFn, SessionManagerOptions};
 use tokio::net::TcpListener;
 use tonic::codec::CompressionEncoding;
@@ -50,24 +51,24 @@ where
     let session_manager =
         create_spark_session_manager_with_factory(config, runtime, &mut system, session_factory_fn)
             .await?;
-    let result = {
-        let server = SparkConnectServer::new(session_manager.clone());
-        let service = SparkConnectServiceServer::new(server)
-            // The original Spark Connect server seems to have configuration for inbound (decoding) message size only.
-            // .max_encoding_message_size(GRPC_MAX_MESSAGE_LENGTH_DEFAULT)
-            .max_decoding_message_size(GRPC_MAX_MESSAGE_LENGTH_DEFAULT)
-            .accept_compressed(CompressionEncoding::Gzip)
-            .accept_compressed(CompressionEncoding::Zstd)
-            .send_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Zstd);
-        ServerBuilder::new("sail_spark_connect", Default::default())
-            .add_service(service, Some(crate::spark::connect::FILE_DESCRIPTOR_SET))
-            .await
-            .serve(listener, signal)
+    let server = SparkConnectServer::new(session_manager.clone());
+    let service = SparkConnectServiceServer::new(server)
+        // The original Spark Connect server seems to have configuration for inbound (decoding) message size only.
+        // .max_encoding_message_size(GRPC_MAX_MESSAGE_LENGTH_DEFAULT)
+        .max_decoding_message_size(GRPC_MAX_MESSAGE_LENGTH_DEFAULT)
+        .accept_compressed(CompressionEncoding::Gzip)
+        .accept_compressed(CompressionEncoding::Zstd)
+        .send_compressed(CompressionEncoding::Gzip)
+        .send_compressed(CompressionEncoding::Zstd);
+    let builder = ServerBuilder::new("sail_spark_connect", Default::default())
+        .add_service(service, Some(crate::spark::connect::FILE_DESCRIPTOR_SET))
+        .await;
+    serve_until_stopped(&session_manager, &mut system, signal, |drain| async move {
+        builder
+            .serve(listener, drain)
             .await
             .map_err(|e| std::io::Error::other(e.to_string()))
-    };
-    session_manager.shutdown().await?;
-    system.join().await;
-    result.map_err(Into::into)
+    })
+    .await
+    .map_err(|e| -> Box<dyn std::error::Error> { e })
 }

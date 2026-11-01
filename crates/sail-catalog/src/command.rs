@@ -3,14 +3,17 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::execution::TaskContext;
 use datafusion::execution::cache::TableScopedPath;
+use datafusion_common::DataFusionError;
 use sail_common_datafusion::array::serde::ArrowSerializer;
 use sail_common_datafusion::catalog::{FunctionStatus, LakehouseOperation, TableKind};
 use sail_common_datafusion::datasource::{DataSourceRegistry, is_lakehouse_format};
+use sail_common_datafusion::error::CommitStateUnknownError;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::lakesource::{
     LakeSourceCreateTableColumn, LakeSourceCreateTableInfo, LakeSourceCreateTableResult,
 };
 use sail_common_datafusion::session::plan::PlanService;
+use sail_common_datafusion::task_resources::TaskResourceScope;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CatalogError, CatalogObject, CatalogResult};
@@ -173,6 +176,39 @@ pub enum CatalogCommand {
 pub enum CatalogTableFunction {
     // We do not support any kind of table functions yet.
     // PySpark UDTF is registered as a scalar UDF.
+}
+
+/// Run blocking work that cannot be canceled. It is owned by the job if there is one, so stopping
+/// the job waits for the work to finish, even if the caller of this function has been dropped.
+async fn run_owned_blocking<F>(ctx: &TaskContext, work: F) -> CatalogResult<()>
+where
+    F: FnOnce() -> CatalogResult<()> + Send + 'static,
+{
+    let run = async move {
+        tokio::task::spawn_blocking(work)
+            .await
+            .map_err(|e| CatalogError::External(format!("TRUNCATE TABLE task failed: {e}")))?
+    };
+    match ctx.extension::<TaskResourceScope>() {
+        Ok(resources) => resources
+            .run_mutation(move |_| async move { Ok(run.await) })
+            .await
+            .map_err(truncate_owner_error)?,
+        Err(_) => run.await,
+    }
+}
+
+/// An interrupted owner means that the truncation may have happened: do not report it as a
+/// failure that can be retried. A refused admission is an ordinary error, since nothing ran.
+fn truncate_owner_error(error: DataFusionError) -> CatalogError {
+    let unknown = matches!(&error, DataFusionError::Collection(errors) if errors.iter().any(|x| {
+        matches!(x, DataFusionError::External(e) if e.is::<CommitStateUnknownError>())
+    }));
+    if unknown {
+        CatalogError::CommitStateUnknown(CommitStateUnknownError(error.to_string()))
+    } else {
+        CatalogError::External(error.to_string())
+    }
 }
 
 impl CatalogCommand {
@@ -880,7 +916,7 @@ impl CatalogCommand {
                         )));
                     }
                     let listing_dir = dir.clone();
-                    tokio::task::spawn_blocking(move || -> CatalogResult<()> {
+                    let truncate = move || -> CatalogResult<()> {
                         // Like Spark, recreate the directory if it is gone.
                         if !dir.exists() {
                             return std::fs::create_dir_all(&dir).map_err(|e| {
@@ -920,11 +956,8 @@ impl CatalogCommand {
                                 dir.display()
                             ))
                         })
-                    })
-                    .await
-                    .map_err(|e| {
-                        CatalogError::External(format!("TRUNCATE TABLE task failed: {e}"))
-                    })??;
+                    };
+                    run_owned_blocking(ctx, truncate).await?;
                     // Spark's `TruncateTableCommand` refreshes the table after the
                     // data is gone. Sail serves directory listings from the runtime's
                     // list-files cache, so drop this directory's entry; otherwise a
@@ -1431,6 +1464,7 @@ struct DescribeFunctionRow {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use async_trait::async_trait;
     use datafusion::catalog::Session;
@@ -1780,6 +1814,88 @@ mod tests {
             unreachable!();
         };
         manager
+    }
+
+    #[tokio::test]
+    async fn owned_blocking_work_outlives_its_caller_and_holds_the_drain() -> CatalogResult<()> {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use sail_common_datafusion::task_resources::ScopedTaskContext;
+        use tokio::runtime::Handle;
+
+        let task = SessionContext::new().task_ctx();
+        let scoped = ScopedTaskContext::new(&task, Handle::current());
+        let (started_tx, started) = tokio::sync::oneshot::channel();
+        let (release, held) = mpsc::channel::<()>();
+        let (finished_tx, finished) = mpsc::channel();
+        let context = scoped.context.clone();
+        let caller = tokio::spawn(async move {
+            run_owned_blocking(context.as_ref(), move || {
+                let _ = started_tx.send(());
+                let _ = held.recv();
+                let _ = finished_tx.send(());
+                Ok(())
+            })
+            .await
+        });
+        started
+            .await
+            .map_err(|e| CatalogError::External(e.to_string()))?;
+        caller.abort();
+        assert!(caller.await.is_err_and(|e| e.is_cancelled()));
+
+        let mut drain = Box::pin(scoped.resources.drain());
+        let pending = tokio::time::timeout(Duration::from_millis(50), drain.as_mut()).await;
+        assert!(pending.is_err(), "the drain did not wait for the work");
+        release
+            .send(())
+            .map_err(|e| CatalogError::External(e.to_string()))?;
+        let report = tokio::time::timeout(Duration::from_secs(10), drain)
+            .await
+            .map_err(|e| CatalogError::External(e.to_string()))?
+            .map_err(|e| CatalogError::External(e.to_string()))?;
+        assert!(report.is_clean());
+        assert_eq!(report.registered, 1);
+        // The work ran to the end, rather than being abandoned with its caller.
+        assert!(finished.try_recv().is_ok());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn owned_blocking_work_does_not_start_in_a_sealed_scope() -> CatalogResult<()> {
+        use sail_common_datafusion::task_resources::ScopedTaskContext;
+        use tokio::runtime::Handle;
+
+        let task = SessionContext::new().task_ctx();
+        let scoped = ScopedTaskContext::new(&task, Handle::current());
+        scoped
+            .resources
+            .cancel()
+            .map_err(|e| CatalogError::External(e.to_string()))?;
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = ran.clone();
+        let result = run_owned_blocking(scoped.context.as_ref(), move || {
+            flag.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .await;
+        // Nothing ran, so this is an ordinary error and not an unknown commit.
+        assert!(matches!(result, Err(CatalogError::External(_))));
+        assert!(!ran.load(Ordering::SeqCst));
+        Ok(())
+    }
+
+    #[test]
+    fn an_interrupted_owner_is_an_unknown_commit() {
+        let error = DataFusionError::Collection(vec![
+            DataFusionError::External(Box::new(CommitStateUnknownError("lost".into()))),
+            DataFusionError::Plan("interrupted".into()),
+        ]);
+        assert!(matches!(
+            truncate_owner_error(error),
+            CatalogError::CommitStateUnknown(_)
+        ));
     }
 
     #[tokio::test]

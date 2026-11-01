@@ -10,6 +10,8 @@ from pyspark.pipelines.graph_element_registry import graph_element_registration_
 from pyspark.pipelines.spark_connect_graph_element_registry import SparkConnectGraphElementRegistry
 from pyspark.pipelines.spark_connect_pipeline import create_dataflow_graph, start_run
 
+from pysail.testing.spark.utils.common import is_jvm_spark
+
 
 class Suite:
     def __init__(self, spark, schema, storage):
@@ -130,3 +132,26 @@ def test_a_bare_outer_is_an_alias_of_the_left_table(suite):
 def test_an_aliased_table_cannot_take_a_bare_outer(suite):
     with pytest.raises(Exception, match=r"(?i)syntax|OUTER"):
         suite.spark.sql("SELECT * FROM RANGE(1) a OUTER JOIN RANGE(1) b ON true").collect()
+
+
+def test_values_widen_a_float_and_a_decimal_to_a_double(suite):
+    frame = suite.spark.sql("SELECT * FROM VALUES (1, CAST('NaN' AS DOUBLE)), (2, 2.5) AS t(a, b) ORDER BY a")
+    assert frame.schema["b"].dataType.simpleString() == "double"
+    assert frame.collect()[1].b == 2.5  # noqa: PLR2004
+    frame = suite.spark.sql("SELECT * FROM VALUES (1, 1.5F), (2, 2.5) AS t(a, b) ORDER BY a")
+    assert frame.schema["b"].dataType.simpleString() == "double"
+
+
+def test_values_with_arrays_that_differ_in_nullability(suite):
+    rows = suite.spark.sql(
+        "SELECT * FROM VALUES (1, array(CAST('NaN' AS FLOAT), 1.0F)), (2, array(1.0F, 2.0F)) AS t(id, c) ORDER BY id"
+    ).collect()
+    assert rows[1].c == [1.0, 2.0]
+
+
+@pytest.mark.skipif(is_jvm_spark(), reason="needs a server with delta-spark on its classpath")
+def test_a_delta_write_statement_as_select_has_no_rows(suite, tmp_path):
+    location = (tmp_path / "ctas").as_uri()
+    frame = suite.spark.sql(f"CREATE TABLE d USING delta LOCATION '{location}' AS SELECT 1 AS id")
+    assert frame.collect() == []
+    assert frame.schema.names == []

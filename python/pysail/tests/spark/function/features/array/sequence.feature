@@ -237,7 +237,6 @@ Feature: sequence output schema
         | null-step  | NULL      |
         | null-stop  | NULL      |
 
-    @sail-bug
     Scenario: an earlier foldable NULL suppresses a later foldable sequence error
       Given config spark.sql.ansi.enabled = true
       When query
@@ -251,7 +250,6 @@ Feature: sequence output schema
         | result |
         | NULL   |
 
-    @sail-bug
     Scenario: sequence reports the first of two foldable errors
       Given config spark.sql.ansi.enabled = true
       When query

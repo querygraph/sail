@@ -46,6 +46,7 @@ pub struct RemoteCheckpointRegistry {
     path: Option<String>,
     session_id: String,
     closed: AtomicBool,
+    used: AtomicBool,
     relations: RwLock<HashMap<String, Arc<RemoteCheckpointDescriptor>>>,
 }
 
@@ -55,6 +56,7 @@ impl RemoteCheckpointRegistry {
             path,
             session_id,
             closed: AtomicBool::new(false),
+            used: AtomicBool::new(false),
             relations: RwLock::new(HashMap::new()),
         }
     }
@@ -72,8 +74,15 @@ impl RemoteCheckpointRegistry {
             ));
         }
         let root = self.resolve_root(runtime_env)?;
+        // A writer may hold the path from now on, whether or not it publishes a descriptor.
+        self.used.store(true, Ordering::Release);
         let prefix = self.session_prefix(root.prefix()).join(relation_id);
         Ok((root.object_store_url().clone(), prefix))
+    }
+
+    /// Whether this session may have written to checkpoint storage.
+    pub fn may_have_storage(&self) -> bool {
+        self.used.load(Ordering::Acquire)
     }
 
     pub fn insert(&self, descriptor: RemoteCheckpointDescriptor) -> Result<()> {

@@ -9,14 +9,20 @@ Feature: Delta Lake operationMetrics in commitInfo
         DROP TABLE IF EXISTS delta_op_metrics_collect
         """
 
-    Scenario: CREATE TABLE AS SELECT result can be collected
-      When query template
+    Scenario: CREATE TABLE AS SELECT writes its rows
+      Given statement template
         """
         CREATE TABLE delta_op_metrics_collect
         USING DELTA LOCATION {{ location.sql }}
         AS SELECT * FROM VALUES (1, 'a'), (2, 'b') AS t(id, value)
         """
-      Then query result collected is empty
+      When query
+        """
+        SELECT count(*) AS count FROM delta_op_metrics_collect
+        """
+      Then query result collected
+        | count |
+        | 2     |
 
   Rule: WRITE operationMetrics
 
