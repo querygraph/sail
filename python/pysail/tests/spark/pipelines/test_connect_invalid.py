@@ -160,7 +160,6 @@ def test_missing_attribute_in_the_schema(suite):
     assert "`z`" in event
 
 
-@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="Sail reports UNRESOLVED_COLUMN for any unresolved USING column")
 def test_joining_on_a_column_with_different_names(suite):
     messages, _ = suite.rejects(
         """

@@ -178,8 +178,27 @@ impl PlanResolver<'_> {
         using
             .into_iter()
             .map(|name| {
-                let left_column = self.resolve_one_column(left.schema(), name.as_ref(), state)?;
-                let right_column = self.resolve_one_column(right.schema(), name.as_ref(), state)?;
+                let column = |plan: &LogicalPlan, side: &str| {
+                    self.resolve_optional_column(plan.schema(), name.as_ref(), None, state)?
+                        .ok_or_else(|| {
+                            let columns = plan
+                                .schema()
+                                .fields()
+                                .iter()
+                                .filter_map(|field| state.get_field_info(field.name()).ok())
+                                .map(|field| format!("`{}`", field.name()))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            PlanError::AnalysisError(format!(
+                                "[UNRESOLVED_USING_COLUMN_FOR_JOIN] USING column `{}` cannot be \
+                                 resolved on the {side} side of the join. The {side}-side columns: \
+                                 [{columns}].",
+                                name.as_ref() as &str
+                            ))
+                        })
+                };
+                let left_column = column(left, "left")?;
+                let right_column = column(right, "right")?;
                 Ok((name.into(), (left_column, right_column)))
             })
             .collect()

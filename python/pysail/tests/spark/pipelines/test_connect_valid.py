@@ -134,7 +134,7 @@ def test_dependencies(suite):
     assert suite.rows("c") == [(1,), (2,), (3,)]
 
 
-@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="Sail parses a bare OUTER JOIN where Spark reads OUTER as an alias")
+@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="OUTER cannot be a table alias in Sail, so a bare OUTER JOIN is refused")
 def test_multi_hop_schema_merging(suite):
     # `OUTER` is an alias of the VALUES relation here, so this is an inner join on false.
     suite.run(

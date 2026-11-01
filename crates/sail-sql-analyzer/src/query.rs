@@ -1025,6 +1025,13 @@ fn query_plan_with_join(left: spec::QueryPlan, join: TableJoin) -> SqlResult<spe
         Some(JoinOperator::RightOuter(_, _)) | Some(JoinOperator::Right(_)) => {
             spec::JoinType::RightOuter
         }
+        // A bare `t OUTER JOIN d` is not a join type in Spark, where OUTER is an
+        // alias of `t`. `NATURAL OUTER JOIN` is a Sail extension.
+        Some(JoinOperator::Outer(_)) if natural.is_none() => {
+            return Err(SqlError::invalid(
+                "OUTER JOIN without NATURAL, LEFT, RIGHT or FULL",
+            ));
+        }
         Some(JoinOperator::FullOuter(_, _))
         | Some(JoinOperator::Full(_))
         | Some(JoinOperator::Outer(_)) => spec::JoinType::FullOuter,
