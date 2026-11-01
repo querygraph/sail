@@ -169,6 +169,31 @@ async fn with_output_schemas(
     Ok(schemas)
 }
 
+/// What the flows of `target` write, in flow order: an AutoCDC flow writes
+/// `AutoCdcMergeFlow.schema`, not its query's schema, and deriving that runs
+/// the schema validators, so a dry run reports what a run would.
+pub(in crate::pipelines) async fn flow_schemas(
+    ctx: &SessionContext,
+    graph: &GraphDefinition,
+    target: &Name,
+    plans: &[LogicalPlan],
+) -> SparkResult<Vec<SchemaRef>> {
+    let flows = graph.flows.iter().filter(|flow| &flow.target == target);
+    let mut schemas = Vec::with_capacity(plans.len());
+    for (flow, plan) in flows.zip(plans) {
+        let schema: SchemaRef = Arc::new(plan.schema().as_arrow().clone());
+        schemas.push(match &flow.auto_cdc {
+            Some(args) => {
+                let config = ctx.extension::<SparkSession>()?.plan_config()?;
+                let case = case_of(&config);
+                flow_output_schema(ctx, config, args, case, &schema).await?
+            }
+            None => schema,
+        });
+    }
+    Ok(schemas)
+}
+
 /// What each AutoCDC flow reads, by flow name.
 #[derive(Default)]
 struct FlowSources(

@@ -455,3 +455,53 @@ def test_an_alter_of_an_enrolled_table_is_refused(space, pipeline_factory, broke
     run(space, pipeline_factory, broker.url, BASE)
     with pytest.raises(FAILURE, match="enrolled"):
         space.sql("ALTER TABLE target SET TBLPROPERTIES ('owner' = 'me')").collect()
+
+
+@pytest.mark.parametrize(
+    ("keys", "columns", "condition"),
+    [
+        ("missing", None, "AUTOCDC_"),
+        ("id", ["id", "seq", "missing"], "AUTOCDC_"),
+    ],
+)
+def test_a_dry_run_reports_what_a_run_would(space, pipeline_factory, tmp_path, keys, columns, condition):
+    path = str(tmp_path / "landing")
+    space.createDataFrame([(1, "alice", 1)], BASE).write.parquet(path)
+    _, registry, start = pipeline_factory()
+    with graph_element_registration_context(registry):
+
+        @dp.temporary_view
+        def changes():
+            return space.readStream.format("parquet").schema(BASE).load(path)
+
+        dp.create_streaming_table("target", format="delta")
+        dp.create_auto_cdc_flow(
+            target="target", source="changes", keys=[keys], sequence_by="seq", column_list=columns
+        )
+    with pytest.raises(FAILURE, match=condition):
+        start(dry=True)
+    assert not space.catalog.tableExists("target")
+
+
+def test_a_view_downstream_of_a_target_sees_what_the_flow_writes(space, pipeline_factory, tmp_path):
+    path = str(tmp_path / "landing")
+    space.createDataFrame([(1, "alice", 1)], BASE).write.parquet(path)
+    _, registry, start = pipeline_factory()
+    with graph_element_registration_context(registry):
+
+        @dp.temporary_view
+        def changes():
+            return space.readStream.format("parquet").schema(BASE).load(path)
+
+        dp.create_streaming_table("target", format="delta")
+        dp.create_auto_cdc_flow(
+            target="target", source="changes", keys=["id"], sequence_by="seq", except_column_list=["name"]
+        )
+
+        @dp.materialized_view
+        def downstream():
+            return space.read.table("target").select("id", "__spark_autocdc_metadata.upsertSequence")
+
+    start()
+    assert rows(space, "id", "upsertSequence", table="downstream") == [(1, 1)]
+    space.sql("DROP TABLE IF EXISTS downstream")

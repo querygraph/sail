@@ -33,7 +33,7 @@ mod schema;
 mod tests;
 mod write;
 
-pub(super) use execute::{CdcRun, admitted};
+pub(super) use execute::{CdcRun, admitted, flow_schemas};
 use sail_common::spec;
 use sail_sql_analyzer::expression::from_ast_object_name;
 use sail_sql_analyzer::parser::parse_object_name;
