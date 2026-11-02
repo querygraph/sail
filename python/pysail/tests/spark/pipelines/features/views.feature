@@ -51,7 +51,7 @@ Feature: Persistent pipeline views
       | 3  |
       | 4  |
 
-  Scenario: Persistent views retain the SQL file namespace and column comments
+  Scenario: Persistent views retain the SQL file namespace and ignore declared columns
     Given statement
       """
       CREATE DATABASE other
@@ -62,7 +62,7 @@ Feature: Persistent pipeline views
       """
     Given pipeline SQL file other.sql
       """
-      USE other;
+      USE SCHEMA other;
       CREATE VIEW output(number COMMENT 'identifier') COMMENT 'persisted comment'
       AS SELECT value FROM input;
       """
@@ -76,15 +76,15 @@ Feature: Persistent pipeline views
       SELECT * FROM result
       """
     Then query result
-      | number |
-      | 7      |
+      | value |
+      | 7     |
     When query
       """
       DESCRIBE other.output
       """
     Then query result
-      | col_name | data_type | comment    |
-      | number   | int       | identifier |
+      | col_name | data_type | comment |
+      | value    | int       | NULL    |
     When query
       """
       DESCRIBE EXTENDED other.output
@@ -93,7 +93,7 @@ Feature: Persistent pipeline views
     Given a new declarative pipeline
     Given pipeline SQL file other.sql
       """
-      USE other;
+      USE SCHEMA other;
       CREATE VIEW output(number COMMENT 'identifier') COMMENT 'persisted comment'
       AS SELECT value FROM input;
       """
@@ -107,8 +107,8 @@ Feature: Persistent pipeline views
       SELECT * FROM other.output
       """
     Then query result
-      | number |
-      | 7      |
+      | value |
+      | 7     |
 
   Scenario: Persistent views cannot refer to private pipeline views
     Given pipeline SQL file private.sql
@@ -173,7 +173,7 @@ Feature: Persistent pipeline views
       CREATE MATERIALIZED VIEW raw(id BIGINT, missing STRING) AS SELECT * FROM range(2);
       CREATE VIEW output AS SELECT * FROM raw;
       """
-    When the pipeline fails with input schema for INSERT has 1 fields, but table schema has 2 fields
+    When the pipeline fails with (input schema for INSERT has 1 fields|column number of the existing table)
     When query
       """
       SELECT count(*) AS rows FROM output

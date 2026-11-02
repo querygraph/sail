@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use chrono::Utc;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -64,7 +65,8 @@ impl JobScheduler {
         )?;
         debug!("job {job_id} job graph \n{graph}");
 
-        let (output, stream) = build_job_output(ctx, job_id, graph.schema().clone());
+        let (output, stream) =
+            build_job_output(ctx, job_id, graph.schema().clone(), self.stopping.clone());
         let descriptor = JobDescriptor::try_new(graph, JobState::Running { output }, context)?;
         self.jobs.insert(job_id, descriptor);
 
@@ -703,6 +705,7 @@ impl JobScheduler {
     }
 
     pub fn stop(&mut self) {
+        self.stopping.store(true, Ordering::SeqCst);
         let event_reporter = self.event_reporter.clone();
         let session_id = self.options.session_id.clone();
         for (job_id, job) in self.jobs.iter_mut() {

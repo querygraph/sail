@@ -328,8 +328,9 @@ fn register_statement(graph: &mut PipelineGraph, statement: PipelineStatement) -
                 comment: definition.comment,
                 ..Default::default()
             })?;
-            let query = with_view_columns(*definition.input, definition.columns);
-            add_flow(graph, name.clone(), name, query);
+            // `SqlGraphRegistrationContext` takes the plan of a temporary view
+            // without its declared columns.
+            add_flow(graph, name.clone(), name, *definition.input);
         }
         PipelineStatement::Command(spec::CommandNode::CreateView {
             view,
@@ -340,10 +341,9 @@ fn register_statement(graph: &mut PipelineGraph, statement: PipelineStatement) -
                 output_type: Some(OutputType::MaterializedView as i32),
                 ..Default::default()
             })?;
-            definition.input = Box::new(with_view_columns(
-                *definition.input,
-                definition.columns.clone(),
-            ));
+            // `SqlGraphRegistrationContext` keeps the query of a persisted view
+            // without its declared columns, which never reach the catalog either.
+            definition.columns = None;
             add_flow(graph, name.clone(), name, *definition.input.clone());
             if let Some(output) = graph.definition.outputs.last_mut() {
                 output.view = Some(definition);
@@ -373,22 +373,6 @@ fn add_flow(
         database: graph.definition.database.clone(),
         auto_cdc: None,
     });
-}
-
-fn with_view_columns(
-    query: spec::QueryPlan,
-    columns: Option<Vec<spec::ViewColumnDefinition>>,
-) -> spec::QueryPlan {
-    match columns {
-        Some(columns) => spec::QueryPlan::new(spec::QueryNode::ToDf {
-            input: Box::new(query),
-            column_names: columns
-                .into_iter()
-                .map(|column| column.name.into())
-                .collect(),
-        }),
-        None => query,
-    }
 }
 
 /// `SqlGraphRegistrationContext`, which names the transform.

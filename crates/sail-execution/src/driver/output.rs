@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::{fmt, mem};
 
@@ -97,12 +99,20 @@ pub fn build_job_output(
     ctx: &mut ActorContext<DriverActor>,
     job_id: JobId,
     schema: SchemaRef,
+    stopping: Arc<AtomicBool>,
 ) -> (JobOutputManager, SendableRecordBatchStream) {
     let (sender, receiver) = mpsc::channel(JobOutputItem::CHANNEL_SIZE);
     let (tx, rx) = mpsc::channel(1);
     let handle = ctx.handle().clone();
+    let ended = Arc::new(AtomicBool::new(false));
+    let output = truncation_guarded(job_id, rx, ended.clone());
     ctx.spawn(async move {
         let outcome = forward_job_output(JobOutputStream::new(receiver), &tx).await;
+        // The output of a stopping driver ends because its job was abandoned,
+        // which looks the same here as the end of a finished job.
+        if outcome != JobOutputOutcome::Completed || !stopping.load(Ordering::SeqCst) {
+            ended.store(true, Ordering::SeqCst);
+        }
         // Output errors and consumer cancellation can precede terminal task updates.
         // Tell the scheduler why output ended so cleanup records the correct job status.
         // Keep `tx` alive until cleanup has been sent, before signaling EOF to the client.
@@ -112,11 +122,27 @@ pub fn build_job_output(
     });
     (
         JobOutputManager { sender },
-        Box::pin(RecordBatchStreamAdapter::new(
-            schema,
-            ReceiverStream::new(rx),
-        )),
+        Box::pin(RecordBatchStreamAdapter::new(schema, output)),
     )
+}
+
+/// The batches of `rx`, followed by an error unless `ended` says that the job
+/// output really ended. A consumer must not take a canceled job, or a forwarding
+/// task aborted with its driver, for a job that finished with fewer rows.
+fn truncation_guarded(
+    job_id: JobId,
+    rx: mpsc::Receiver<Result<RecordBatch>>,
+    ended: Arc<AtomicBool>,
+) -> impl Stream<Item = Result<RecordBatch>> {
+    let truncated = futures::stream::once(async move {
+        (!ended.load(Ordering::SeqCst)).then(|| {
+            Err(DataFusionError::Execution(format!(
+                "job {job_id} was canceled before it finished"
+            )))
+        })
+    })
+    .filter_map(std::future::ready);
+    ReceiverStream::new(rx).chain(truncated)
 }
 
 async fn forward_job_output(
@@ -309,8 +335,7 @@ impl Stream for TaskStreamWrapper {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicUsize;
 
     use datafusion::arrow::array::{ArrayRef, Int32Array};
     use futures::task::{ArcWake, waker};
@@ -327,6 +352,34 @@ mod tests {
         fn wake_by_ref(arc_self: &Arc<Self>) {
             arc_self.0.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    #[tokio::test]
+    async fn output_that_did_not_end_is_an_error() {
+        let (tx, rx) = mpsc::channel::<Result<RecordBatch>>(1);
+        drop(tx);
+        let ended = Arc::new(AtomicBool::new(false));
+        let items: Vec<_> = truncation_guarded(JobId::from(7), rx, ended)
+            .collect()
+            .await;
+        assert_eq!(items.len(), 1);
+        assert!(
+            items[0]
+                .as_ref()
+                .is_err_and(|e| e.to_string().contains("job 7 was canceled")),
+            "{items:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn output_that_ended_stays_empty() {
+        let (tx, rx) = mpsc::channel::<Result<RecordBatch>>(1);
+        drop(tx);
+        let ended = Arc::new(AtomicBool::new(true));
+        let items: Vec<_> = truncation_guarded(JobId::from(7), rx, ended)
+            .collect()
+            .await;
+        assert!(items.is_empty());
     }
 
     #[test]

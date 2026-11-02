@@ -243,7 +243,7 @@ async fn graph_persisted_view_uses_its_definition_namespace_without_catalog_publ
         .await?;
     table(&ctx, &["test_catalog", "view_db", "backing"], "namespace").await?;
     table(&ctx, &["backing"], "wrong-namespace").await?;
-    let graph = definition("USE view_db; SET spark.sql.caseSensitive=true; CREATE VIEW p AS SELECT id FROM backing; USE test_db; SET spark.sql.caseSensitive=true; CREATE MATERIALIZED VIEW target AS SELECT id FROM view_db.p").await?;
+    let graph = definition("USE SCHEMA view_db; SET spark.sql.caseSensitive=true; CREATE VIEW p AS SELECT id FROM backing; USE SCHEMA test_db; SET spark.sql.caseSensitive=true; CREATE MATERIALIZED VIEW target AS SELECT id FROM view_db.p").await?;
     let analyzed = analysis::analyze(&ctx, &graph).await?;
     let baseline = events(&trace)?.len();
     let resolved = resolve_inputs(

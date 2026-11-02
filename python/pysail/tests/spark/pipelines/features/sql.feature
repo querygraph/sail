@@ -126,22 +126,6 @@ Feature: Declarative pipeline SQL
       | 3     |
     Then pipeline dataset ordinary is not published
 
-  Scenario: Table materialization errors precede data writes
-    Given pipeline SQL file invalid_format.sql
-      """
-      CREATE MATERIALIZED VIEW a_valid AS SELECT * FROM range(2);
-      CREATE MATERIALIZED VIEW z_invalid USING missing_format AS SELECT * FROM a_valid;
-      """
-    When the pipeline fails with No data source found for: missing_format
-    Then pipeline dataset z_invalid is not published
-    When query
-      """
-      SELECT count(*) AS rows FROM a_valid
-      """
-    Then query result
-      | rows |
-      | 0    |
-
   Scenario: Dry run validates the graph without planning publication
     Given pipeline SQL file invalid_format.sql
       """
@@ -312,21 +296,27 @@ Feature: Declarative pipeline SQL
       | utc     | 12   |
       | default | 12   |
 
-  Scenario: Private views honor declared column names
+  Scenario: A bare USE is not a directive of a pipeline SQL file
+    Given pipeline SQL file bare.sql fails with PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR
+      """
+      USE other;
+      """
+
+  Scenario: Private views ignore declared column names
     Given pipeline SQL file columns.sql
       """
       CREATE TEMPORARY VIEW intermediate(value) AS SELECT id FROM range(2);
-      CREATE MATERIALIZED VIEW output AS SELECT value FROM intermediate;
+      CREATE MATERIALIZED VIEW output AS SELECT id FROM intermediate;
       """
     When the pipeline runs
     When query
       """
-      SELECT * FROM output ORDER BY value
+      SELECT * FROM output ORDER BY id
       """
     Then query result ordered
-      | value |
-      | 0     |
-      | 1     |
+      | id |
+      | 0  |
+      | 1  |
 
   Scenario Outline: Standalone flow names must have one component
     Given pipeline SQL file flow.sql fails with MULTIPART_FLOW_NAME_NOT_SUPPORTED

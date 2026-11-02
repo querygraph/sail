@@ -89,3 +89,18 @@ fn ordinary_ctas_is_rejected_only_by_pipeline_normalization() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn only_a_keyword_makes_use_a_pipeline_directive() -> Result<(), Box<dyn std::error::Error>> {
+    let Err(SqlError::AnalysisError(message)) =
+        from_ast_pipeline_statement(parse_one_statement("USE other")?)
+    else {
+        return Err("expected an unsupported USE".into());
+    };
+    assert_eq!(
+        message,
+        "Unsupported plan SetCatalogAndNamespace parsed from SQL query"
+    );
+    assert!(from_ast_pipeline_statement(parse_one_statement("USE SCHEMA other")?).is_ok());
+    Ok(())
+}

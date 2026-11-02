@@ -164,3 +164,15 @@ def test_a_location_with_one_slash_is_that_absolute_path(suite, tmp_path):
     suite.spark.sql("INSERT INTO t VALUES (1)")
     assert [row.id for row in suite.spark.table("t").collect()] == [1]
     assert [path for path in (tmp_path / "table").iterdir() if not path.name.startswith((".", "_"))]
+
+
+def test_a_missing_format_fails_before_any_table_is_written(suite):
+    """Spark wraps the error in TableMaterializationException, which reaches a client as an unknown class."""
+    sql = """
+    CREATE MATERIALIZED VIEW a_valid AS SELECT * FROM range(2);
+    CREATE MATERIALIZED VIEW z_invalid USING missing_format AS SELECT * FROM a_valid;
+    """
+    with pytest.raises(Exception, match="Failed to find the data source: missing_format"):
+        suite.run(sql=sql)
+    assert not suite.exists("z_invalid")
+    assert suite.spark.table(f"{suite.schema}.a_valid").count() == 0

@@ -57,6 +57,8 @@ fn from_ast_pipeline_statement_impl(
         Statement::InsertIntoReplaceUsing { .. } => Some("InsertIntoStatement"),
         Statement::InsertIntoAndReplace { .. } => Some("OverwriteByExpression"),
         Statement::InsertOverwriteDirectory { .. } => Some("InsertIntoDir"),
+        // Only `USE SCHEMA` and `USE CATALOG` are directives of a pipeline file.
+        Statement::UseDatabase { database: None, .. } => Some("SetCatalogAndNamespace"),
         _ => None,
     };
     if let Some(node) = unsupported {
