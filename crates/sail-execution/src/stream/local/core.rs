@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 
 use crate::error::{ExecutionError, ExecutionResult};
-use crate::id::{JobId, TaskStreamKey, TaskStreamKeyDisplay};
+use crate::id::{JobId, TaskKey, TaskStreamKey, TaskStreamKeyDisplay};
 use crate::stream::error::{TaskStreamError, TaskStreamResult};
 use crate::stream::local::memory::MemoryStream;
 use crate::stream::local::options::LocalStreamManagerOptions;
@@ -137,6 +137,28 @@ impl LocalStreamManager {
         }
     }
 
+    /// A stopped task never creates its output streams. Readers waiting for
+    /// them learn that now, with the right cause, rather than at the creation
+    /// timeout with the wrong one.
+    pub fn fail_task_streams_if_pending(&mut self, task: &TaskKey) {
+        let cause = CommonErrorCause::Execution("task or job has been canceled".to_string());
+        for (key, value) in &mut self.streams {
+            let same_task = key.job_id == task.job_id
+                && key.stage == task.stage
+                && key.partition == task.partition
+                && key.attempt == task.attempt;
+            if !same_task {
+                continue;
+            }
+            if let LocalStreamState::Pending { senders } = value {
+                Self::fail_senders(senders, &cause);
+                *value = LocalStreamState::Failed {
+                    cause: cause.clone(),
+                };
+            }
+        }
+    }
+
     pub fn fail_senders(
         senders: &[mpsc::Sender<TaskStreamResult<RecordBatch>>],
         cause: &CommonErrorCause,
@@ -155,5 +177,64 @@ impl LocalStreamManager {
         options: &LocalStreamManagerOptions,
     ) -> MemoryStream {
         MemoryStream::new(options.task_stream_buffer, replicas, senders)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::id::TaskKey;
+
+    fn stream_key(stage: usize, channel: usize) -> TaskStreamKey {
+        TaskStreamKey {
+            job_id: JobId::from(1u64),
+            stage,
+            partition: 0,
+            attempt: 0,
+            channel,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stopped_task_fails_its_pending_streams_with_the_cancel_cause() {
+        let mut manager = LocalStreamManager::new(LocalStreamManagerOptions::for_tests());
+        let (tx, mut rx) = mpsc::channel(1);
+        let (other_tx, mut other_rx) = mpsc::channel(1);
+        let stopped = stream_key(0, 2);
+        let other = stream_key(1, 0);
+        manager.streams.insert(
+            stopped.clone(),
+            LocalStreamState::Pending { senders: vec![tx] },
+        );
+        manager.streams.insert(
+            other.clone(),
+            LocalStreamState::Pending {
+                senders: vec![other_tx],
+            },
+        );
+
+        manager.fail_task_streams_if_pending(&TaskKey {
+            job_id: JobId::from(1u64),
+            stage: 0,
+            partition: 0,
+            attempt: 0,
+        });
+
+        let item = rx.recv().await;
+        assert!(
+            item.as_ref()
+                .is_some_and(|item| format!("{item:?}").contains("canceled")),
+            "{item:?}"
+        );
+        assert!(matches!(
+            manager.streams.get(&stopped),
+            Some(LocalStreamState::Failed { .. })
+        ));
+        // Another task's stream is untouched and still waits for its creator.
+        assert!(matches!(
+            manager.streams.get(&other),
+            Some(LocalStreamState::Pending { .. })
+        ));
+        assert!(other_rx.try_recv().is_err());
     }
 }

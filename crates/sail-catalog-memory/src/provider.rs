@@ -572,7 +572,7 @@ impl CatalogProvider for MemoryCatalogProvider {
         }
         let mut status = db
             .tables
-            .remove(table)
+            .remove(&object_key(table))
             .ok_or_else(|| CatalogError::NotFound(CatalogObject::Table, table.into()))?;
         status.name = destination_table.into();
         db.tables.insert(object_key(destination_table), status);

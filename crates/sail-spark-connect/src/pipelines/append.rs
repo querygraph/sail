@@ -42,13 +42,14 @@ use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 use percent_encoding::percent_decode_str;
 use sail_catalog::manager::CatalogManager;
 use sail_common::spec;
+use sail_common::utils::root_lowercase::spark_root_lowercase;
 use sail_common_datafusion::catalog::TableKind;
 use sail_common_datafusion::datasource::is_lakehouse_format;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_common_datafusion::session::job::JobService;
 use sail_common_datafusion::streaming::bounded::{
-    BoundedSource, Cursor, Incarnation, PartitionId, Range, ScanError, SourceError,
+    BoundedSource, Cursor, Incarnation, PartitionId, Range, ScanError,
 };
 use sail_delta_lake::stream::{
     DeltaStream, DeltaStreamError, DeltaStreamFailure, DeltaStreamOffset, DeltaStreamRange,
@@ -63,6 +64,7 @@ use serde::{Deserialize, Serialize};
 use super::analysis::GraphScope;
 use super::execution::run_command;
 use super::graph::{Flow, GraphDefinition, Name};
+use super::streaming::intent::PlanError as IntentPlanError;
 use crate::error::{SparkError, SparkResult, StructuredSparkError};
 use crate::spark::connect::OutputType;
 
@@ -79,6 +81,10 @@ const MAX_RANGE_ROWS: usize = 100_000;
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct FlowState {
     batches: u64,
+    /// Opened by a full refresh. While `batches` is 0 nothing is committed
+    /// under this version, and a retried refresh continues it.
+    #[serde(default)]
+    reset: bool,
     seen: BTreeMap<String, BTreeSet<String>>,
     pending: Option<BTreeMap<String, Vec<String>>>,
     /// The sources this flow reads; changing them needs a full refresh.
@@ -181,7 +187,19 @@ impl Checkpoint {
             .max();
         let version = match (latest, reset) {
             (None, _) => 0,
-            (Some(version), true) => version + 1,
+            (Some(version), true) => {
+                // A refresh that committed nothing yet is continued, not
+                // started again: a retried refresh replays its pending batch
+                // into the table that was truncated for it, instead of reading
+                // everything once more under a new version.
+                let file = directory.clone().join(version.to_string()).join(STATE_FILE);
+                let state = load_state(&store, &file).await?;
+                if state.reset && state.batches == 0 {
+                    version
+                } else {
+                    version + 1
+                }
+            }
             (Some(version), false) => version,
         };
         let version_directory = directory.join(version.to_string());
@@ -202,13 +220,7 @@ impl Checkpoint {
     }
 
     async fn load(&self) -> SparkResult<FlowState> {
-        let bytes = match self.store.get(&self.file).await {
-            Ok(result) => result.bytes().await.map_err(storage_error)?,
-            Err(object_store::Error::NotFound { .. }) => return Ok(FlowState::default()),
-            Err(error) => return Err(storage_error(error)),
-        };
-        serde_json::from_slice(&bytes)
-            .map_err(|e| SparkError::internal(format!("read {}: {e}", self.file)))
+        load_state(&self.store, &self.file).await
     }
 
     async fn store(&self, state: &FlowState) -> SparkResult<()> {
@@ -222,13 +234,22 @@ impl Checkpoint {
     }
 }
 
+async fn load_state(store: &Arc<dyn ObjectStore>, file: &Path) -> SparkResult<FlowState> {
+    let bytes = match store.get(file).await {
+        Ok(result) => result.bytes().await.map_err(storage_error)?,
+        Err(object_store::Error::NotFound { .. }) => return Ok(FlowState::default()),
+        Err(error) => return Err(storage_error(error)),
+    };
+    serde_json::from_slice(&bytes).map_err(|e| SparkError::internal(format!("read {file}: {e}")))
+}
+
 fn storage_error(error: object_store::Error) -> SparkError {
     SparkError::internal(format!("pipeline checkpoint: {error}"))
 }
 
 /// Normalize a read name the way the graph does.
 pub(super) fn qualified(scope: &GraphScope<'_>, name: &[String]) -> PlanResult<Name> {
-    let raw: Name = name.iter().map(|x| x.to_ascii_lowercase()).collect();
+    let raw: Name = name.iter().map(|x| spark_root_lowercase(x)).collect();
     if scope.graph.outputs.iter().any(|x| x.name == raw) {
         Ok(raw)
     } else {
@@ -885,13 +906,15 @@ async fn source_schema(
 }
 
 /// A source's calls block on its own runtime.
-async fn bounded_call<T: Send + 'static>(
-    call: impl FnOnce() -> Result<T, SourceError> + Send + 'static,
-) -> SparkResult<T> {
+async fn bounded_call<T, E>(call: impl FnOnce() -> Result<T, E> + Send + 'static) -> SparkResult<T>
+where
+    T: Send + 'static,
+    E: Into<SparkError> + Send + 'static,
+{
     tokio::task::spawn_blocking(call)
         .await
         .map_err(|e| SparkError::internal(format!("bounded source call: {e}")))?
-        .map_err(SparkError::from)
+        .map_err(Into::into)
 }
 
 /// The next ranges of a source, from each partition's offset towards the
@@ -903,38 +926,44 @@ fn plan_ranges(
     offsets: &BTreeMap<String, BoundedOffset>,
     frontiers: &mut BTreeMap<String, Cursor>,
     reset: bool,
-) -> Result<(Vec<Range>, bool), SourceError> {
+) -> Result<(Vec<Range>, bool), IntentPlanError> {
     let partitions = source.describe()?.partitions;
     for id in offsets.keys() {
         if !partitions.iter().any(|partition| &partition.id.0 == id) {
-            return Err(ScanError::UnknownPartition {
-                partition: PartitionId(id.clone()),
-            }
-            .into());
+            return Err(IntentPlanError::Scan(
+                ScanError::UnknownPartition {
+                    partition: PartitionId(id.clone()),
+                }
+                .into(),
+            ));
         }
     }
     let (mut ranges, mut more) = (vec![], false);
     for partition in partitions {
         let start = match offsets.get(&partition.id.0) {
             Some(offset) if offset.incarnation != partition.incarnation => {
-                return Err(ScanError::IncarnationMismatch {
-                    partition: partition.id,
-                    expected: offset.incarnation.clone(),
-                    actual: partition.incarnation,
-                }
-                .into());
+                return Err(IntentPlanError::Scan(
+                    ScanError::IncarnationMismatch {
+                        partition: partition.id,
+                        expected: offset.incarnation.clone(),
+                        actual: partition.incarnation,
+                    }
+                    .into(),
+                ));
             }
             Some(offset) => offset.cursor.clone(),
             None => {
                 let earliest = source.earliest(&partition.id)?;
                 // A full refresh cannot rebuild what the source no longer holds.
                 if reset && !source.retains_origin(&partition.id)? {
-                    return Err(ScanError::RetentionGap {
-                        partition: partition.id,
-                        expected: Cursor("the start of the partition".into()),
-                        first_retained: earliest,
-                    }
-                    .into());
+                    return Err(IntentPlanError::Scan(
+                        ScanError::RetentionGap {
+                            partition: partition.id,
+                            expected: Cursor("the start of the partition".into()),
+                            first_retained: earliest,
+                        }
+                        .into(),
+                    ));
                 }
                 earliest
             }
@@ -949,7 +978,16 @@ fn plan_ranges(
         };
         let end = source.plan_end(&partition.id, &start, &frontier, MAX_RANGE_ROWS)?;
         if end == start {
-            continue;
+            if start == frontier {
+                continue;
+            }
+            // Rows lie ahead that the source cannot plan a range over. Reading
+            // on past them would lose them, so the run fails instead.
+            return Err(IntentPlanError::Stalled {
+                partition: partition.id,
+                start,
+                frontier,
+            });
         }
         more |= end != frontier;
         ranges.push(Range {
@@ -985,7 +1023,7 @@ async fn bounded_plan(
             let (ranges, more, frontiers) = bounded_call(move || {
                 let (ranges, more) =
                     plan_ranges(planning.as_ref(), &offsets, &mut frontiers, reset)?;
-                Ok((ranges, more, frontiers))
+                Ok::<_, IntentPlanError>((ranges, more, frontiers))
             })
             .await?;
             batch.frontiers.insert(key.clone(), frontiers);
@@ -1573,11 +1611,16 @@ async fn run_batch(
             fields.iter().map(|field| field.name().clone()).collect()
         })
     };
+    state.reset |= run.reset;
     if !replay && !batch.has_rows() {
         // Commits without rows still count as read, and a first run still
-        // records where its source starts.
-        if batch.delta.values().any(Option::is_some) {
+        // records where its source starts. A full refresh is durable at once,
+        // so the next run continues it rather than the version it replaced.
+        let delta = batch.delta.values().any(Option::is_some);
+        if delta {
             advance_delta(&mut state, batch.delta);
+        }
+        if delta || run.reset {
             checkpoint.store(&state).await?;
         }
         return Ok(false);
@@ -1800,3 +1843,7 @@ async fn run_windowed(
 #[cfg(test)]
 #[path = "append_bounded_tests.rs"]
 mod bounded_tests;
+
+#[cfg(test)]
+#[path = "append_checkpoint_tests.rs"]
+mod checkpoint_tests;

@@ -7,6 +7,7 @@ use datafusion::common::DFSchema;
 use datafusion::logical_expr::{EmptyRelation, LogicalPlan};
 use datafusion::prelude::SessionContext;
 use sail_catalog::provider::CreateViewOptions;
+use sail_common::utils::root_lowercase::spark_root_lowercase;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_plan::error::{PlanError, PlanResult};
@@ -129,7 +130,7 @@ impl<'a> GraphScope<'a> {
         self.streaming.fetch_or(streaming, Ordering::Relaxed);
     }
     pub fn input_name(&self, name: &[String]) -> PlanResult<Name> {
-        let raw: Name = name.iter().map(|x| x.to_ascii_lowercase()).collect();
+        let raw: Name = name.iter().map(|x| spark_root_lowercase(x)).collect();
         if self.graph.outputs.iter().any(|x| x.name == raw) {
             Ok(raw)
         } else {
@@ -306,7 +307,7 @@ fn disambiguated(fields: Vec<String>, duplicate: &mut Option<String>) -> Vec<Str
         .into_iter()
         .enumerate()
         .map(|(index, name)| {
-            if seen.insert(name.to_ascii_lowercase()) {
+            if seen.insert(spark_root_lowercase(&name)) {
                 return name;
             }
             let renamed = format!("{DUPLICATE_COLUMN_MARK}{index}");

@@ -2,7 +2,7 @@ use std::fmt;
 
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::{DataFusionError, Result};
-use futures::future::try_join_all;
+use futures::future::{join_all, try_join_all};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskStreamWriteState {
@@ -81,10 +81,14 @@ impl TaskStreamSink for MultiChannelTaskStreamSink {
     }
 
     async fn abort(self: Box<Self>) -> Result<()> {
-        for sink in self.sinks.into_iter().flatten() {
-            sink.abort().await?;
-        }
-        Ok(())
+        // Every channel is aborted even when one fails, so no channel keeps
+        // partial output because an earlier one could not be cleaned up. The
+        // first failure is reported.
+        join_all(self.sinks.into_iter().flatten().map(|sink| sink.abort()))
+            .await
+            .into_iter()
+            .collect::<Result<Vec<()>>>()
+            .map(|_| ())
     }
 }
 
@@ -130,6 +134,49 @@ mod tests {
 
     fn batch() -> Option<RecordBatch> {
         Some(RecordBatch::new_empty(Arc::new(Schema::empty())))
+    }
+
+    struct AbortSink {
+        fail: bool,
+        aborted: Arc<AtomicUsize>,
+    }
+
+    #[tonic::async_trait]
+    impl TaskStreamChannelSink for AbortSink {
+        async fn write(&mut self, _batch: RecordBatch) -> Result<TaskStreamWriteState> {
+            Ok(TaskStreamWriteState::Active)
+        }
+
+        async fn commit(self: Box<Self>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn abort(self: Box<Self>) -> Result<()> {
+            self.aborted.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(DataFusionError::Execution("abort failed".to_string()));
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn abort_reaches_every_channel_after_a_failure() {
+        let aborted = Arc::new(AtomicUsize::new(0));
+        let sink = MultiChannelTaskStreamSink {
+            sinks: [true, false, true]
+                .into_iter()
+                .map(|fail| {
+                    Some(Box::new(AbortSink {
+                        fail,
+                        aborted: aborted.clone(),
+                    }) as Box<dyn TaskStreamChannelSink>)
+                })
+                .collect(),
+        };
+        let result = Box::new(sink).abort().await;
+        assert!(result.is_err_and(|e| e.to_string().contains("abort failed")));
+        assert_eq!(aborted.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]

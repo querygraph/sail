@@ -74,6 +74,22 @@ def test_full_refresh_replaces_the_table_from_a_new_checkpoint(space):
     assert versions == {"0", "1"}
 
 
+def test_a_full_refresh_of_an_empty_source_takes_effect(space):
+    # The source set changed, which needs a full refresh, and the new source is
+    # empty at the time. The refresh must still open a new checkpoint version,
+    # or the next run continues the old one and reports the changed sources again.
+    space.run(GRAPH)
+    space.spark.sql(f"CREATE TABLE {space.schema}.src2(id INT) USING parquet")
+    other = "CREATE STREAMING TABLE b AS SELECT id, id * 10 AS x FROM STREAM(src2)"
+    space.run(other, full_refresh_all=True)
+    assert space.rows("b") == []
+    versions = {path.name for path in (space.path / "_checkpoints").glob("*/*/b/b/*")}
+    assert versions == {"0", "1"}
+    space.spark.sql(f"INSERT INTO {space.schema}.src2 VALUES (7)")
+    space.run(other)
+    assert space.rows("b") == [(7, 70)]
+
+
 def test_a_full_refresh_is_incremental_afterwards(space):
     space.run(GRAPH, full_refresh_all=True)
     space.insert(3)
