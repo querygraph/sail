@@ -136,6 +136,19 @@ impl Fixture {
         hook: Option<&(dyn Fn(Stage, u64) -> SparkResult<()> + Send + Sync)>,
         reset: bool,
     ) -> SparkResult<DurableOutcome> {
+        self.run_leased(source, control, owner, hook, reset, LEASE)
+            .await
+    }
+
+    async fn run_leased<S: Store + 'static>(
+        &self,
+        source: &DeterministicSource,
+        control: &Arc<Control<S>>,
+        owner: &str,
+        hook: Option<&(dyn Fn(Stage, u64) -> SparkResult<()> + Send + Sync)>,
+        reset: bool,
+        lease_ms: i64,
+    ) -> SparkResult<DurableOutcome> {
         let (graph, flow, relations, source_name, target) = (
             graph(),
             flow(),
@@ -170,10 +183,11 @@ impl Fixture {
                 run: &run,
                 control: control.clone(),
                 owner,
-                lease_ms: LEASE,
+                lease_ms,
                 lease_wait_ms: 0,
                 reset,
                 stage_hook: hook,
+                lease_lost: Default::default(),
             },
         )
         .await
@@ -271,6 +285,66 @@ async fn a_clean_run_completes_every_batch() -> TestResult {
     case.assert_exact().await?;
     assert_heads_match_the_logs(&case, &control).await?;
     assert_eq!(case.run(&source(), &control, "w1", None).await?.batches, 0);
+    finish(&case.ctx).await?;
+    Ok(())
+}
+
+/// A batch that outlives the lease: the hook holds the run at Prepared for
+/// longer than the lease while the authority's clock passes the deadline.
+/// With renewal the deadline moves and the merge is ratified; without it the
+/// run fences itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_long_batch_renews_its_lease() -> TestResult {
+    let case = setup().await?;
+    let source = source();
+    let clock = Arc::new(ManualClock::default());
+    let control = Arc::new(Control::new(UnfencedMemoryStore::new(), clock.clone()));
+    let lease_ms = 300;
+    let slow = {
+        let clock = clock.clone();
+        move |stage: Stage, sequence: u64| {
+            if stage == Stage::Prepared && sequence == 1 {
+                // The clock passes the original deadline in steps shorter
+                // than the lease, as wall time would, while renewals run.
+                for _ in 0..4 {
+                    clock.0.fetch_add(lease_ms / 3, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                }
+            }
+            Ok(())
+        }
+    };
+    let outcome = case
+        .run_leased(&source, &control, "w1", Some(&slow), false, lease_ms)
+        .await?;
+    assert_eq!(outcome.batches, 3);
+    case.assert_exact().await?;
+    assert_heads_match_the_logs(&case, &control).await?;
+    finish(&case.ctx).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failed_batch_releases_the_lease_for_the_next_owner() -> TestResult {
+    let case = setup().await?;
+    let source = source();
+    let clock = Arc::new(ManualClock::default());
+    let control = Arc::new(Control::new(UnfencedMemoryStore::new(), clock.clone()));
+    let hook = crash_at(Stage::Prepared, 1);
+    let failed = case.run(&source, &control, "w1", Some(&hook)).await;
+    assert!(failed.is_err());
+    let guard = control
+        .guard(&TargetKey(target().join(".")))
+        .await?
+        .ok_or("no guard")?;
+    assert_eq!(guard.owner, None, "a failed batch hands the target back");
+    // The clock has not moved: a new owner recovers without waiting the
+    // lease out, and the harness waits 0 ms for one.
+    source.expire_before("p0", 2);
+    let recovered = case.run(&source, &control, "w2", None).await?;
+    assert_eq!(recovered.recovered, Some(1));
+    case.assert_exact().await?;
+    assert_heads_match_the_logs(&case, &control).await?;
     finish(&case.ctx).await?;
     Ok(())
 }

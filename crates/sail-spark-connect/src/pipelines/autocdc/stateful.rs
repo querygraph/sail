@@ -92,8 +92,27 @@ fn load(
     columns: &[usize],
     prefix: &str,
 ) -> SparkResult<Snapshot> {
+    let expected: Vec<&datafusion::arrow::datatypes::DataType> = columns
+        .iter()
+        .map(|column| schema.field(*column).data_type())
+        .collect();
     match state.load_appended(operator)? {
-        Some(snapshot) => Ok(snapshot),
+        // Read back only under the types it was written with; otherwise the
+        // query changed, and Spark refuses a changed state schema too.
+        Some(snapshot)
+            if snapshot.schema.fields().len() == expected.len()
+                && snapshot
+                    .schema
+                    .fields()
+                    .iter()
+                    .zip(&expected)
+                    .all(|(stored, expected)| stored.data_type() == *expected) =>
+        {
+            Ok(snapshot)
+        }
+        Some(_) => Err(SparkError::invalid(format!(
+            "the state of {operator} was written by another query; reset the flow to rebuild it"
+        ))),
         None if origin => Ok(Snapshot::empty(Arc::new(Schema::new(
             columns
                 .iter()

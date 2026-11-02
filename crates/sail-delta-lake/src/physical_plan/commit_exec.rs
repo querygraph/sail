@@ -34,7 +34,7 @@ use datafusion_common::{
 use datafusion_physical_expr::{Distribution, EquivalenceProperties, PhysicalExpr};
 use futures::stream::{self, StreamExt};
 use log::warn;
-use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, PutOptions};
+use object_store::{Error as ObjectStoreError, ObjectStoreExt};
 use sail_catalog::manager::CatalogManager;
 use sail_common::spec::FencedWrite;
 use sail_common_datafusion::catalog::{CommitAuthority, LakehouseExecutionContext};
@@ -506,21 +506,7 @@ impl DeltaCommitExec {
             .bytes()
             .await
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
-        match store
-            .put_opts(
-                &commit_path(staged.version),
-                bytes.into(),
-                PutOptions {
-                    mode: PutMode::Create,
-                    ..Default::default()
-                },
-            )
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(ObjectStoreError::AlreadyExists { .. }) => Ok(()),
-            Err(err) => Err(DataFusionError::External(Box::new(err))),
-        }
+        crate::fenced::publish_entry(store.as_ref(), staged.version, bytes).await
     }
 
     pub(crate) async fn latest_published_backfilled_version(

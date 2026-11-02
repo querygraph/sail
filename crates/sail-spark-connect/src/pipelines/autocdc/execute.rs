@@ -45,7 +45,10 @@ use crate::session::SparkSession;
 use crate::spark::connect::{OutputType, pipeline_command as pc};
 
 /// A lease long enough to outlive one microbatch; each batch renews it.
-const LEASE_MS: i64 = 60_000;
+/// A lease is renewed every third of this while a run holds it, so a batch
+/// longer than the lease does not fence itself; the next run after a crash
+/// waits this long at most.
+const LEASE_MS: i64 = 15_000;
 const LEASE_WAIT_MARGIN_MS: i64 = 2_000;
 /// Overrides where a remote warehouse keeps its local AutoCDC state.
 const STATE_DIR_ENV: &str = "SAIL_AUTOCDC_STATE_DIR";
@@ -196,25 +199,73 @@ async fn state_root(ctx: &SessionContext, directory: &str) -> SparkResult<PathBu
     let storage = |error: object_store::Error| {
         SparkError::internal(format!("AutoCDC warehouse marker: {error}"))
     };
+    // The marker names the one state directory that owns the warehouse's
+    // flows, by an id the directory keeps, so a state directory restored
+    // elsewhere or started afresh cannot pass for it.
+    let id_path = root.join("_control").join("state_id");
+    let local_id = std::fs::read_to_string(&id_path)
+        .ok()
+        .map(|id| id.trim().to_string());
     match store.get(&marker).await {
-        Ok(_) if !root.join("_control").join("authority.db").exists() => {
-            return Err(SparkError::invalid(format!(
-                "the warehouse {directory} has AutoCDC state, but this machine does not hold it \
-                 at {}: restore that directory, or remove {STATE_MARKER} and run a full refresh",
-                root.display()
-            )));
+        Ok(found) => {
+            let body = found.bytes().await.map_err(storage)?;
+            let body = String::from_utf8_lossy(&body);
+            let marked = body.lines().next().unwrap_or_default().trim().to_string();
+            match &local_id {
+                Some(local) if *local == marked => {}
+                // A marker from before ids held the state path; adopt it once.
+                Some(local) if marked == root.to_string_lossy() => {
+                    store
+                        .put(&marker, PutPayload::from(marker_body(local, &root)))
+                        .await
+                        .map_err(storage)?;
+                }
+                Some(_) => {
+                    return Err(SparkError::invalid(format!(
+                        "the warehouse {directory} has AutoCDC state owned by another state \
+                         directory: restore that directory at {}, or remove {STATE_MARKER} and \
+                         run a full refresh",
+                        root.display()
+                    )));
+                }
+                None => {
+                    return Err(SparkError::invalid(format!(
+                        "the warehouse {directory} has AutoCDC state, but this machine does not \
+                         hold it at {}: restore that directory, or remove {STATE_MARKER} and run \
+                         a full refresh",
+                        root.display()
+                    )));
+                }
+            }
         }
-        Ok(_) => {}
         Err(object_store::Error::NotFound { .. }) => {
-            let body = root.to_string_lossy().into_owned();
+            let local = match local_id {
+                Some(local) => local,
+                None => {
+                    let fresh = uuid::Uuid::new_v4().to_string();
+                    std::fs::create_dir_all(root.join("_control")).map_err(|e| {
+                        SparkError::internal(format!("create {}: {e}", root.display()))
+                    })?;
+                    std::fs::write(&id_path, &fresh).map_err(|e| {
+                        SparkError::internal(format!("write {}: {e}", id_path.display()))
+                    })?;
+                    fresh
+                }
+            };
             store
-                .put(&marker, PutPayload::from(body.into_bytes()))
+                .put(&marker, PutPayload::from(marker_body(&local, &root)))
                 .await
                 .map_err(storage)?;
         }
         Err(error) => return Err(storage(error)),
     }
     Ok(root)
+}
+
+/// The marker's text: the owning state directory's id, then its path for a
+/// reader.
+fn marker_body(id: &str, root: &std::path::Path) -> Vec<u8> {
+    format!("{id}\n{}\n", root.display()).into_bytes()
 }
 
 /// Analysis gives an AutoCDC target the schema of the query that feeds it;
@@ -636,6 +687,7 @@ impl CdcRun {
                 lease_wait_ms: LEASE_MS + LEASE_WAIT_MARGIN_MS,
                 reset,
                 stage_hook: None,
+                lease_lost: Default::default(),
             },
         )
         .await

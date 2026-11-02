@@ -813,6 +813,32 @@ def test_a_key_with_a_dot_needs_quoting_as_a_column(space, pipeline_factory, bro
     assert "`a`.`b`" in str(failure.value)
 
 
+@sail_only
+def test_state_written_by_another_query_asks_for_a_reset(space, pipeline_factory, broker):  # noqa: F811
+    """Spark refuses to read operator state under a changed schema; so does Sail."""
+    schema = "id INT, name STRING, seq BIGINT"
+
+    def go(key, reset=False):
+        _, registry, start = pipeline_factory()
+        with graph_element_registration_context(registry):
+
+            @dp.temporary_view
+            def changes():
+                return space.readStream.format("json").schema(schema).load(broker.url).dropDuplicates([key])
+
+            dp.create_streaming_table(TARGET, **FORMAT)
+            dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["id"], sequence_by="seq")
+        start(full_refresh_all=True) if reset else start()
+
+    broker.send({"id": 1, "name": "a", "seq": 1})
+    go("id")
+    broker.send({"id": 2, "name": "b", "seq": 1})
+    with pytest.raises((PySparkException, SparkConnectGrpcException), match="reset the flow"):
+        go("name")
+    go("name", reset=True)
+    assert rows(space, "id", "seq") == [(1, 1), (2, 1)]
+
+
 def test_a_dropped_auxiliary_table_forgets_its_tombstones(space, pipeline_factory, broker):  # noqa: F811
     schema = "id INT, name STRING, seq BIGINT, is_delete BOOLEAN"
 

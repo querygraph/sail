@@ -684,10 +684,12 @@ impl FlowSource {
         let mut streams = new_streams.clone();
         let mut leaves = vec![];
         let mut watermark_before = 0;
-        for (index, (key, new_rows)) in new_streams.iter().enumerate() {
-            let before = match state.load(&format!("{WINDOW_STATE}-{index}"))? {
-                Some(before) => before,
-                None if origin => Snapshot::empty(Arc::new(new_rows.schema().as_arrow().clone())),
+        for (key, new_rows) in &new_streams {
+            let leaf = prefix(key);
+            let schema = Arc::new(new_rows.schema().as_arrow().clone());
+            let before = match state.load(&format!("{WINDOW_STATE}-{leaf}"))? {
+                Some(before) => same_types(before, &schema, flow)?,
+                None if origin => Snapshot::empty(schema),
                 None => return Err(missing_state(flow)),
             };
             watermark_before = watermark_before.max(before.watermark);
@@ -700,7 +702,7 @@ impl FlowSource {
                 .alias(SOURCE_ALIAS)?
                 .build()?;
             streams.insert(key.clone(), rows.clone());
-            leaves.push((index, rows, new_rows.clone()));
+            leaves.push((leaf, rows, new_rows.clone()));
         }
         // Each watermark follows the rows of this batch that reach it, after
         // any transformation beneath it.
@@ -738,7 +740,7 @@ impl FlowSource {
         // A row can belong only to a window ending within a window's length
         // of it, by its event time at the watermark.
         let floor = watermark.saturating_sub(windowed.window_micros);
-        for (index, rows, new_rows) in leaves {
+        for (leaf, rows, new_rows) in leaves {
             let open = self
                 .open_rows(
                     ctx, config, scope, graph, windowed, &streams, &plan, rows, floor,
@@ -764,7 +766,7 @@ impl FlowSource {
                 })
                 .collect::<SparkResult<Vec<_>>>()?;
             state.store(
-                &format!("{WINDOW_STATE}-{index}"),
+                &format!("{WINDOW_STATE}-{leaf}"),
                 &Snapshot {
                     schema,
                     batches,
@@ -1040,6 +1042,25 @@ fn windows_between(plan: LogicalPlan, after: i64, through: i64) -> SparkResult<L
         ));
     }
     Ok(plan)
+}
+
+/// A snapshot is read back only under the schema it was written with. The
+/// query changed otherwise, and Spark refuses a changed state schema too.
+fn same_types(stored: Snapshot, expected: &SchemaRef, flow: &Flow) -> SparkResult<Snapshot> {
+    let same = stored.schema.fields().len() == expected.fields().len()
+        && stored
+            .schema
+            .fields()
+            .iter()
+            .zip(expected.fields())
+            .all(|(stored, expected)| stored.data_type() == expected.data_type());
+    if !same {
+        return Err(SparkError::invalid(format!(
+            "the state of flow {} was written by another query; reset the flow to rebuild it",
+            flow.name.join(".")
+        )));
+    }
+    Ok(stored)
 }
 
 fn missing_state(flow: &Flow) -> SparkError {

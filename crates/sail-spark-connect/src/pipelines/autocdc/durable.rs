@@ -83,6 +83,19 @@ pub(super) struct DurableRun<'a, S> {
     /// Rebuild the target from the source's origin before reading it.
     pub reset: bool,
     pub stage_hook: Option<StageHook<'a>>,
+    /// Set by the lease renewal task when the lease could not be renewed, so
+    /// the run stops at its next stage instead of walking into the fence.
+    pub lease_lost: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+/// Renews the run's lease every third of the lease while it lives; dropping
+/// it stops the renewal.
+struct LeaseRenewal(tokio::task::JoinHandle<()>);
+
+impl Drop for LeaseRenewal {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -568,7 +581,45 @@ impl<S: Store + 'static> DurableRun<'_, S> {
     }
 
     fn reached(&self, stage: Stage, sequence: u64) -> SparkResult<()> {
+        let lost = self
+            .lease_lost
+            .lock()
+            .map_err(|e| SparkError::internal(format!("lease state: {e}")))?
+            .clone();
+        if let Some(reason) = lost {
+            return Err(SparkError::invalid(format!(
+                "the lease on the AutoCDC target was lost during the run: {reason}"
+            )));
+        }
         self.stage_hook.map_or(Ok(()), |hook| hook(stage, sequence))
+    }
+
+    /// Keep the lease alive for as long as the returned guard lives. A
+    /// renewal by the live owner extends the deadline without a new epoch, so
+    /// the run's fence tokens stay valid; a renewal after expiry fails rather
+    /// than re-acquiring. A failed renewal is recorded and stops the run at
+    /// its next stage.
+    fn renew_lease(&self, target: TargetKey) -> LeaseRenewal
+    where
+        S: 'static,
+    {
+        let control = self.control.clone();
+        let owner = self.owner.to_string();
+        let lease_ms = self.lease_ms;
+        let lost = self.lease_lost.clone();
+        let every =
+            std::time::Duration::from_millis(u64::try_from(lease_ms / 3).unwrap_or(250).max(50));
+        LeaseRenewal(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                if let Err(outcome) = control.renew(&target, &owner, lease_ms).await {
+                    if let Ok(mut slot) = lost.lock() {
+                        *slot = Some(control_error(outcome).to_string());
+                    }
+                    return;
+                }
+            }
+        }))
     }
 
     /// The batch's rows: from its archive if they were sealed, otherwise
@@ -1057,19 +1108,20 @@ async fn await_lease<S: Store>(durable: &DurableRun<'_, S>, destination: &Name) 
     }
 }
 
-/// Hand the target back when the source stops a run, so that the next run,
-/// perhaps the full refresh that error asks for, need not wait out the lease.
-/// A release failure leaves the lease to expire; the source's error is the
-/// one to report.
+/// Hand the target back when a run stops on an error, so that the next run,
+/// perhaps the full refresh the error asks for, need not wait out the lease.
+/// Safe on every error: an unfinished intent stays in the guard and every
+/// outcome lives in the authority, so the next owner recovers it. A release
+/// failure leaves the lease to expire; the run's error is the one to report.
 async fn released_on_error<S: Store, T>(
     durable: &DurableRun<'_, S>,
-    enrolled: &Enrolled,
+    target: &TargetKey,
     result: SparkResult<T>,
 ) -> SparkResult<T> {
     if result.is_err() {
         let control = &durable.control;
         if let Ok(acquired) = control
-            .acquire(&enrolled.target, durable.owner, durable.lease_ms)
+            .acquire(target, durable.owner, durable.lease_ms)
             .await
         {
             let _ = control.release(&acquired.token).await;
@@ -1116,127 +1168,138 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
     await_lease(durable, run.write.destination).await?;
     let mut enrolled = enroll(ctx, config.clone(), durable, auxiliary_name.clone()).await?;
     durable.install(ctx);
-    let mut outcome = DurableOutcome::default();
-    let acquired = control
-        .acquire(&enrolled.target, durable.owner, durable.lease_ms)
-        .await
-        .map_err(control_error)?;
-    let mut reset = durable.reset;
-    if let Some(id) = &acquired.recovery_only {
-        let intent = control
-            .intent(id)
+    let target = enrolled.target.clone();
+    let _renewal = durable.renew_lease(target.clone());
+    let result: SparkResult<DurableOutcome> = async {
+        let mut outcome = DurableOutcome::default();
+        let acquired = control
+            .acquire(&enrolled.target, durable.owner, durable.lease_ms)
             .await
-            .map_err(control_error)?
-            .ok_or_else(|| {
-                control_error(Outcome::EvidenceUnavailable {
-                    reason: format!("unfinished intent {} is not sealed", id.0),
-                })
-            })?;
-        match intent.kind {
-            IntentKind::Initialization => {
-                durable
-                    .finish_initialization(ctx, config.clone(), &acquired.token, &enrolled, &intent)
-                    .await?;
-            }
-            IntentKind::Reset => {
-                let generation = durable
-                    .finish_reset(ctx, config.clone(), &acquired.token, &enrolled, &intent)
-                    .await?;
-                outcome.reset = Some(generation);
-                reset = false;
-                enrolled = enroll(ctx, config.clone(), durable, auxiliary_name.clone()).await?;
-            }
-            IntentKind::Batch if reset => {
-                released_on_error(durable, &enrolled, check_reset_origin(run.source)).await?;
-                publish_receipts(ctx, control, id, &batch_tables(&enrolled)).await?;
-            }
-            IntentKind::Batch => {
-                durable
-                    .process(
-                        ctx,
-                        config.clone(),
-                        scope,
-                        &acquired.token,
-                        &enrolled,
-                        &intent,
-                    )
-                    .await?;
-                outcome.batches += 1;
-                outcome.recovered = Some(intent.batch_sequence);
+            .map_err(control_error)?;
+        let mut reset = durable.reset;
+        if let Some(id) = &acquired.recovery_only {
+            let intent = control
+                .intent(id)
+                .await
+                .map_err(control_error)?
+                .ok_or_else(|| {
+                    control_error(Outcome::EvidenceUnavailable {
+                        reason: format!("unfinished intent {} is not sealed", id.0),
+                    })
+                })?;
+            match intent.kind {
+                IntentKind::Initialization => {
+                    durable
+                        .finish_initialization(
+                            ctx,
+                            config.clone(),
+                            &acquired.token,
+                            &enrolled,
+                            &intent,
+                        )
+                        .await?;
+                }
+                IntentKind::Reset => {
+                    let generation = durable
+                        .finish_reset(ctx, config.clone(), &acquired.token, &enrolled, &intent)
+                        .await?;
+                    outcome.reset = Some(generation);
+                    reset = false;
+                    enrolled = enroll(ctx, config.clone(), durable, auxiliary_name.clone()).await?;
+                }
+                IntentKind::Batch if reset => {
+                    check_reset_origin(run.source)?;
+                    publish_receipts(ctx, control, id, &batch_tables(&enrolled)).await?;
+                }
+                IntentKind::Batch => {
+                    durable
+                        .process(
+                            ctx,
+                            config.clone(),
+                            scope,
+                            &acquired.token,
+                            &enrolled,
+                            &intent,
+                        )
+                        .await?;
+                    outcome.batches += 1;
+                    outcome.recovered = Some(intent.batch_sequence);
+                }
             }
         }
+        if reset {
+            check_reset_origin(run.source)?;
+            let intent = reset_intent(&enrolled, acquired.token.generation + 1)?;
+            let token = control
+                .begin_reset(&acquired.token, &intent)
+                .await
+                .map_err(control_error)?;
+            durable.reached(Stage::ResetBegun, 0)?;
+            let generation = durable
+                .finish_reset(ctx, config.clone(), &token, &enrolled, &intent)
+                .await?;
+            outcome.reset = Some(generation);
+            enrolled = enroll(ctx, config.clone(), durable, auxiliary_name).await?;
+        }
+        if let Some((_, added)) = evolved_schema(ctx, config.clone(), durable.run).await? {
+            let token = control
+                .acquire(&enrolled.target, durable.owner, durable.lease_ms)
+                .await
+                .map_err(control_error)?
+                .token;
+            let checkpoint = control
+                .checkpoint(&enrolled.target, token.generation, &enrolled.flow)
+                .await
+                .map_err(control_error)?
+                .ok_or_else(|| SparkError::internal("flow has no checkpoint"))?;
+            let intent = control
+                .seal_intent(
+                    &token,
+                    &schema_intent(&enrolled, token.generation, &checkpoint, &added)?,
+                )
+                .await
+                .map_err(control_error)?;
+            durable
+                .finish_initialization(ctx, config.clone(), &token, &enrolled, &intent)
+                .await?;
+        }
+        let frontier = RunFrontier::capture(run.source)?;
+        loop {
+            let token = control
+                .acquire(&enrolled.target, durable.owner, durable.lease_ms)
+                .await
+                .map_err(control_error)?
+                .token;
+            let checkpoint = control
+                .checkpoint(&enrolled.target, token.generation, &enrolled.flow)
+                .await
+                .map_err(control_error)?
+                .ok_or_else(|| {
+                    control_error(Outcome::EvidenceUnavailable {
+                        reason: "flow has no checkpoint".into(),
+                    })
+                })?;
+            let progress: Progress =
+                serde_json::from_value(checkpoint.progress.clone()).map_err(encoding_error)?;
+            let Some(batch) =
+                next_intent(run.source, &frontier, &progress, run.max_rows_per_partition)?
+            else {
+                control.release(&token).await.map_err(control_error)?;
+                return Ok(outcome);
+            };
+            let intent = control
+                .seal_intent(
+                    &token,
+                    &sealed_intent(&enrolled, token.generation, &checkpoint, &progress, &batch)?,
+                )
+                .await
+                .map_err(control_error)?;
+            durable
+                .process(ctx, config.clone(), scope, &token, &enrolled, &intent)
+                .await?;
+            outcome.batches += 1;
+        }
     }
-    if reset {
-        released_on_error(durable, &enrolled, check_reset_origin(run.source)).await?;
-        let intent = reset_intent(&enrolled, acquired.token.generation + 1)?;
-        let token = control
-            .begin_reset(&acquired.token, &intent)
-            .await
-            .map_err(control_error)?;
-        durable.reached(Stage::ResetBegun, 0)?;
-        let generation = durable
-            .finish_reset(ctx, config.clone(), &token, &enrolled, &intent)
-            .await?;
-        outcome.reset = Some(generation);
-        enrolled = enroll(ctx, config.clone(), durable, auxiliary_name).await?;
-    }
-    if let Some((_, added)) = evolved_schema(ctx, config.clone(), durable.run).await? {
-        let token = control
-            .acquire(&enrolled.target, durable.owner, durable.lease_ms)
-            .await
-            .map_err(control_error)?
-            .token;
-        let checkpoint = control
-            .checkpoint(&enrolled.target, token.generation, &enrolled.flow)
-            .await
-            .map_err(control_error)?
-            .ok_or_else(|| SparkError::internal("flow has no checkpoint"))?;
-        let intent = control
-            .seal_intent(
-                &token,
-                &schema_intent(&enrolled, token.generation, &checkpoint, &added)?,
-            )
-            .await
-            .map_err(control_error)?;
-        durable
-            .finish_initialization(ctx, config.clone(), &token, &enrolled, &intent)
-            .await?;
-    }
-    let frontier = RunFrontier::capture(run.source).map_err(SparkError::from);
-    let frontier = released_on_error(durable, &enrolled, frontier).await?;
-    loop {
-        let token = control
-            .acquire(&enrolled.target, durable.owner, durable.lease_ms)
-            .await
-            .map_err(control_error)?
-            .token;
-        let checkpoint = control
-            .checkpoint(&enrolled.target, token.generation, &enrolled.flow)
-            .await
-            .map_err(control_error)?
-            .ok_or_else(|| {
-                control_error(Outcome::EvidenceUnavailable {
-                    reason: "flow has no checkpoint".into(),
-                })
-            })?;
-        let progress: Progress =
-            serde_json::from_value(checkpoint.progress.clone()).map_err(encoding_error)?;
-        let planned = next_intent(run.source, &frontier, &progress, run.max_rows_per_partition)
-            .map_err(SparkError::from);
-        let Some(batch) = released_on_error(durable, &enrolled, planned).await? else {
-            control.release(&token).await.map_err(control_error)?;
-            return Ok(outcome);
-        };
-        let intent = control
-            .seal_intent(
-                &token,
-                &sealed_intent(&enrolled, token.generation, &checkpoint, &progress, &batch)?,
-            )
-            .await
-            .map_err(control_error)?;
-        durable
-            .process(ctx, config.clone(), scope, &token, &enrolled, &intent)
-            .await?;
-        outcome.batches += 1;
-    }
+    .await;
+    released_on_error(durable, &target, result).await
 }

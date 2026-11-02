@@ -410,6 +410,23 @@ impl<S: Store> Control<S> {
         })
     }
 
+    /// Extend the live owner's lease without a new epoch. Fails, changing
+    /// nothing, once the lease has expired or belongs to another owner.
+    pub async fn renew(
+        &self,
+        target: &TargetKey,
+        owner: &str,
+        lease_ms: i64,
+    ) -> Result<AuthorityMillis, Outcome> {
+        transact!(self, |tx| {
+            let guard = guard_of(&tx, target).await?;
+            let next = transitions::renew(&guard, owner, self.clock.now(), lease_ms)?;
+            let deadline = next.lease_deadline.unwrap_or_default();
+            put_guard(&tx, &next).await?;
+            Ok::<_, Fail>(deadline)
+        })
+    }
+
     pub async fn release(&self, token: &FenceToken) -> Result<(), Outcome> {
         transact!(self, |tx| {
             let guard = guard_of(&tx, &token.target).await?;

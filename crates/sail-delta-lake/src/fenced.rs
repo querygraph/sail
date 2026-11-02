@@ -4,11 +4,12 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use datafusion::execution::TaskContext;
 use datafusion_common::{DataFusionError, Result, plan_err};
 use futures::StreamExt;
 use object_store::path::Path;
-use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, PutOptions};
+use object_store::{Error as ObjectStoreError, ObjectStore, ObjectStoreExt, PutMode, PutOptions};
 use sha2::{Digest, Sha256};
 use url::Url;
 
@@ -94,6 +95,14 @@ pub async fn publish_ratified(
             "the staged entry for log version {version} is not the one the authority ratified"
         );
     }
+    publish_entry(store.as_ref(), version, bytes).await
+}
+
+/// Publish a log entry at `version` with create-only semantics. Publishing
+/// the same bytes twice is a no-op, as after a lost response; different
+/// bytes already at that version mean something wrote the log outside the
+/// commit protocol, and are refused.
+pub async fn publish_entry(store: &dyn ObjectStore, version: i64, bytes: Bytes) -> Result<()> {
     let published = commit_path(version);
     let options = PutOptions {
         mode: PutMode::Create,
@@ -115,7 +124,9 @@ pub async fn publish_ratified(
             if existing == bytes {
                 Ok(())
             } else {
-                plan_err!("log version {version} holds an entry the authority did not ratify")
+                plan_err!(
+                    "log version {version} holds an entry that was not committed through this protocol"
+                )
             }
         }
         Err(error) => Err(external(error)),
@@ -123,6 +134,7 @@ pub async fn publish_ratified(
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -133,5 +145,27 @@ mod tests {
             "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         assert_ne!(action_digest(b"{\"add\":1}"), action_digest(b"{\"add\":2}"));
+    }
+
+    #[tokio::test]
+    async fn publishing_an_entry_again_is_a_no_op_but_another_entry_is_refused() {
+        let store = object_store::memory::InMemory::new();
+        let entry = Bytes::from_static(b"{\"add\":1}");
+        publish_entry(&store, 7, entry.clone()).await.unwrap();
+        // A lost response is retried with the same bytes.
+        publish_entry(&store, 7, entry).await.unwrap();
+        let error = publish_entry(&store, 7, Bytes::from_static(b"{\"add\":2}"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("log version 7"), "{error}");
+        let published = store
+            .get(&commit_path(7))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(published, Bytes::from_static(b"{\"add\":1}"));
     }
 }
