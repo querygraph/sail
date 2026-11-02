@@ -52,6 +52,14 @@ pub(super) struct Scd1Write<'a> {
     pub case: Case,
 }
 
+/// Where to create a fenced target's auxiliary table if the catalog has none.
+pub(super) enum AuxiliaryPlacement {
+    /// Reopen this table: an unfinished batch has effects to recover in it.
+    At(String),
+    /// A directory of its own beside the target.
+    BesideTarget(String),
+}
+
 /// `createAuxiliaryTableIfNotExists`: creates the auxiliary table with the
 /// A3 schema and the two reserved properties when it does not exist, after
 /// the merge-support and key-drift checks; an existing table is left as it
@@ -62,7 +70,7 @@ pub(super) async fn ensure_auxiliary_table(
     write: &Scd1Write<'_>,
     flow_schema: &spec::Fields,
     resetting: bool,
-    generation: Option<u64>,
+    placement: Option<AuxiliaryPlacement>,
 ) -> SparkResult<Name> {
     let manager = ctx.extension::<CatalogManager>()?;
     let destination = manager
@@ -178,15 +186,12 @@ pub(super) async fn ensure_auxiliary_table(
                 // has its own path: a reset must start from nothing, and
                 // deleting in place could leave half a table after a crash.
                 // A plain target recovers from its checkpoint and needs none.
-                location: location
-                    .as_ref()
-                    .zip(generation)
-                    .map(|(location, generation)| {
-                        format!(
-                            "{}.autocdc-aux/{generation}",
-                            location.trim_end_matches('/')
-                        )
+                location: placement.and_then(|placement| match placement {
+                    AuxiliaryPlacement::At(url) => Some(url),
+                    AuxiliaryPlacement::BesideTarget(name) => location.as_ref().map(|location| {
+                        format!("{}.autocdc-aux/{name}", location.trim_end_matches('/'))
                     }),
+                }),
                 file_format: write.destination_format.map(|format| {
                     spec::TableFileFormat::General {
                         format: format.to_string(),

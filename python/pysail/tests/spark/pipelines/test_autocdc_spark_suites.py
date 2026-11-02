@@ -811,3 +811,33 @@ def test_a_key_with_a_dot_needs_quoting_as_a_column(space, pipeline_factory, bro
         space.table(TARGET).select("a.b").collect()
     assert "42703" in str(failure.value)
     assert "`a`.`b`" in str(failure.value)
+
+
+def test_a_dropped_auxiliary_table_forgets_its_tombstones(space, pipeline_factory, broker):  # noqa: F811
+    schema = "id INT, name STRING, seq BIGINT, is_delete BOOLEAN"
+
+    def go():
+        _, registry, start = pipeline_factory()
+        with graph_element_registration_context(registry):
+
+            @dp.temporary_view
+            def changes():
+                return space.readStream.format("json").schema(schema).load(broker.url)
+
+            dp.create_streaming_table(TARGET, **FORMAT)
+            dp.create_auto_cdc_flow(
+                target=TARGET,
+                source="changes",
+                keys=["id"],
+                sequence_by="seq",
+                apply_as_deletes=sf.expr("is_delete"),
+                except_column_list=["is_delete"],
+            )
+        start()
+
+    broker.send({"id": 1, "name": "gone", "seq": 10, "is_delete": True})
+    go()
+    space.sql(f"DROP TABLE {AUXILIARY}")
+    broker.send({"id": 1, "name": "late", "seq": 5, "is_delete": False})
+    go()
+    assert rows(space, "id", "name", "seq") == [(1, "late", 5)]

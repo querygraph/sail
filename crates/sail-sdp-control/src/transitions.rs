@@ -126,6 +126,7 @@ pub fn enroll(
         checkpoint_index: 0,
         active_intent: None,
         superseded_intent: None,
+        auxiliary_location: None,
     })
 }
 

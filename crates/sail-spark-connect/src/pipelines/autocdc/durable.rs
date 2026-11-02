@@ -28,7 +28,9 @@ use sail_sdp_control::digest::digest;
 use sail_sdp_control::identity::{
     EffectStep, FenceToken, FlowKey, IntentId, SinkIdentity, TargetKey,
 };
-use sail_sdp_control::records::{FlowCheckpoint, Intent, IntentKind, ReceiptKind, TargetState};
+use sail_sdp_control::records::{
+    FlowCheckpoint, Intent, IntentKind, ReceiptKind, TargetGuard, TargetState,
+};
 use sail_sdp_control::store::Store;
 use sail_sdp_control::transitions::{Outcome, ResetIdentities};
 use serde_json::{Value, json};
@@ -38,9 +40,10 @@ use url::Url;
 use super::authority::{ControlCommits, effect_step_name};
 use super::run::{FlowRun, flow_schema};
 use super::write::{
-    IN_COMMIT_TIMESTAMPS_PROPERTY, PreparedBatch, drop_table, enable_commit_timestamps,
-    ensure_auxiliary_table, evolve_fenced, flow_output_schema, merge_auxiliary, merge_destination,
-    noop_fenced, prepare_microbatch, publish_prepared, read_table, replace_with_view,
+    AuxiliaryPlacement, IN_COMMIT_TIMESTAMPS_PROPERTY, PreparedBatch, drop_table,
+    enable_commit_timestamps, ensure_auxiliary_table, evolve_fenced, flow_output_schema,
+    merge_auxiliary, merge_destination, noop_fenced, prepare_microbatch, publish_prepared,
+    read_table, replace_with_view,
 };
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
@@ -867,7 +870,9 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             write,
             &flow_schema(self.run.source, write)?,
             false,
-            Some(intent.generation),
+            Some(AuxiliaryPlacement::BesideTarget(
+                intent.generation.to_string(),
+            )),
         )
         .await?;
         // A table's location is unique to it, so the new one has its own.
@@ -1001,6 +1006,27 @@ async fn lacks_commit_timestamps(ctx: &SessionContext, name: &Name) -> SparkResu
             .any(|(key, value)| key == IN_COMMIT_TIMESTAMPS_PROPERTY && value == "true"))
 }
 
+/// Where a missing auxiliary table belongs. Mid-batch it holds state to recover,
+/// and mid-reset its path is fixed by the generation. Otherwise it was dropped,
+/// and Spark starts a dropped table empty, so it gets a path nothing can be
+/// left at.
+fn auxiliary_placement(guard: Option<&TargetGuard>) -> AuxiliaryPlacement {
+    match guard {
+        None => AuxiliaryPlacement::BesideTarget("0".to_string()),
+        Some(guard) if guard.state == TargetState::Resetting => {
+            AuxiliaryPlacement::BesideTarget(guard.generation.to_string())
+        }
+        Some(guard) => match (&guard.active_intent, &guard.auxiliary_location) {
+            (Some(_), Some(location)) => AuxiliaryPlacement::At(location.clone()),
+            _ => AuxiliaryPlacement::BesideTarget(format!(
+                "{}-{}",
+                guard.generation,
+                uuid::Uuid::new_v4()
+            )),
+        },
+    }
+}
+
 /// Wait for another owner's lease to end. Only a dead or concurrent run holds
 /// one, and this is the one place a run may still be waiting for it.
 async fn await_lease<S: Store>(durable: &DurableRun<'_, S>, destination: &Name) -> SparkResult<()> {
@@ -1072,7 +1098,7 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
         || guard
             .as_ref()
             .is_some_and(|guard| guard.state == TargetState::Resetting);
-    let generation = guard.as_ref().map_or(0, |guard| guard.generation);
+    let placement = auxiliary_placement(guard.as_ref());
     // An enrolled table already has them, and DDL cannot carry a fence.
     if guard.is_none() && lacks_commit_timestamps(ctx, run.write.destination).await? {
         enable_commit_timestamps(ctx, config.clone(), run.write.destination).await?;
@@ -1083,7 +1109,7 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
         run.write,
         &flow_schema(run.source, run.write)?,
         resetting,
-        Some(generation),
+        Some(placement),
     )
     .await?;
     await_lease(durable, run.write.destination).await?;
