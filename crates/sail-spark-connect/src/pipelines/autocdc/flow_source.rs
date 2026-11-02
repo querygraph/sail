@@ -33,9 +33,8 @@ use super::stateful::with_state;
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
 use crate::pipelines::append::{
-    SOURCE_ALIAS, TableSource, Windowed, check_stateless, data_files, delta_error, event_micros,
-    is_delta, max_event, partition_plan, partition_values, qualified, reads_a_stream, spec_schema,
-    table_source, view_flow, windowed_aggregate,
+    SOURCE_ALIAS, TableSource, check_stateless, data_files, delta_error, is_delta, partition_plan,
+    partition_values, qualified, reads_a_stream, spec_schema, table_source, view_flow,
 };
 use crate::pipelines::graph::{Flow, GraphDefinition, Name};
 use crate::pipelines::streaming::intent::{BatchIntent, Progress};
@@ -43,6 +42,7 @@ use crate::pipelines::streaming::source::{
     BoundedSource, Cursor, Incarnation, Partition, PartitionId, Range, ScanError, SourceDescriptor,
     SourceError,
 };
+use crate::pipelines::watermark::{Windowed, event_micros, max_event, windowed_aggregate};
 
 /// Where a watermarked aggregate keeps each stream's open rows.
 const WINDOW_STATE: &str = "window";
