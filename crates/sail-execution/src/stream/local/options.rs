@@ -18,6 +18,16 @@ impl From<&DriverOptions> for LocalStreamManagerOptions {
     }
 }
 
+#[cfg(test)]
+impl LocalStreamManagerOptions {
+    pub(crate) fn for_tests() -> Self {
+        Self {
+            task_stream_buffer: 4,
+            task_stream_creation_timeout: Duration::from_secs(1),
+        }
+    }
+}
+
 impl From<&WorkerOptions> for LocalStreamManagerOptions {
     fn from(options: &WorkerOptions) -> Self {
         Self {

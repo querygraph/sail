@@ -245,7 +245,18 @@ pub(crate) async fn handle_command(
                 Box::pin(inner),
                 spark.options().execution_heartbeat_interval,
             );
-            let rx = spark.add_executor(executor)?.start()?;
+            let rx = match spark
+                .add_executor(executor)
+                .and_then(|executor| executor.start())
+            {
+                Ok(rx) => rx,
+                Err(error) => {
+                    // The run never started, so the graph must not stay
+                    // "already running" for every later StartRun.
+                    graph.lock()?.abandon_start();
+                    return Err(error);
+                }
+            };
             return Ok(ExecutePlanResponseStream::new(
                 spark.session_id().to_string(),
                 operation_id,

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use sail_common::spec;
+use sail_common::utils::root_lowercase::spark_root_lowercase;
 use sail_sql_analyzer::expression::from_ast_object_name;
 use sail_sql_analyzer::parser::parse_object_name;
 use tokio::sync::watch;
@@ -14,8 +15,10 @@ fn parse_name_parts(name: &str) -> SparkResult<Name> {
     Ok(from_ast_object_name(parse_object_name(name)?)?.into())
 }
 
+/// Graph names are case-insensitive the way Spark's identifiers are: Java
+/// `Locale.ROOT` lowercasing, which the AutoCDC name parser also uses.
 fn normalize_name(name: Name) -> Name {
-    name.into_iter().map(|x| x.to_ascii_lowercase()).collect()
+    name.iter().map(|x| spark_root_lowercase(x)).collect()
 }
 
 pub(super) fn parse_name(name: &str) -> SparkResult<Name> {
@@ -172,6 +175,12 @@ impl PipelineGraph {
         }
     }
 
+    /// The run never started, because its executor could not be registered.
+    /// No execution entry exists for it, so the graph can be started again.
+    pub(super) fn abandon_start(&mut self) {
+        self.active = None;
+    }
+
     pub(super) fn start(
         &mut self,
         graph_id: &str,
@@ -323,7 +332,7 @@ impl GraphDefinition {
     }
 
     pub(super) fn resolve_name(&self, name: &[String]) -> SparkResult<Name> {
-        let name: Name = name.iter().map(|x| x.to_ascii_lowercase()).collect();
+        let name: Name = name.iter().map(|x| spark_root_lowercase(x)).collect();
         if self.outputs.iter().any(|x| x.name == name) {
             Ok(name)
         } else {
