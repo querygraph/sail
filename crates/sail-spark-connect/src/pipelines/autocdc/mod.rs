@@ -16,6 +16,7 @@
 mod attribute;
 mod authority;
 pub(super) mod auxiliary;
+mod carry;
 mod ddl;
 mod dedup;
 mod durable;

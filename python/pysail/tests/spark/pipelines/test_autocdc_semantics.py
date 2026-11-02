@@ -659,6 +659,22 @@ def test_a_windowed_aggregate_over_two_streams(pipeline_spark, pipeline_factory,
     clean(pipeline_spark)
 
 
+def test_a_watermark_on_a_renamed_event_time_closes_windows_across_runs(stateful):
+    send, run = stateful
+
+    def transform(frame):
+        renamed = frame.select("id", "name", "seq", sf.col("ts").alias("event"))
+        kept = renamed.filter(sf.col("name") != "x").withWatermark("event", "1 hour")
+        return kept.groupBy("id", sf.window("event", "1 minute")).agg(sf.max("seq").alias("seq"))
+
+    send("a", (1, "a", 1, T0))
+    assert run(transform) == []
+    send("b", (2, "b", 9, "2024-01-01T02:00:30Z"))
+    assert run(transform) == [(1, 1)]
+    send("c", (3, "c", 4, "2024-01-01T03:01:30Z"), (2, "x", 99, "2024-01-01T02:00:40Z"))
+    assert run(transform) == [(1, 1), (2, 9)]
+
+
 def test_an_aggregate_without_a_watermark_is_refused(stateful):
     send, run = stateful
     send("a", (1, "a", 1, T0))

@@ -27,6 +27,7 @@ use sail_plan::resolver::PlanResolver;
 use sail_plan::resolver::scope::RelationScope;
 use sha2::{Digest, Sha256};
 
+use super::carry::{carried, occurrences};
 use super::state::{Snapshot, StateKeys, collect};
 use super::stateful::with_state;
 use crate::error::{SparkError, SparkResult};
@@ -731,20 +732,18 @@ impl FlowSource {
             .unwrap_or(0)
             .max(watermark_before);
         let (plan, _) = self
-            .resolve_query(ctx, config, scope, graph, &flow.query, streams)
+            .resolve_query(ctx, config, scope, graph, &flow.query, streams.clone())
             .await?;
         check_stateless(&plan, true)?;
         // A row can belong only to a window ending within a window's length
-        // of it. Rows transformed before a watermark are all kept, because
-        // the event time is not a column of the read.
-        let direct = windowed.watermarks.iter().all(|mark| mark.direct);
+        // of it, by its event time at the watermark.
+        let floor = watermark.saturating_sub(windowed.window_micros);
         for (index, rows, new_rows) in leaves {
-            let open = match event_micros(&rows, &windowed.event_time) {
-                Ok(micros) if direct => LogicalPlanBuilder::from(rows)
-                    .filter(micros.gt(lit(watermark.saturating_sub(windowed.window_micros))))?
-                    .build()?,
-                _ => rows,
-            };
+            let open = self
+                .open_rows(
+                    ctx, config, scope, graph, windowed, &streams, &plan, rows, floor,
+                )
+                .await?;
             let (schema, batches) = collect(ctx, open, "c").await?;
             let schema = Arc::new(Schema::new(
                 new_rows
@@ -781,6 +780,63 @@ impl FlowSource {
         }
         drop(watermarks);
         windows_between(plan, watermark_before, watermark)
+    }
+
+    /// The rows of a stream that a window still open may need: those whose
+    /// event time at the watermark that reads them is after `floor`. A stream
+    /// read other than beneath exactly one watermark, or beneath a
+    /// transformation other than projections, filters and aliases, keeps
+    /// every row.
+    #[expect(clippy::too_many_arguments)]
+    async fn open_rows(
+        &self,
+        ctx: &SessionContext,
+        config: &Arc<PlanConfig>,
+        scope: &GraphScope<'_>,
+        graph: &GraphDefinition,
+        windowed: &Windowed,
+        streams: &BTreeMap<String, LogicalPlan>,
+        plan: &LogicalPlan,
+        rows: LogicalPlan,
+        floor: i64,
+    ) -> SparkResult<LogicalPlan> {
+        let mut readers = vec![];
+        for mark in &windowed.watermarks {
+            let (marked, _) = self
+                .resolve_query(ctx, config, scope, graph, &mark.input, streams.clone())
+                .await?;
+            if occurrences(&marked, &rows)? > 0 {
+                readers.push((mark, marked));
+            }
+        }
+        let [(mark, marked)] = &readers[..] else {
+            return Ok(rows);
+        };
+        if occurrences(plan, &rows)? != occurrences(marked, &rows)? {
+            return Ok(rows);
+        }
+        if mark.direct {
+            return Ok(match event_micros(&rows, &mark.event_time) {
+                Ok(micros) => LogicalPlanBuilder::from(rows)
+                    .filter(micros.gt(lit(floor)))?
+                    .build()?,
+                Err(_) => rows,
+            });
+        }
+        let Some((carried, names)) = carried(marked, &rows)? else {
+            return Ok(rows);
+        };
+        let micros = event_micros(&carried, &mark.event_time)?;
+        let fields = rows.schema().fields().clone();
+        Ok(LogicalPlanBuilder::from(carried)
+            .filter(micros.gt(lit(floor)))?
+            .project(
+                names
+                    .iter()
+                    .zip(fields.iter())
+                    .map(|(name, field)| col(Column::from_name(name)).alias(field.name())),
+            )?
+            .build()?)
     }
 
     /// The ranges from each partition's origin to the end of the batch, and to
