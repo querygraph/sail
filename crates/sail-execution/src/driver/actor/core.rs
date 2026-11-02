@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use log::{error, info};
 use sail_celeborn::lifecycle::{
@@ -22,6 +23,8 @@ use crate::task_runner::{
     TaskRunnerActor, TaskRunnerComponents, TaskRunnerExtensions, TaskRunnerMessage,
     TaskRunnerPlacement,
 };
+
+const WORKER_JOIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl Actor for DriverActor {
     type Message = DriverMessage;
@@ -205,7 +208,17 @@ impl Actor for DriverActor {
         if let Some(lifecycle_manager) = self.extensions.lifecycle_manager.take() {
             let _ = lifecycle_manager.stop().await;
         }
-        ctx.children_mut().join().await;
+        // A worker that never got its stop must not hold a release or a server
+        // shutdown forever. Giving up here drops, and so aborts, what is left.
+        if tokio::time::timeout(WORKER_JOIN_TIMEOUT, ctx.children_mut().join())
+            .await
+            .is_err()
+        {
+            error!(
+                "driver {} gave up waiting for its workers to stop",
+                self.options.driver_id
+            );
+        }
         if let Some(result) = self.shutdown_notifier.take() {
             let _ = result.send(());
         }
