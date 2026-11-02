@@ -52,8 +52,24 @@ pub(super) fn validate_nested_fields(
             &format!("{path}.element"),
             case_sensitive,
         )?,
+        // A map's entries have no names of their own in Spark. Catalogs and
+        // functions spell them differently, so they compare by position.
         (DataType::Map(source, _), DataType::Map(target, _)) => {
-            validate_nested_fields(source.data_type(), target.data_type(), path, case_sensitive)?;
+            match (source.data_type(), target.data_type()) {
+                (DataType::Struct(source), DataType::Struct(target))
+                    if source.len() == 2 && target.len() == 2 =>
+                {
+                    for (index, part) in ["key", "value"].into_iter().enumerate() {
+                        validate_nested_fields(
+                            source[index].data_type(),
+                            target[index].data_type(),
+                            &format!("{path}.{part}"),
+                            case_sensitive,
+                        )?;
+                    }
+                }
+                (source, target) => validate_nested_fields(source, target, path, case_sensitive)?,
+            }
         }
         _ => {}
     }

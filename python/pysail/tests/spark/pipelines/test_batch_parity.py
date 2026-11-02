@@ -155,3 +155,12 @@ def test_a_delta_write_statement_as_select_has_no_rows(suite, tmp_path):
     frame = suite.spark.sql(f"CREATE TABLE d USING delta LOCATION '{location}' AS SELECT 1 AS id")
     assert frame.collect() == []
     assert frame.schema.names == []
+
+
+def test_a_location_with_one_slash_is_that_absolute_path(suite, tmp_path):
+    """Hadoop and Hive write `file:/path`, which must not land under the server's working directory."""
+    location = f"file:{tmp_path / 'table'}"
+    suite.spark.sql(f"CREATE TABLE t (id INT) USING parquet LOCATION '{location}'")
+    suite.spark.sql("INSERT INTO t VALUES (1)")
+    assert [row.id for row in suite.spark.table("t").collect()] == [1]
+    assert [path for path in (tmp_path / "table").iterdir() if not path.name.startswith((".", "_"))]

@@ -15,6 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "get_all_tables",
             "get_table",
             "get_table_objects_by_name",
+            "get_table_objects_by_name_req",
             "get_table_req",
             "alter_table",
             "lock",

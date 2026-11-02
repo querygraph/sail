@@ -393,9 +393,9 @@ fn spark_json_to_arrow_data_type(value: &Value) -> CatalogResult<DataType> {
                 Arc::new(Field::new(
                     "entries",
                     DataType::Struct(Fields::from(vec![
-                        Field::new("keys", spark_json_to_arrow_data_type(key_type)?, false),
+                        Field::new("key", spark_json_to_arrow_data_type(key_type)?, false),
                         Field::new(
-                            "values",
+                            "value",
                             spark_json_to_arrow_data_type(value_type)?,
                             value_contains_null,
                         ),
@@ -461,8 +461,8 @@ fn parse_map_type(type_str: &str) -> CatalogResult<DataType> {
         Arc::new(Field::new(
             "entries",
             DataType::Struct(Fields::from(vec![
-                Field::new("keys", hive_type_to_arrow(key_type)?, false),
-                Field::new("values", hive_type_to_arrow(value_type)?, true),
+                Field::new("key", hive_type_to_arrow(key_type)?, false),
+                Field::new("value", hive_type_to_arrow(value_type)?, true),
             ])),
             false,
         )),
@@ -705,8 +705,8 @@ mod tests {
                     Arc::new(Field::new(
                         "entries",
                         DataType::Struct(Fields::from(vec![
-                            Field::new("keys", DataType::Utf8, false),
-                            Field::new("values", DataType::Int32, true),
+                            Field::new("key", DataType::Utf8, false),
+                            Field::new("value", DataType::Int32, true),
                         ])),
                         false,
                     )),

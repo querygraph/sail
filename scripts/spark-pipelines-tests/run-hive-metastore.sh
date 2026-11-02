@@ -35,6 +35,37 @@ fetch "$maven/org/apache/hadoop/hadoop-client-runtime/3.3.6/hadoop-client-runtim
     81065531e63fccbe85fb04a3274709593fb00d3c
 fetch "$maven/javax/servlet/javax.servlet-api/3.1.0/javax.servlet-api-3.1.0.jar" \
     3cd63d075497751784b2fa84be59432f4905bf7c
+# The tarball leaves out what a Hadoop installation would provide.
+fetch "$maven/org/apache/hadoop/hadoop-hdfs/3.3.6/hadoop-hdfs-3.3.6.jar" \
+    ba40aca60f39599d5b1f1d32b35295bfde1f3c8b
+fetch "$maven/org/apache/hadoop/hadoop-hdfs-client/3.3.6/hadoop-hdfs-client-3.3.6.jar" \
+    d635e3eed4beb74213489ff003ca39dbe47ea44e
+fetch "$maven/commons-io/commons-io/2.11.0/commons-io-2.11.0.jar" \
+    a2503f302b11ebde7ebc3df41daebe0e4eea3689
+fetch "$maven/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar" \
+    6c62681a2f655b49963a5983b8b0950a6120ae14
+fetch "$maven/commons-collections/commons-collections/3.2.2/commons-collections-3.2.2.jar" \
+    8ad72fe39fa8c91eaaf12aadb21e0c3661fe26d5
+fetch "$maven/org/apache/commons/commons-collections4/4.4/commons-collections4-4.4.jar" \
+    62ebe7544cb7164d87e0637a2a6a2bdc981395e8
+fetch "$maven/org/apache/httpcomponents/httpclient/4.5.13/httpclient-4.5.13.jar" \
+    e5f6cae5ca7ecaac1ec2827a9e2d65ae2869cada
+fetch "$maven/org/apache/httpcomponents/httpcore/4.4.13/httpcore-4.4.13.jar" \
+    853b96d3afbb7bf8cc303fe27ee96836a10c1834
+fetch "$maven/com/google/code/gson/gson/2.9.0/gson-2.9.0.jar" \
+    8a1167e089096758b49f9b34066ef98b2f4b37aa
+fetch "$maven/commons-lang/commons-lang/2.6/commons-lang-2.6.jar" \
+    0ce1edb914c94ebc388f086c6827e8bdeec71ac2
+fetch "$maven/commons-configuration/commons-configuration/1.10/commons-configuration-1.10.jar" \
+    2b36e4adfb66d966c5aef2d73deb6be716389dc9
+fetch "$maven/com/fasterxml/woodstox/woodstox-core/5.4.0/woodstox-core-5.4.0.jar" \
+    3e05dcce371d3f672feba29f086ad78a93ae3996
+fetch "$maven/org/codehaus/woodstox/stax2-api/4.2.1/stax2-api-4.2.1.jar" \
+    a3f7325c52240418c2ba257b103c3c550e140c83
+fetch "$maven/org/apache/commons/commons-configuration2/2.8.0/commons-configuration2-2.8.0.jar" \
+    6a76acbe14d2c01d4758a57171f3f6a150dbd462
+fetch "$maven/org/apache/commons/commons-text/1.10.0/commons-text-1.10.0.jar" \
+    3363381aef8cef2dbc1023b3e3a9433b08b64e01
 
 home=$store/apache-hive-metastore-4.0.1-bin
 if [[ ! -d $home ]]; then
@@ -42,12 +73,12 @@ if [[ ! -d $home ]]; then
 fi
 
 run=$(mktemp -d "$store/run.XXXXXX")
-mkdir "$run/conf" "$run/warehouse"
+mkdir "$run/conf" "$run/warehouse" "$run/managed"
 cat >"$run/conf/metastore-site.xml" <<EOF
 <?xml version="1.0"?>
 <configuration>
   <property><name>metastore.thrift.port</name><value>$metastore_port</value></property>
-  <property><name>metastore.warehouse.dir</name><value>file://$run/warehouse</value></property>
+  <property><name>metastore.warehouse.dir</name><value>file://$run/managed</value></property>
   <property><name>metastore.warehouse.external.dir</name><value>file://$run/warehouse</value></property>
   <property><name>javax.jdo.option.ConnectionURL</name><value>jdbc:derby:;databaseName=$run/metastore_db;create=true</value></property>
   <property><name>javax.jdo.option.ConnectionDriverName</name><value>org.apache.derby.jdbc.EmbeddedDriver</value></property>
@@ -85,6 +116,7 @@ stop() {
 trap stop EXIT
 
 cd "$run"
+export METASTORE_HOME=$home
 "$java_home/bin/java" -cp "$classpath" org.apache.hadoop.hive.metastore.tools.schematool.MetastoreSchemaTool \
     -dbType derby -initSchema >schema.log 2>&1
 "$java_home/bin/java" --add-opens java.base/java.net=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED \
@@ -94,7 +126,7 @@ wait_for_port "$metastore_port" "$metastore"
 
 export SAIL_CATALOG__LIST="[{name=\"sail\",type=\"hms\",uris=[\"127.0.0.1:$metastore_port\"]}]"
 export SPARK_REMOTE="sc://localhost:$port"
-export PYTHONPATH="$root/python${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$root/python:$root/scripts/spark-pipelines-tests${PYTHONPATH:+:$PYTHONPATH}"
 "$binary" spark server --port "$port" >server.log 2>&1 &
 server=$!
 wait_for_port "$port" "$server"
@@ -108,4 +140,4 @@ python -m pytest \
     "$tests/test_properties.py" \
     "$tests/test_execution.py" \
     "$tests/test_audit_exec.py" \
-    -q -p no:cacheprovider --junitxml="$run/pytest.xml"
+    -q -p no:cacheprovider -p hive_profile_plugin --junitxml="$run/pytest.xml"
