@@ -293,7 +293,7 @@ async fn query_failure_is_separate_from_cleanup_uncertainty_at_stop() -> TestRes
 }
 
 #[tokio::test]
-async fn reaping_preserves_later_nonretryable_cleanup_after_an_earlier_failure() -> TestResult {
+async fn reaping_keeps_only_an_unknown_commit_of_settled_jobs() -> TestResult {
     let runner = LocalJobRunner::default();
     let context = SessionContext::new();
     for uncertain in [false, true] {
@@ -322,19 +322,12 @@ async fn reaping_preserves_later_nonretryable_cleanup_after_an_earlier_failure()
         .stop()
         .await
         .err()
-        .ok_or("reaping lost cleanup failures")?;
-    // Collection's Display only renders its first member. Inspect both retained
-    // errors directly, then verify the classifier still finds the later cause.
-    let DataFusionError::Collection(errors) = &error else {
-        return Err("stop did not retain both cleanup failures".into());
-    };
-    assert_eq!(errors.len(), 2);
-    assert!(errors[0].to_string().contains("earlier cleanup failed"));
-    assert!(
-        errors[1]
-            .to_string()
-            .contains("local commit outcome unknown")
-    );
+        .ok_or("reaping lost the unknown commit")?;
+    // The earlier failure reached its query after its resources settled, so
+    // only the unknown commit fails the stop.
+    assert!(!matches!(error, DataFusionError::Collection(_)));
+    assert!(!error.to_string().contains("earlier cleanup failed"));
+    assert!(error.to_string().contains("local commit outcome unknown"));
     let cause = CommonErrorCause::new::<NoPython>(&error);
     assert!(!cause.is_retryable());
     assert!(matches!(cause, CommonErrorCause::CommitStateUnknown(_)));

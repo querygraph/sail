@@ -27,17 +27,35 @@ struct Job {
 struct Failure {
     error: Arc<DataFusionError>,
     nonretryable: bool,
+    commit_unknown: bool,
 }
 
 impl Failure {
     fn new(error: DataFusionError) -> Self {
         // Cause extraction can call foreign error/Python code. Never do this
         // while holding the job registry mutex.
-        let nonretryable = !CommonErrorCause::new::<PyErrExtractor>(&error).is_retryable();
+        let cause = CommonErrorCause::new::<PyErrExtractor>(&error);
         Self {
+            nonretryable: !cause.is_retryable(),
+            commit_unknown: matches!(cause, CommonErrorCause::CommitStateUnknown(_)),
             error: Arc::new(error),
-            nonretryable,
         }
+    }
+
+    /// The cleanup failure of a job whose supervisors were all joined. Nothing
+    /// of the job is still writing, and the failure was part of the error its
+    /// query received, so it does not fail the runner. Only an unknown commit
+    /// state is still kept, since checkpoint cleanup must not follow it.
+    fn settled(error: DataFusionError, job: u64) -> Option<Self> {
+        let failure = Self::new(error);
+        if failure.commit_unknown {
+            return Some(failure);
+        }
+        log::warn!(
+            "local job {job} failed after its query was told; its resources are settled: {}",
+            failure.error
+        );
+        None
     }
 }
 
@@ -136,9 +154,13 @@ impl LocalJobRunner {
             .into_iter()
             .filter_map(|(id, job)| {
                 let report = job.control.completed()?;
-                report
-                    .resources_drained
-                    .then(|| (id, report.cleanup_result().err().map(Failure::new)))
+                report.resources_drained.then(|| {
+                    let failure = report
+                        .cleanup_result()
+                        .err()
+                        .and_then(|error| Failure::settled(error, id));
+                    (id, failure)
+                })
             })
             .collect();
         let mut removed = Vec::with_capacity(completed.len());
@@ -202,7 +224,11 @@ impl LocalJobRunner {
             let report = job.control.completion().await;
             let mut failures = vec![];
             if let Err(error) = report.cleanup_result() {
-                failures.push(Failure::new(error));
+                if report.resources_drained {
+                    failures.extend(Failure::settled(error, *id));
+                } else {
+                    failures.push(Failure::new(error));
+                }
             }
             let drained = if report.resources_drained {
                 true
