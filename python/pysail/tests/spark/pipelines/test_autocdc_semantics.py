@@ -509,6 +509,16 @@ def test_a_stream_joined_with_itself_feeds_a_flow_across_runs(stateful):
     assert run(transform) == [(1, 1), (2, 1)]
 
 
+def test_a_stream_join_does_not_reread_earlier_batches(stateful, tmp_path):
+    send, run = stateful
+    transform = lambda frame: frame.join(frame.select("id", sf.col("seq").alias("other")), "id")  # noqa: E731
+    send("a", (1, "a", 1, T0))
+    assert run(transform) == [(1, 1)]
+    (tmp_path / "stateful" / "a.json").unlink()
+    send("b", (2, "b", 1, T0))
+    assert run(transform) == [(1, 1), (2, 1)]
+
+
 def test_a_windowed_aggregate_feeds_a_flow_once_its_window_closes(stateful):
     send, run = stateful
 
@@ -520,6 +530,133 @@ def test_a_windowed_aggregate_feeds_a_flow_once_its_window_closes(stateful):
     assert run(transform) == []
     send("b", (2, "b", 9, "2024-01-01T02:00:00Z"))
     assert run(transform) == [(1, 3)]
+
+
+def test_a_deduplication_keeps_the_first_row_of_a_key_across_runs(stateful):
+    send, run = stateful
+    transform = lambda frame: frame.dropDuplicates(["id"])  # noqa: E731
+    send("a", (1, "a", 1, T0))
+    assert run(transform) == [(1, 1)]
+    send("b", (1, "b", 2, T0), (2, "b", 1, T0))
+    assert run(transform) == [(1, 1), (2, 1)]
+
+
+def test_a_row_behind_the_watermark_changes_only_an_open_window(stateful):
+    send, run = stateful
+
+    def transform(frame):
+        grouped = frame.withWatermark("ts", "1 hour").groupBy("id", sf.window("ts", "1 minute"))
+        return grouped.agg(sf.max("seq").alias("seq"))
+
+    send("a", (1, "a", 1, T0))
+    assert run(transform) == []
+    # The watermark moves to 01:00:30, which closes the window of 00:00.
+    send("b", (2, "b", 9, "2024-01-01T02:00:30Z"))
+    assert run(transform) == [(1, 1)]
+    # A row for the closed window is late. A row at 01:00:10 is behind the
+    # watermark too, but its window ends after it, so it counts.
+    send("c", (1, "c", 7, T0), (3, "c", 4, "2024-01-01T01:00:10Z"))
+    assert run(transform) == [(1, 1)]
+    send("d", (4, "d", 2, "2024-01-01T03:00:00Z"))
+    assert run(transform) == [(1, 1), (3, 4)]
+
+
+def test_a_sliding_window_emits_each_window_once_it_closes(stateful):
+    send, run = stateful
+
+    def transform(frame):
+        grouped = frame.withWatermark("ts", "1 hour").groupBy(sf.window("ts", "2 minutes", "1 minute"))
+        minute = ((sf.col("window.start").cast("long") - 1704067200) / 60).cast("int")
+        return grouped.agg(sf.max("seq").alias("seq")).select(minute.alias("id"), "seq")
+
+    send("a", (1, "a", 1, "2024-01-01T00:00:30Z"), (1, "a", 3, "2024-01-01T00:01:30Z"))
+    assert run(transform) == []
+    send("b", (2, "b", 9, "2024-01-01T02:00:30Z"))
+    assert run(transform) == [(-1, 1), (0, 3), (1, 3)]
+    send("c", (1, "c", 7, "2024-01-01T00:00:45Z"))
+    assert run(transform) == [(-1, 1), (0, 3), (1, 3)]
+
+
+def test_a_window_with_a_start_time_feeds_a_flow(stateful):
+    send, run = stateful
+
+    def transform(frame):
+        window = sf.window("ts", "1 minute", startTime="30 seconds")
+        grouped = frame.withWatermark("ts", "1 hour").groupBy(window)
+        half = ((sf.col("window.start").cast("long") - 1704067200) / 30).cast("int")
+        return grouped.agg(sf.max("seq").alias("seq")).select(half.alias("id"), "seq")
+
+    send("a", (1, "a", 1, "2024-01-01T00:00:10Z"), (1, "a", 3, "2024-01-01T00:00:40Z"))
+    assert run(transform) == []
+    send("b", (2, "b", 9, "2024-01-01T02:00:30Z"))
+    assert run(transform) == [(-1, 1), (1, 3)]
+
+
+def test_a_watermark_follows_only_the_rows_that_reach_it(stateful):
+    send, run = stateful
+
+    def transform(frame):
+        kept = frame.filter(sf.col("name") != "x").withWatermark("ts", "1 hour")
+        return kept.groupBy("id", sf.window("ts", "1 minute")).agg(sf.max("seq").alias("seq"))
+
+    send("a", (1, "a", 1, T0))
+    assert run(transform) == []
+    # The filter drops this row before the watermark, so it does not move it.
+    send("b", (9, "x", 9, "2024-01-01T05:00:00Z"))
+    assert run(transform) == []
+    send("c", (2, "c", 2, "2024-01-01T02:00:30Z"))
+    assert run(transform) == [(1, 1)]
+
+
+@pytest.mark.parametrize(
+    ("each", "after_one"),
+    [
+        pytest.param(False, [(1, 2)], id="one-watermark-over-a-union"),
+        pytest.param(True, [], id="a-watermark-on-each-stream"),
+    ],
+)
+def test_a_windowed_aggregate_over_two_streams(pipeline_spark, pipeline_factory, tmp_path, each, after_one):
+    clean(pipeline_spark)
+    landings = [tmp_path / "left", tmp_path / "right"]
+    for landing in landings:
+        landing.mkdir()
+
+    def send(side, name, *rows):
+        lines = [json.dumps({"id": key, "name": value, "seq": seq, "ts": ts}) + "\n" for key, value, seq, ts in rows]
+        (landings[side] / f"{name}.json").write_text("".join(lines))
+
+    def run():
+        _, registry, start = pipeline_factory()
+        with graph_element_registration_context(registry):
+
+            @dp.temporary_view
+            def changes():
+                left, right = (pipeline_spark.readStream.format("json").schema(STATEFUL).load(str(x)) for x in landings)
+                if each:
+                    both = left.withWatermark("ts", "1 hour").union(right.withWatermark("ts", "1 hour"))
+                else:
+                    both = left.union(right).withWatermark("ts", "1 hour")
+                grouped = both.groupBy("id", sf.window("ts", "1 minute"))
+                return grouped.agg(sf.max("seq").alias("seq"))
+
+            dp.create_streaming_table(TARGET, **FORMAT)
+            dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["id"], sequence_by="seq")
+        start()
+        return sorted(tuple(row) for row in pipeline_spark.table(TARGET).select("id", "seq").collect())
+
+    send(0, "a", (1, "a", 1, T0))
+    send(1, "a", (1, "b", 2, T0))
+    assert run() == []
+    # Only the left stream moves. With a watermark on each stream, the
+    # query's watermark is the least of them, so the right one holds it back.
+    send(0, "b", (2, "x", 9, "2024-01-01T02:00:30Z"))
+    assert run() == after_one
+    # Spark keeps only the query's watermark across a restart, so each
+    # watermark counts again from the rows of this run, and both must move.
+    send(0, "c", (4, "x", 9, "2024-01-01T02:00:40Z"))
+    send(1, "b", (3, "y", 5, "2024-01-01T02:00:30Z"))
+    assert run() == [(1, 2)]
+    clean(pipeline_spark)
 
 
 def test_an_aggregate_without_a_watermark_is_refused(stateful):

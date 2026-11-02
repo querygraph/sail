@@ -34,6 +34,7 @@ use sha2::{Digest, Sha256};
 
 use super::auxiliary;
 use super::durable::evolved_schema;
+use super::state::StateKeys;
 use super::write::{
     PreparedBatch, Scd1Write, create_from_view, drop_table, ensure_auxiliary_table,
     flow_output_schema, handle_microbatch, publish_prepared, read_table,
@@ -218,6 +219,11 @@ pub(super) async fn run_flow(
         let plan = if let Some(flow_source) = run.flow_source {
             let end = record.progress.clone().advance(&intent);
             let graph_scope = GraphScope::new(run.graph, run.relations, run.flow);
+            let state = StateKeys {
+                dir: run.checkpoint.join("state"),
+                start: progress_digest(&record.progress)?,
+                end: progress_digest(&end)?,
+            };
             flow_source
                 .batch_plan(
                     ctx,
@@ -227,6 +233,7 @@ pub(super) async fn run_flow(
                     run.flow,
                     &intent,
                     &end,
+                    &state,
                 )
                 .await?
         } else {
@@ -411,4 +418,10 @@ pub(super) async fn run_flows(
         }
     }
     Ok(outcomes)
+}
+
+/// The digest a durable intent records for the same progress.
+fn progress_digest(progress: &Progress) -> SparkResult<String> {
+    sail_sdp_control::digest::digest("progress", progress)
+        .map_err(|error| SparkError::internal(format!("encode progress: {error}")))
 }

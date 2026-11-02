@@ -39,6 +39,7 @@ use url::Url;
 
 use super::authority::{ControlCommits, effect_step_name};
 use super::run::{FlowRun, flow_schema};
+use super::state::StateKeys;
 use super::write::{
     AuxiliaryPlacement, IN_COMMIT_TIMESTAMPS_PROPERTY, PreparedBatch, drop_table,
     enable_commit_timestamps, ensure_auxiliary_table, evolve_fenced, flow_output_schema,
@@ -605,6 +606,15 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             let end: Progress =
                 serde_json::from_value(intent.end_progress.clone()).map_err(encoding_error)?;
             let graph_scope = GraphScope::new(run.graph, run.relations, run.flow);
+            let state = StateKeys {
+                dir: self
+                    .run
+                    .checkpoint
+                    .with_file_name(guard.checkpoint_index.to_string())
+                    .join("state"),
+                start: intent.start_progress_digest.clone(),
+                end: intent.end_progress_digest.clone(),
+            };
             flow_source
                 .batch_plan(
                     ctx,
@@ -614,6 +624,7 @@ impl<S: Store + 'static> DurableRun<'_, S> {
                     run.flow,
                     &batch,
                     &end,
+                    &state,
                 )
                 .await?
         } else {

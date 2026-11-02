@@ -10,12 +10,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch, TimestampMicrosecondArray};
 use datafusion::arrow::compute::cast;
-use datafusion::arrow::datatypes::{DataType, SchemaRef, TimeUnit};
-use datafusion::common::ScalarValue;
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::{Column, ScalarValue};
 use datafusion::datasource::{MemTable, TableProvider, provider_as_source};
 use datafusion::functions::core::expr_fn::get_field;
-use datafusion::logical_expr::{JoinType, LogicalPlan, LogicalPlanBuilder, cast as cast_expr};
+use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder, cast as cast_expr};
 use datafusion::prelude::{SessionContext, col, lit};
 use sail_common::spec;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
@@ -27,11 +27,13 @@ use sail_plan::resolver::PlanResolver;
 use sail_plan::resolver::scope::RelationScope;
 use sha2::{Digest, Sha256};
 
+use super::state::{Snapshot, StateKeys, collect};
+use super::stateful::with_state;
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
 use crate::pipelines::append::{
-    SOURCE_ALIAS, TableSource, Windowed, check_stateless, data_files, delta_error, is_delta,
-    max_event, partition_plan, partition_values, qualified, reads_a_stream, spec_schema,
+    SOURCE_ALIAS, TableSource, Windowed, check_stateless, data_files, delta_error, event_micros,
+    is_delta, max_event, partition_plan, partition_values, qualified, reads_a_stream, spec_schema,
     table_source, view_flow, windowed_aggregate,
 };
 use crate::pipelines::graph::{Flow, GraphDefinition, Name};
@@ -40,6 +42,9 @@ use crate::pipelines::streaming::source::{
     BoundedSource, Cursor, Incarnation, Partition, PartitionId, Range, ScanError, SourceDescriptor,
     SourceError,
 };
+
+/// Where a watermarked aggregate keeps each stream's open rows.
+const WINDOW_STATE: &str = "window";
 
 /// Files read in one batch at most.
 const MAX_FILES_PER_BATCH: usize = 100;
@@ -483,6 +488,9 @@ impl Leaf {
 pub(in crate::pipelines) struct FlowSource {
     schema: SchemaRef,
     leaves: BTreeMap<String, Leaf>,
+    /// Each watermark's value in this run. Spark keeps only the query's
+    /// watermark across a restart, so each watermark starts again unset.
+    watermarks: Mutex<BTreeMap<usize, i64>>,
 }
 
 impl std::fmt::Debug for FlowSource {
@@ -581,7 +589,11 @@ impl FlowSource {
                 "an AutoCDC flow has no streaming read",
             ));
         }
-        Ok(Self { schema, leaves })
+        Ok(Self {
+            schema,
+            leaves,
+            watermarks: Mutex::new(BTreeMap::new()),
+        })
     }
 
     /// See what the file leaves hold now. A run calls this before capturing
@@ -615,10 +627,10 @@ impl FlowSource {
     }
 
     /// What `batch` adds to the flow's output. A stateless query reads just
-    /// the batch. Otherwise there is no state to consult, so the query is
-    /// evaluated over everything read through the batch and everything read
-    /// before it, and the batch adds the difference. Merges go by key and
-    /// sequence, so a set difference loses nothing.
+    /// the batch. A watermarked aggregate, a deduplication and an inner join
+    /// of streams keep state between batches, as Spark's state store does, so
+    /// a batch reads only its own rows from the source.
+    #[expect(clippy::too_many_arguments)]
     pub(in crate::pipelines) async fn batch_plan(
         &self,
         ctx: &SessionContext,
@@ -628,54 +640,147 @@ impl FlowSource {
         flow: &Flow,
         batch: &BatchIntent,
         end: &Progress,
+        state: &StateKeys,
     ) -> SparkResult<LogicalPlan> {
+        let origin = self.cumulative_ranges(batch, end)?.1.is_empty();
+        if let Some(windowed) = windowed_query(scope, graph, flow)? {
+            return self
+                .windowed_batch(
+                    ctx, config, scope, graph, flow, batch, &windowed, state, origin,
+                )
+                .await;
+        }
         let (plan, _) = self
             .query_plan(ctx, config, scope, graph, flow, &batch.ranges)
             .await?;
-        let windowed = windowed_query(scope, graph, flow)?;
-        if windowed.is_none() && !needs_state(&plan)? {
-            check_stateless(&plan, false)?;
-            return Ok(plan);
-        }
-        let (through, before) = self.cumulative_ranges(batch, end)?;
-        let (all, streams) = self
-            .query_plan(ctx, config, scope, graph, flow, &through)
-            .await?;
-        let (earlier, earlier_streams) = self
-            .query_plan(ctx, config, scope, graph, flow, &before)
-            .await?;
-        let (all, earlier) = match windowed {
-            Some(windowed) => {
-                check_stateless(&all, true)?;
-                let current = self.closed_by(ctx, &windowed, &streams).await?;
-                let previous = self.closed_by(ctx, &windowed, &earlier_streams).await?;
-                (
-                    closed_windows(all, current)?,
-                    closed_windows(earlier, previous)?,
-                )
-            }
-            None => (all, earlier),
-        };
-        Ok(LogicalPlanBuilder::except(all, earlier, false)?)
+        let plan = with_state(ctx, plan, state, origin).await?;
+        check_stateless(&plan, false)?;
+        Ok(plan)
     }
 
-    /// The watermark's position, as a timestamp: the latest event less the delay.
-    async fn closed_by(
+    /// A watermarked aggregate, as Spark runs it in append mode. Each
+    /// watermark is the latest event time in milliseconds that reaches it,
+    /// less its delay. The query's watermark is the least of them, a stream
+    /// with no rows yet counting as 0, as Spark's default `min` policy has it,
+    /// and it never moves back. A window is emitted in the batch whose
+    /// watermark passes its end, and a row whose window the watermark had
+    /// already passed is late and changes nothing. The state is each
+    /// stream's rows of windows still open and the query's watermark.
+    #[expect(clippy::too_many_arguments)]
+    async fn windowed_batch(
         &self,
         ctx: &SessionContext,
+        config: &Arc<PlanConfig>,
+        scope: &GraphScope<'_>,
+        graph: &GraphDefinition,
+        flow: &Flow,
+        batch: &BatchIntent,
         windowed: &Windowed,
-        streams: &BTreeMap<String, LogicalPlan>,
-    ) -> SparkResult<Option<i64>> {
-        let [key] = self.leaves.keys().collect::<Vec<_>>()[..] else {
-            return Err(SparkError::unsupported(
-                "a watermarked aggregate over several streams",
+        state: &StateKeys,
+        origin: bool,
+    ) -> SparkResult<LogicalPlan> {
+        let new_streams = self.leaf_streams(ctx, config, &batch.ranges).await?;
+        let mut streams = new_streams.clone();
+        let mut leaves = vec![];
+        let mut watermark_before = 0;
+        for (index, (key, new_rows)) in new_streams.iter().enumerate() {
+            let before = match state.load(&format!("{WINDOW_STATE}-{index}"))? {
+                Some(before) => before,
+                None if origin => Snapshot::empty(Arc::new(new_rows.schema().as_arrow().clone())),
+                None => return Err(missing_state(flow)),
+            };
+            watermark_before = watermark_before.max(before.watermark);
+            // The rows kept from earlier batches are part of the stream.
+            let kept = LogicalPlanBuilder::from(before.plan("state")?)
+                .alias(SOURCE_ALIAS)?
+                .build()?;
+            let rows = LogicalPlanBuilder::from(kept)
+                .union(new_rows.clone())?
+                .alias(SOURCE_ALIAS)?
+                .build()?;
+            streams.insert(key.clone(), rows.clone());
+            leaves.push((index, rows, new_rows.clone()));
+        }
+        // Each watermark follows the rows of this batch that reach it, after
+        // any transformation beneath it.
+        let mut operators = vec![];
+        for (index, mark) in windowed.watermarks.iter().enumerate() {
+            let previous = self
+                .watermarks
+                .lock()
+                .map_err(lock_error)?
+                .get(&index)
+                .copied();
+            let (marked, _) = self
+                .resolve_query(ctx, config, scope, graph, &mark.input, new_streams.clone())
+                .await?;
+            let delay_ms = mark.delay_micros / 1000;
+            let next = max_event(ctx, &marked, &mark.event_time)
+                .await?
+                .map(|latest| (latest.div_euclid(1000) - delay_ms) * 1000);
+            let value = match (previous, next) {
+                (Some(previous), Some(next)) => Some(previous.max(next)),
+                (previous, next) => previous.or(next),
+            };
+            operators.push((index, value));
+        }
+        let watermark = operators
+            .iter()
+            .map(|(_, value)| value.unwrap_or(0))
+            .min()
+            .unwrap_or(0)
+            .max(watermark_before);
+        let (plan, _) = self
+            .resolve_query(ctx, config, scope, graph, &flow.query, streams)
+            .await?;
+        check_stateless(&plan, true)?;
+        // A row can belong only to a window ending within a window's length
+        // of it. Rows transformed before a watermark are all kept, because
+        // the event time is not a column of the read.
+        let direct = windowed.watermarks.iter().all(|mark| mark.direct);
+        for (index, rows, new_rows) in leaves {
+            let open = match event_micros(&rows, &windowed.event_time) {
+                Ok(micros) if direct => LogicalPlanBuilder::from(rows)
+                    .filter(micros.gt(lit(watermark.saturating_sub(windowed.window_micros))))?
+                    .build()?,
+                _ => rows,
+            };
+            let (schema, batches) = collect(ctx, open, "c").await?;
+            let schema = Arc::new(Schema::new(
+                new_rows
+                    .schema()
+                    .fields()
+                    .iter()
+                    .zip(schema.fields())
+                    .map(|(named, typed)| Field::new(named.name(), typed.data_type().clone(), true))
+                    .collect::<Vec<_>>(),
             ));
-        };
-        let source = streams
-            .get(key)
-            .ok_or_else(|| SparkError::internal("watermarked source is not bound"))?;
-        let latest = max_event(ctx, source, &windowed.event_time).await?;
-        Ok(latest.map(|latest| latest - windowed.delay_micros))
+            let batches = batches
+                .into_iter()
+                .map(|batch| {
+                    Ok(RecordBatch::try_new(
+                        schema.clone(),
+                        batch.columns().to_vec(),
+                    )?)
+                })
+                .collect::<SparkResult<Vec<_>>>()?;
+            state.store(
+                &format!("{WINDOW_STATE}-{index}"),
+                &Snapshot {
+                    schema,
+                    batches,
+                    watermark,
+                },
+            )?;
+        }
+        let mut watermarks = self.watermarks.lock().map_err(lock_error)?;
+        for (index, value) in operators {
+            if let Some(value) = value {
+                watermarks.insert(index, value);
+            }
+        }
+        drop(watermarks);
+        windows_between(plan, watermark_before, watermark)
     }
 
     /// The ranges from each partition's origin to the end of the batch, and to
@@ -717,6 +822,18 @@ impl FlowSource {
         flow: &Flow,
         ranges: &[Range],
     ) -> SparkResult<(LogicalPlan, BTreeMap<String, LogicalPlan>)> {
+        let streams = self.leaf_streams(ctx, config, ranges).await?;
+        self.resolve_query(ctx, config, scope, graph, &flow.query, streams)
+            .await
+    }
+
+    /// Each leaf's rows in `ranges`.
+    async fn leaf_streams(
+        &self,
+        ctx: &SessionContext,
+        config: &Arc<PlanConfig>,
+        ranges: &[Range],
+    ) -> SparkResult<BTreeMap<String, LogicalPlan>> {
         let mut streams = BTreeMap::new();
         for (key, leaf) in &self.leaves {
             let head = prefix(key);
@@ -740,6 +857,20 @@ impl FlowSource {
             }
             streams.insert(key.clone(), union(plans, &leaf.schema())?);
         }
+        Ok(streams)
+    }
+
+    /// The flow's query over the given leaf streams, with what each stream
+    /// and view resolved to.
+    async fn resolve_query(
+        &self,
+        ctx: &SessionContext,
+        config: &Arc<PlanConfig>,
+        scope: &GraphScope<'_>,
+        graph: &GraphDefinition,
+        query: &spec::QueryPlan,
+        mut streams: BTreeMap<String, LogicalPlan>,
+    ) -> SparkResult<(LogicalPlan, BTreeMap<String, LogicalPlan>)> {
         // Inner views resolve first, so an outer view finds them bound.
         let mut remaining: Vec<&crate::pipelines::graph::Output> = graph
             .outputs
@@ -784,7 +915,7 @@ impl FlowSource {
         };
         let resolved = PlanResolver::new(ctx, config.clone())
             .with_relation_scope(&bound)
-            .resolve_named_plan(spec::Plan::Query(flow.query.clone()))
+            .resolve_named_plan(spec::Plan::Query(query.clone()))
             .await?;
         let plan = match resolved.fields {
             Some(fields) => rename_logical_plan(resolved.plan, &fields)?,
@@ -792,23 +923,6 @@ impl FlowSource {
         };
         Ok((plan, streams))
     }
-}
-
-/// Whether a plan holds an operator that keeps state between batches and that
-/// a difference of two evaluations can stand in for.
-fn needs_state(plan: &LogicalPlan) -> SparkResult<bool> {
-    let mut found = false;
-    plan.apply(|node| {
-        found |= match node {
-            LogicalPlan::Distinct(_) => reads_a_stream(node)?,
-            LogicalPlan::Join(join) if join.join_type == JoinType::Inner => {
-                reads_a_stream(&join.left)? && reads_a_stream(&join.right)?
-            }
-            _ => false,
-        };
-        Ok(TreeNodeRecursion::Continue)
-    })?;
-    Ok(found)
 }
 
 /// The watermarked aggregate of the flow's query, or of a view it reads.
@@ -830,15 +944,53 @@ fn windowed_query(
     Ok(None)
 }
 
-/// The rows of windows that ended by `closed`, a watermark in microseconds.
-fn closed_windows(plan: LogicalPlan, closed: Option<i64>) -> SparkResult<LogicalPlan> {
-    let closed = closed.unwrap_or(i64::MIN);
-    let end = get_field(col("window"), "end");
-    let end = cast_expr(end, DataType::Timestamp(TimeUnit::Microsecond, None));
-    let bound = lit(ScalarValue::TimestampMicrosecond(Some(closed), None));
-    Ok(LogicalPlanBuilder::from(plan)
-        .filter(end.lt_eq(bound))?
-        .build()?)
+/// The rows of windows that end after `after` and by `through`, watermarks in
+/// microseconds. The filter sits on the aggregate itself, whose window is the
+/// grouping key with a `start` and `end`, so a query may drop the window after.
+fn windows_between(plan: LogicalPlan, after: i64, through: i64) -> SparkResult<LogicalPlan> {
+    let bound = |micros| lit(ScalarValue::TimestampMicrosecond(Some(micros), None));
+    let mut found = false;
+    let plan = plan
+        .transform_up(|node| {
+            let LogicalPlan::Aggregate(aggregate) = &node else {
+                return Ok(Transformed::no(node));
+            };
+            if found || !reads_a_stream(&node)? {
+                return Ok(Transformed::no(node));
+            }
+            let schema = node.schema().clone();
+            let window = (0..aggregate.group_expr.len()).find(|index| {
+                matches!(schema.field(*index).data_type(), DataType::Struct(fields)
+                    if fields.iter().any(|field| field.name() == "start")
+                        && fields.iter().any(|field| field.name() == "end"))
+            });
+            let Some(window) = window else {
+                return Ok(Transformed::no(node));
+            };
+            found = true;
+            let (qualifier, field) = schema.qualified_field(window);
+            let end = get_field(col(Column::new(qualifier.cloned(), field.name())), "end");
+            let end = cast_expr(end, DataType::Timestamp(TimeUnit::Microsecond, None));
+            Ok(Transformed::yes(
+                LogicalPlanBuilder::from(node)
+                    .filter(end.clone().gt(bound(after)).and(end.lt_eq(bound(through))))?
+                    .build()?,
+            ))
+        })?
+        .data;
+    if !found {
+        return Err(SparkError::internal(
+            "a watermarked aggregate has no window",
+        ));
+    }
+    Ok(plan)
+}
+
+fn missing_state(flow: &Flow) -> SparkError {
+    SparkError::invalid(format!(
+        "the state of flow {} is missing; reset the flow to rebuild it",
+        flow.name.join(".")
+    ))
 }
 
 fn file_leaf(
