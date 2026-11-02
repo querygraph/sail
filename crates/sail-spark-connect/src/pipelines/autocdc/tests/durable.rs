@@ -21,7 +21,7 @@ use tokio::runtime::Handle;
 use super::super::durable::{DurableOutcome, DurableRun, Stage, run_durable_flow};
 use super::super::run::FlowRun;
 use super::super::schema::Case;
-use super::super::write::{IN_COMMIT_TIMESTAMPS_PROPERTY, Scd1Write};
+use super::super::write::{IN_COMMIT_TIMESTAMPS_PROPERTY, Scd1Write, drop_table};
 use super::super::{ChangeArgs, ColumnSelection, ScdType, auxiliary};
 use super::fenced::{delta_version, table_dir, table_url};
 use super::run::{flow, flow_name, graph, source_name, warehouse};
@@ -324,6 +324,44 @@ async fn a_long_batch_renews_its_lease() -> TestResult {
     Ok(())
 }
 
+/// A target dropped and created again outside the pipeline: an ordinary run
+/// refuses it and names the repair; a full refresh adopts the new table under
+/// the reset, and the fenced truncate runs against its log.
+#[tokio::test]
+async fn a_recreated_target_needs_a_full_refresh_which_adopts_it() -> TestResult {
+    let case = setup().await?;
+    let control = Arc::new(Control::new(
+        UnfencedMemoryStore::new(),
+        Arc::new(ManualClock::default()),
+    ));
+    case.run(&source(), &control, "w1", None).await?;
+    let before = control.guard(&target_key()).await?.ok_or("no guard")?;
+    drop_table(&case.ctx, case.config.clone(), &target()).await?;
+    create_target_with(
+        &case.ctx,
+        case.config.clone(),
+        &target(),
+        "delta",
+        target_columns(),
+        vec![(IN_COMMIT_TIMESTAMPS_PROPERTY.into(), "true".into())],
+    )
+    .await?;
+    let refused = case.run(&source(), &control, "w1", None).await;
+    let message = refused
+        .err()
+        .ok_or("a replaced target must be refused")?
+        .to_string();
+    assert!(message.contains("run a full refresh"), "{message}");
+    let outcome = case.run_with(&source(), &control, "w1", None, true).await?;
+    assert_eq!((outcome.batches, outcome.reset), (3, Some(1)));
+    case.assert_exact().await?;
+    assert_heads_match_the_logs(&case, &control).await?;
+    let guard = control.guard(&target_key()).await?.ok_or("no guard")?;
+    assert_ne!(guard.sink, before.sink, "the guard names the new table");
+    finish(&case.ctx).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_failed_batch_releases_the_lease_for_the_next_owner() -> TestResult {
     let case = setup().await?;
@@ -495,7 +533,7 @@ async fn a_recreated_table_is_not_adopted() -> TestResult {
         .await?;
     let refused = case.run(&source(), &control, "w1", None).await;
     let message = format!("{:?}", refused.err().ok_or("the run must stop")?);
-    assert!(message.contains("IdentityMismatch"), "{message}");
+    assert!(message.contains("run a full refresh"), "{message}");
     finish(&case.ctx).await?;
     Ok(())
 }

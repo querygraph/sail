@@ -643,6 +643,31 @@ pub fn rebind_auxiliary(
     Ok(next)
 }
 
+/// `RebindSink`: a target table recreated outside the authority is adopted
+/// under an explicit reset only, before the reset's truncate: the guard then
+/// names the live table and its location, and the truncate is fenced against
+/// its head. Outside
+/// a reset the old identity stands, so an ordinary run refuses the table.
+pub fn rebind_sink(
+    guard: &TargetGuard,
+    token: &FenceToken,
+    now: AuthorityMillis,
+    physical_key: &str,
+    sink: SinkIdentity,
+) -> Result<TargetGuard, Outcome> {
+    check_fence(guard, token, now)?;
+    if guard.state != TargetState::Resetting {
+        return Err(Outcome::IdentityMismatch {
+            reason: "a replaced target is adopted only by a full refresh".into(),
+        });
+    }
+    let mut next = guard.clone();
+    next.physical_key = physical_key.to_string();
+    next.sink = sink;
+    next.revision += 1;
+    Ok(next)
+}
+
 /// `FinalizeReset`: only after both reset effects are confirmed under the
 /// new generation; rebinds the identities and enables the generation.
 pub fn finalize_reset(

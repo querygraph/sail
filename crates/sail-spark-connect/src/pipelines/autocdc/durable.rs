@@ -324,6 +324,16 @@ async fn enroll<S: Store + 'static>(
                 .map_err(control_error)?;
             (sink, auxiliary)
         }
+        // A target recreated outside the authority is adopted by an explicit
+        // full refresh, which rebinds it under the reset; see `finish_reset`.
+        Some(guard) if durable.reset => (guard.sink.clone(), guard.auxiliary.clone()),
+        Some(guard) if guard.sink != sink || guard.physical_key != sink_url.as_str() => {
+            return Err(SparkError::invalid(format!(
+                "the AutoCDC target {} was replaced outside the pipeline; run a full refresh to \
+                 enroll the new table",
+                destination_name.join(".")
+            )));
+        }
         _ => {
             control
                 .enroll(
@@ -878,6 +888,30 @@ impl<S: Store + 'static> DurableRun<'_, S> {
         let digest = digest("reset-prepared", &intent.id.0).map_err(encoding_error)?;
         let auxiliary_url = enrolled.auxiliary.url.clone();
         let task = ctx.task_ctx();
+        // A target recreated outside the authority is adopted here, under the
+        // begun reset, so the truncate below is fenced against the live log.
+        let destination = match table_state(&task, &enrolled.destination.url).await? {
+            Some((id, head)) if SinkIdentity(id.clone()) != enrolled.destination.sink => {
+                let sink = SinkIdentity(id);
+                control
+                    .rebind_sink(
+                        token,
+                        enrolled.destination.url.as_str(),
+                        &sink,
+                        version(head)?,
+                    )
+                    .await
+                    .map_err(control_error)?;
+                EffectTable {
+                    sink,
+                    url: enrolled.destination.url.clone(),
+                }
+            }
+            _ => EffectTable {
+                sink: enrolled.destination.sink.clone(),
+                url: enrolled.destination.url.clone(),
+            },
+        };
         let auxiliary_replaced = table_state(&task, &auxiliary_url)
             .await?
             .is_none_or(|(id, _)| SinkIdentity(id) != enrolled.auxiliary.sink);
@@ -915,7 +949,7 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             ctx,
             control,
             &intent.id,
-            &[(&enrolled.destination, EffectStep::ResetTarget)],
+            &[(&destination, EffectStep::ResetTarget)],
         )
         .await?;
         // `DatasetManager` drops the auxiliary state rather than truncating
@@ -950,7 +984,7 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             .await?
             .ok_or_else(|| SparkError::internal("recreated auxiliary table has no commit"))?;
         let identities = ResetIdentities {
-            sink: enrolled.destination.sink.clone(),
+            sink: destination.sink,
             auxiliary: SinkIdentity(auxiliary),
             auxiliary_head: version(auxiliary_head)?,
         };

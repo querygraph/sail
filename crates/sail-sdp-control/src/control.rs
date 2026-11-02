@@ -727,6 +727,30 @@ impl<S: Store> Control<S> {
         })
     }
 
+    /// Adopt a recreated target table under a begun reset. Its head is
+    /// recorded so the reset's truncate is fenced against the live log.
+    pub async fn rebind_sink(
+        &self,
+        token: &FenceToken,
+        physical_key: &str,
+        sink: &SinkIdentity,
+        head: u64,
+    ) -> Result<TargetGuard, Outcome> {
+        transact!(self, |tx| {
+            let guard = guard_of(&tx, &token.target).await?;
+            let next = transitions::rebind_sink(
+                &guard,
+                token,
+                self.clock.now(),
+                physical_key,
+                sink.clone(),
+            )?;
+            ensure_head(&tx, sink, head).await?;
+            put_guard(&tx, &next).await?;
+            Ok::<_, Fail>(next)
+        })
+    }
+
     pub async fn finalize_reset(
         &self,
         token: &FenceToken,
