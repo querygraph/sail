@@ -590,18 +590,25 @@ pub(super) async fn create_from_view(
     run_command(ctx, config, spec::CommandNode::Write(write), None).await
 }
 
-/// Drop `table` and its files.
+/// Drop `table` and, where the catalog allows it, its files. Open source
+/// Unity Catalog refuses PURGE; every path dropped here is unique to its
+/// table, so leaving the files cannot bring old state back.
 pub(super) async fn drop_table(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
     table: &Name,
 ) -> SparkResult<()> {
-    let command = spec::CommandNode::DropTable {
+    let command = |purge| spec::CommandNode::DropTable {
         table: spec::ObjectName::from(table.to_vec()),
         if_exists: true,
-        purge: true,
+        purge,
     };
-    run_command(ctx, config, command, None).await
+    match run_command(ctx, config.clone(), command(true), None).await {
+        Err(error) if error.to_string().contains("does not support PURGE") => {
+            run_command(ctx, config, command(false), None).await
+        }
+        result => result,
+    }
 }
 
 /// Add the columns of the published empty view that `table` lacks, under a
