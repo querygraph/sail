@@ -66,82 +66,134 @@ impl StateKeys {
     /// The operator's state when the batch started. `None` when nothing was
     /// written for that progress.
     pub fn load(&self, operator: &str) -> SparkResult<Option<Snapshot>> {
-        let path = self.path(operator, &self.start);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(SparkError::internal(format!(
-                    "read AutoCDC state {}: {error}",
-                    path.display()
-                )));
-            }
-        };
-        let reader = FileReader::try_new(Cursor::new(bytes), None)?;
-        let stored = reader.schema();
-        let watermark = stored
-            .metadata()
-            .get(WATERMARK_KEY)
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0);
-        let schema = Arc::new(Schema::new(stored.fields().clone()));
-        let batches = reader
-            .map(|batch| {
-                Ok(RecordBatch::try_new(
-                    schema.clone(),
-                    batch?.columns().to_vec(),
-                )?)
-            })
-            .collect::<SparkResult<Vec<_>>>()?;
-        Ok(Some(Snapshot {
-            schema,
-            batches,
-            watermark,
-        }))
+        read_arrow(&self.path(operator, &self.start))
     }
 
     /// Write the operator's state after the batch, then remove snapshots that
     /// neither this batch nor its replay can read.
     pub fn store(&self, operator: &str, snapshot: &Snapshot) -> SparkResult<()> {
         let path = self.path(operator, &self.end);
-        let schema = Arc::new(Schema::new_with_metadata(
-            snapshot.schema.fields().clone(),
-            HashMap::from([(WATERMARK_KEY.to_string(), snapshot.watermark.to_string())]),
-        ));
-        let mut bytes = Vec::new();
-        {
-            let mut writer = FileWriter::try_new(&mut bytes, &schema)?;
-            for batch in &snapshot.batches {
-                writer.write(&RecordBatch::try_new(
-                    schema.clone(),
-                    batch.columns().to_vec(),
-                )?)?;
-            }
-            writer.finish()?;
-        }
-        let parent = path
-            .parent()
-            .ok_or_else(|| SparkError::internal("state path has no parent"))?;
-        let io = |path: &Path, error: std::io::Error| {
-            SparkError::internal(format!("AutoCDC state {}: {error}", path.display()))
+        write_arrow(&path, snapshot)?;
+        self.prune(
+            operator,
+            &[
+                format!("{}.arrow", self.start),
+                format!("{}.arrow", self.end),
+            ],
+        )
+    }
+
+    /// The state of an operator whose state only grows, when the batch
+    /// started: every segment its manifest lists. `None` when no manifest
+    /// was written for that progress.
+    pub fn load_appended(&self, operator: &str) -> SparkResult<Option<Snapshot>> {
+        let Some(segments) = self.manifest(operator, &self.start)? else {
+            return Ok(None);
         };
-        std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
-        let staged = path.with_extension("next");
-        std::fs::write(&staged, &bytes).map_err(|e| io(&staged, e))?;
-        std::fs::rename(&staged, &path).map_err(|e| io(&path, e))?;
-        let keep = [
-            format!("{}.arrow", self.start),
-            format!("{}.arrow", self.end),
+        let mut snapshot: Option<Snapshot> = None;
+        for segment in segments {
+            let path = self.dir.join(operator).join(&segment);
+            let loaded = read_arrow(&path)?.ok_or_else(|| {
+                SparkError::internal(format!(
+                    "AutoCDC state segment {} is missing",
+                    path.display()
+                ))
+            })?;
+            match &mut snapshot {
+                Some(snapshot) => snapshot.batches.extend(loaded.batches),
+                None => snapshot = Some(loaded),
+            }
+        }
+        Ok(snapshot)
+    }
+
+    /// Add the batch's rows to an operator whose state only grows. Only the
+    /// new rows are written, as one segment, with a manifest that lists every
+    /// segment so far, so a batch's cost does not grow with the state.
+    pub fn append(&self, operator: &str, rows: &Snapshot) -> SparkResult<()> {
+        let mut segments = self.manifest(operator, &self.start)?.unwrap_or_default();
+        let segment = format!("{}.segment", self.end);
+        write_arrow(&self.dir.join(operator).join(&segment), rows)?;
+        segments.retain(|existing| existing != &segment);
+        segments.push(segment);
+        let manifest = self
+            .dir
+            .join(operator)
+            .join(format!("{}.manifest", self.end));
+        let bytes = serde_json::to_vec(&segments)
+            .map_err(|e| SparkError::internal(format!("encode AutoCDC state manifest: {e}")))?;
+        write_atomically(&manifest, &bytes)?;
+        let mut keep = vec![
+            format!("{}.manifest", self.start),
+            format!("{}.manifest", self.end),
         ];
-        for entry in std::fs::read_dir(parent).map_err(|e| io(parent, e))? {
-            let entry = entry.map_err(|e| io(parent, e))?;
+        keep.extend(segments);
+        self.prune(operator, &keep)
+    }
+
+    fn manifest(&self, operator: &str, digest: &str) -> SparkResult<Option<Vec<String>>> {
+        let path = self.dir.join(operator).join(format!("{digest}.manifest"));
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).map_err(|e| {
+                SparkError::internal(format!(
+                    "read AutoCDC state manifest {}: {e}",
+                    path.display()
+                ))
+            })?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(SparkError::internal(format!(
+                "read AutoCDC state manifest {}: {error}",
+                path.display()
+            ))),
+        }
+    }
+
+    /// Remove the operator's files other than `keep`.
+    fn prune(&self, operator: &str, keep: &[String]) -> SparkResult<()> {
+        let parent = self.dir.join(operator);
+        for entry in std::fs::read_dir(&parent).map_err(|e| io_error(&parent, e))? {
+            let entry = entry.map_err(|e| io_error(&parent, e))?;
             let name = entry.file_name().to_string_lossy().to_string();
             if !keep.contains(&name) {
-                std::fs::remove_file(entry.path()).map_err(|e| io(&entry.path(), e))?;
+                std::fs::remove_file(entry.path()).map_err(|e| io_error(&entry.path(), e))?;
             }
         }
         Ok(())
     }
+}
+
+fn io_error(path: &Path, error: std::io::Error) -> SparkError {
+    SparkError::internal(format!("AutoCDC state {}: {error}", path.display()))
+}
+
+/// Write to a sibling file and rename, so a reader sees all of it or none.
+fn write_atomically(path: &Path, bytes: &[u8]) -> SparkResult<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| SparkError::internal("state path has no parent"))?;
+    std::fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
+    let staged = path.with_extension("next");
+    std::fs::write(&staged, bytes).map_err(|e| io_error(&staged, e))?;
+    std::fs::rename(&staged, path).map_err(|e| io_error(path, e))
+}
+
+fn write_arrow(path: &Path, snapshot: &Snapshot) -> SparkResult<()> {
+    let schema = Arc::new(Schema::new_with_metadata(
+        snapshot.schema.fields().clone(),
+        HashMap::from([(WATERMARK_KEY.to_string(), snapshot.watermark.to_string())]),
+    ));
+    let mut bytes = Vec::new();
+    {
+        let mut writer = FileWriter::try_new(&mut bytes, &schema)?;
+        for batch in &snapshot.batches {
+            writer.write(&RecordBatch::try_new(
+                schema.clone(),
+                batch.columns().to_vec(),
+            )?)?;
+        }
+        writer.finish()?;
+    }
+    write_atomically(path, &bytes)
 }
 
 /// Run a plan to its rows, with columns renamed to `prefix` and their
@@ -176,4 +228,114 @@ pub(super) async fn collect(
         })
         .collect::<SparkResult<Vec<_>>>()?;
     Ok((schema, batches))
+}
+
+fn read_arrow(path: &Path) -> SparkResult<Option<Snapshot>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error(path, error)),
+    };
+    let reader = FileReader::try_new(Cursor::new(bytes), None)?;
+    let stored = reader.schema();
+    let watermark = stored
+        .metadata()
+        .get(WATERMARK_KEY)
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let schema = Arc::new(Schema::new(stored.fields().clone()));
+    let batches = reader
+        .map(|batch| {
+            Ok(RecordBatch::try_new(
+                schema.clone(),
+                batch?.columns().to_vec(),
+            )?)
+        })
+        .collect::<SparkResult<Vec<_>>>()?;
+    Ok(Some(Snapshot {
+        schema,
+        batches,
+        watermark,
+    }))
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used)]
+mod tests {
+    use datafusion::arrow::array::Int64Array;
+    use datafusion::arrow::datatypes::DataType;
+
+    use super::*;
+
+    fn rows(values: &[i64]) -> Snapshot {
+        let schema = Arc::new(Schema::new(vec![Field::new("c0", DataType::Int64, true)]));
+        let column = Arc::new(Int64Array::from(values.to_vec()));
+        Snapshot {
+            batches: vec![RecordBatch::try_new(schema.clone(), vec![column]).unwrap()],
+            schema,
+            watermark: 0,
+        }
+    }
+
+    fn values(snapshot: &Snapshot) -> Vec<i64> {
+        snapshot
+            .batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect()
+    }
+
+    fn keys(dir: &Path, start: &str, end: &str) -> StateKeys {
+        StateKeys {
+            dir: dir.to_path_buf(),
+            start: start.into(),
+            end: end.into(),
+        }
+    }
+
+    #[test]
+    fn appended_state_writes_only_each_batch_and_replays_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = keys(dir.path(), "p0", "p1");
+        assert!(first.load_appended("op").unwrap().is_none());
+        first.append("op", &rows(&[1, 2])).unwrap();
+        let second = keys(dir.path(), "p1", "p2");
+        assert_eq!(
+            values(&second.load_appended("op").unwrap().unwrap()),
+            [1, 2]
+        );
+        second.append("op", &rows(&[3])).unwrap();
+        // A replay of the second batch rewrites only its own segment.
+        second.append("op", &rows(&[3])).unwrap();
+        let third = keys(dir.path(), "p2", "p3");
+        assert_eq!(
+            values(&third.load_appended("op").unwrap().unwrap()),
+            [1, 2, 3]
+        );
+        third.append("op", &rows(&[4])).unwrap();
+        let mut files: Vec<String> = std::fs::read_dir(dir.path().join("op"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        files.sort();
+        // Each segment is written once and kept while a manifest lists it.
+        assert_eq!(
+            files,
+            [
+                "p1.segment",
+                "p2.manifest",
+                "p2.segment",
+                "p3.manifest",
+                "p3.segment"
+            ]
+        );
+    }
 }

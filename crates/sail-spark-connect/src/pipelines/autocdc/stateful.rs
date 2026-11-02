@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{Field, Schema};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, DFSchemaRef, NullEquality};
@@ -91,7 +92,7 @@ fn load(
     columns: &[usize],
     prefix: &str,
 ) -> SparkResult<Snapshot> {
-    match state.load(operator)? {
+    match state.load_appended(operator)? {
         Some(snapshot) => Ok(snapshot),
         None if origin => Ok(Snapshot::empty(Arc::new(Schema::new(
             columns
@@ -180,15 +181,12 @@ async fn deduplicate(
             col(Column::new(Some(ROWS_ALIAS), format!("c{key}"))).alias(format!("k{position}"))
         }))?
         .build()?;
-    let all = LogicalPlanBuilder::from(seen.plan(SEEN_ALIAS)?)
-        .union(added)?
-        .build()?;
-    let (seen_schema, seen_rows) = collect(ctx, all, "k").await?;
-    state.store(
+    let (added_schema, added_rows) = collect(ctx, added, "k").await?;
+    state.append(
         &operator,
         &Snapshot {
-            schema: seen_schema,
-            batches: seen_rows,
+            schema: added_schema,
+            batches: added_rows,
             watermark: 0,
         },
     )?;
@@ -225,20 +223,22 @@ async fn join(
     else {
         return Err(SparkError::internal("a join has two sides"));
     };
-    let left_all = rows(
-        ctx,
-        LogicalPlanBuilder::from(left_old.plan(ROWS_ALIAS)?)
-            .union(left_new.plan("new")?)?
-            .build()?,
-    )
-    .await?;
-    let right_all = rows(
-        ctx,
-        LogicalPlanBuilder::from(right_old.plan(ROWS_ALIAS)?)
-            .union(right_new.plan("new")?)?
-            .build()?,
-    )
-    .await?;
+    // Both sides' rows so far, without rewriting what is already stored.
+    let right_all = Snapshot {
+        schema: right_old.schema.clone(),
+        batches: right_old
+            .batches
+            .iter()
+            .chain(&right_new.batches)
+            .map(|batch| {
+                Ok(RecordBatch::try_new(
+                    right_old.schema.clone(),
+                    batch.columns().to_vec(),
+                )?)
+            })
+            .collect::<SparkResult<Vec<_>>>()?,
+        watermark: 0,
+    };
     let pair = |left: &Snapshot, right: &Snapshot| -> SparkResult<LogicalPlan> {
         Ok(node.with_new_exprs(
             node.expressions(),
@@ -252,7 +252,7 @@ async fn join(
         .union(pair(left_old, right_new)?)?
         .build()?;
     let pairs = rows(ctx, pairs).await?;
-    state.store(left_name, &left_all)?;
-    state.store(right_name, &right_all)?;
+    state.append(left_name, left_new)?;
+    state.append(right_name, right_new)?;
     as_schema(&pairs, ROWS_ALIAS, node.schema())
 }
