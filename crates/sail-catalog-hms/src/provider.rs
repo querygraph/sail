@@ -13,10 +13,10 @@ use sail_catalog::provider::{
 use sail_common::runtime::RuntimeHandle;
 use sail_common_datafusion::catalog::{DatabaseStatus, TableStatus};
 use sail_common_hms::hms::{
-    EnvironmentContext, GetTableRequest, Table, ThriftHiveMetastoreAlterTableException,
-    ThriftHiveMetastoreClient, ThriftHiveMetastoreCreateDatabaseException,
-    ThriftHiveMetastoreCreateTableException, ThriftHiveMetastoreDropDatabaseException,
-    ThriftHiveMetastoreDropTableException,
+    EnvironmentContext, GetTableRequest, GetTablesRequest, Table,
+    ThriftHiveMetastoreAlterTableException, ThriftHiveMetastoreClient,
+    ThriftHiveMetastoreCreateDatabaseException, ThriftHiveMetastoreCreateTableException,
+    ThriftHiveMetastoreDropDatabaseException, ThriftHiveMetastoreDropTableException,
     ThriftHiveMetastoreDropTableWithEnvironmentContextException,
     ThriftHiveMetastoreGetDatabaseException, ThriftHiveMetastoreGetTableException,
     ThriftHiveMetastoreGetTableReqException,
@@ -758,6 +758,28 @@ impl HmsCatalogProvider {
             let db_name = db_name_owned.clone();
             let tbl_names = tbl_names.clone();
             async move {
+                // Hive 4.0.1 removed the plain method, and metastores before 3.0 lack
+                // the request form.
+                let request = GetTablesRequest {
+                    db_name: db_name.clone(),
+                    tbl_names: Some(tbl_names.clone()),
+                    capabilities: None,
+                };
+                match client.get_table_objects_by_name_req(request).await {
+                    Ok(MaybeException::Ok(result)) => return Ok(result.tables),
+                    Ok(MaybeException::Exception(err)) => {
+                        return Err(CatalogError::External(format!(
+                            "Failed to batch-fetch HMS tables: {err:?}"
+                        )));
+                    }
+                    Err(err @ ClientError::Transport(_)) => {
+                        return Err(Self::hms_client_error(
+                            "Failed to batch-fetch HMS tables",
+                            err,
+                        ));
+                    }
+                    Err(_) => {}
+                }
                 match client.get_table_objects_by_name(db_name, tbl_names).await {
                     Ok(MaybeException::Ok(tables)) => Ok(tables),
                     Ok(MaybeException::Exception(err)) => Err(CatalogError::External(format!(
@@ -1053,7 +1075,9 @@ impl CatalogProvider for HmsCatalogProvider {
             let db_name = db_name.clone();
             async move {
                 match client
-                    .drop_database(db_name.clone(), false, options.cascade)
+                    // As Spark's Hive client does. The metastore keeps the data of a
+                    // table it does not own, unless that data lies inside this database.
+                    .drop_database(db_name.clone(), true, options.cascade)
                     .await
                 {
                     Ok(MaybeException::Ok(())) => Ok(()),
@@ -1108,6 +1132,7 @@ impl CatalogProvider for HmsCatalogProvider {
             },
             options.comment,
             options.properties,
+            options.is_external,
         )?;
         if format.logical_format != "iceberg" {
             inject_spark_metadata(
@@ -1164,7 +1189,12 @@ impl CatalogProvider for HmsCatalogProvider {
     ) -> CatalogResult<()> {
         let db_name = validate_namespace(database)?;
 
-        let request = build_drop_table_request(options.purge);
+        let mut request = build_drop_table_request(options.purge);
+        // A table this catalog owns goes with its data. A failed lookup leaves the
+        // drop to report the table as usual.
+        if let Ok(existing) = self.fetch_hms_table(database, table).await {
+            request.delete_data = crate::convert::owns_data(&existing);
+        }
         match request.environment_context {
             Some(environment_context) => {
                 self.drop_hms_table_with_environment_context(

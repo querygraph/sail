@@ -30,6 +30,9 @@ use crate::data_type::{
 pub(crate) const COMMENT_KEY: &str = "comment";
 pub(crate) const EXTERNAL_KEY: &str = "EXTERNAL";
 pub(crate) const EXTERNAL_TRUE: &str = "TRUE";
+/// Hive's mark of an external table whose data goes with it. Sail keeps a table
+/// it owns as external, since Hive 4 reads a managed table as transactional.
+pub(crate) const EXTERNAL_TABLE_PURGE_KEY: &str = "external.table.purge";
 pub(crate) const SPARK_DATASOURCE_PROVIDER_KEY: &str = "spark.sql.sources.provider";
 pub(crate) const SPARK_DATASOURCE_PATH_KEY: &str = "path";
 pub(crate) const SPARK_SCHEMA_KEY: &str = "spark.sql.sources.schema";
@@ -110,7 +113,7 @@ pub(crate) fn table_to_status(
         .as_ref()
         .map(|keys| identity_partition_fields(&field_names(keys)))
         .unwrap_or_default();
-    let is_external = table.table_type.as_deref() == Some(EXTERNAL_TABLE_TYPE);
+    let is_external = table.table_type.as_deref() == Some(EXTERNAL_TABLE_TYPE) && !owns_data(table);
     Ok(TableStatus {
         catalog: Some(catalog.to_string()),
         database: database.clone().into(),
@@ -166,6 +169,15 @@ pub(crate) fn view_to_status(
     })
 }
 
+/// Whether dropping this table also removes its data.
+pub(crate) fn owns_data(table: &Table) -> bool {
+    table.parameters.as_ref().is_some_and(|parameters| {
+        parameters
+            .get(EXTERNAL_TABLE_PURGE_KEY)
+            .is_some_and(|value| value.eq_ignore_ascii_case(EXTERNAL_TRUE))
+    })
+}
+
 pub(crate) fn build_database(
     namespace: &Namespace,
     options: CreateDatabaseOptions,
@@ -190,6 +202,7 @@ pub(crate) fn build_database(
     })
 }
 
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn build_generic_table(
     database_name: &str,
     table_name: &str,
@@ -199,6 +212,7 @@ pub(crate) fn build_generic_table(
     format: GenericDataSourceFormat<'_>,
     comment: Option<String>,
     properties: Vec<(String, String)>,
+    is_external: bool,
 ) -> CatalogResult<Table> {
     reject_spark_properties(&properties)?;
     let (regular_columns, partition_keys) = build_columns(columns, &partition_columns)?;
@@ -218,6 +232,12 @@ pub(crate) fn build_generic_table(
     }
 
     table_parameters.insert(String::from(EXTERNAL_KEY), String::from(EXTERNAL_TRUE));
+    if !is_external {
+        table_parameters.insert(
+            String::from(EXTERNAL_TABLE_PURGE_KEY),
+            String::from(EXTERNAL_TRUE),
+        );
+    }
     let serde_parameters = if is_spark_datasource_format(format.logical_format) {
         location.as_ref().map(|location| {
             let mut parameters = HashMap::new();
@@ -579,7 +599,7 @@ fn filter_spark_properties(values: Vec<(String, String)>) -> Vec<(String, String
     values
         .into_iter()
         .filter(|(key, _)| !key.starts_with("spark.sql."))
-        .filter(|(key, _)| key != EXTERNAL_KEY)
+        .filter(|(key, _)| key != EXTERNAL_KEY && key != EXTERNAL_TABLE_PURGE_KEY)
         .collect()
 }
 
@@ -1039,6 +1059,37 @@ mod tests {
     }
 
     #[test]
+    fn test_only_a_table_this_catalog_owns_goes_with_its_data() {
+        let build = |is_external| {
+            build_generic_table(
+                "default",
+                "items",
+                vec![],
+                vec![],
+                Some("/tmp/items".to_string()),
+                GenericDataSourceFormat {
+                    logical_format: "parquet",
+                    storage: &sail_catalog::hive_format::HiveCatalogFormat::from_format("parquet")
+                        .unwrap()
+                        .storage_format,
+                },
+                None,
+                vec![],
+                is_external,
+            )
+            .unwrap()
+        };
+        let (owned, external) = (build(false), build(true));
+        assert!(super::owns_data(&owned));
+        assert!(!super::owns_data(&external));
+        // Both stay external to Hive, which reads a managed table as transactional.
+        assert_eq!(
+            owned.table_type.as_deref(),
+            Some(super::EXTERNAL_TABLE_TYPE)
+        );
+    }
+
+    #[test]
     fn test_build_generic_table_marks_external_when_location_present() {
         let table = build_generic_table(
             "default",
@@ -1060,6 +1111,7 @@ mod tests {
             },
             Some("comment".to_string()),
             vec![],
+            true,
         )
         .unwrap();
 
@@ -1110,6 +1162,7 @@ mod tests {
                 },
                 None,
                 vec![],
+                true,
             )
             .unwrap();
 
@@ -1160,6 +1213,7 @@ mod tests {
             },
             None,
             vec![],
+            true,
         )
         .unwrap();
 
@@ -1219,6 +1273,7 @@ mod tests {
             },
             None,
             vec![],
+            true,
         )
         .unwrap_err();
 
@@ -1252,6 +1307,7 @@ mod tests {
             },
             None,
             vec![],
+            true,
         )
         .unwrap();
 
@@ -1287,6 +1343,7 @@ mod tests {
             },
             None,
             vec![("table_type".to_string(), "ICEBERG".to_string())],
+            true,
         )
         .unwrap();
 
@@ -1333,6 +1390,7 @@ mod tests {
             },
             None,
             vec![],
+            true,
         )
         .unwrap();
 
@@ -1384,6 +1442,7 @@ mod tests {
             },
             None,
             vec![("owner".to_string(), "alice".to_string())],
+            true,
         )
         .unwrap();
 
@@ -1452,6 +1511,7 @@ mod tests {
             },
             None,
             vec![],
+            true,
         )
         .unwrap();
 
@@ -1527,6 +1587,7 @@ mod tests {
             },
             None,
             vec![],
+            true,
         )
         .unwrap();
         inject_spark_metadata(&mut table, &columns, &[], "parquet").unwrap();
@@ -1606,6 +1667,7 @@ mod tests {
             },
             None,
             vec![],
+            true,
         )
         .unwrap();
         inject_spark_metadata(&mut table, &columns, &[], "parquet").unwrap();
@@ -1706,6 +1768,7 @@ mod tests {
             },
             Some("hello".to_string()),
             vec![("owner".to_string(), "alice".to_string())],
+            true,
         )
         .unwrap();
 
@@ -2187,6 +2250,7 @@ mod tests {
             },
             None,
             vec![],
+            true,
         )
         .unwrap();
 
@@ -2299,6 +2363,7 @@ mod tests {
             },
             Some("mixed events table".to_string()),
             vec![("owner".to_string(), "alice".to_string())],
+            true,
         )
         .unwrap();
 
@@ -2667,6 +2732,7 @@ mod tests {
                 ("spark.sql.foo".to_string(), "bar".to_string()),
                 ("owner".to_string(), "alice".to_string()),
             ],
+            true,
         )
         .unwrap_err();
         assert!(error.to_string().contains("spark.sql.foo"));
@@ -2695,6 +2761,7 @@ mod tests {
             },
             None,
             vec![("EXTERNAL".to_string(), "TRUE".to_string())],
+            true,
         )
         .unwrap_err();
         assert!(error.to_string().contains("EXTERNAL"));

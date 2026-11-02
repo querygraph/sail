@@ -342,6 +342,8 @@ impl GlobUrl {
     }
 
     pub fn parse(s: &str) -> Result<Vec<GlobUrl>> {
+        let s = expand_file_uri(s);
+        let s = s.as_ref();
         if std::path::Path::new(s).is_absolute() {
             return GlobUrl::parse_file_path(s);
         }
@@ -542,7 +544,25 @@ pub async fn resolve_listing_urls(
     Ok(urls)
 }
 
-fn fill_directory_root_path(mut path: String) -> Result<String> {
+/// `file:/path`, as Hadoop and Hive write it, is the same URI as `file:///path`.
+/// The URL grammar here takes a scheme only before `://`, so without this it
+/// would be a relative path, under the server's working directory.
+fn expand_file_uri(path: &str) -> std::borrow::Cow<'_, str> {
+    match path.get(..5) {
+        Some(scheme) if scheme.eq_ignore_ascii_case("file:") => {
+            let rest = &path[5..];
+            if rest.starts_with('/') && !rest.starts_with("//") {
+                format!("file://{rest}").into()
+            } else {
+                path.into()
+            }
+        }
+        _ => path.into(),
+    }
+}
+
+fn fill_directory_root_path(path: String) -> Result<String> {
+    let mut path = expand_file_uri(&path).into_owned();
     // GlobUrl requires a nonempty path. Supply only a missing root path here,
     // keeping raw glob expressions intact until GlobUrl validates them.
     if path.is_empty() {
@@ -1105,6 +1125,8 @@ mod tests {
             &[("hdfs://user:password@host:8000/path/", Some("**/*.txt"))],
         );
         test("file:///tmp/data.txt", &[("file:///tmp/data.txt", None)]);
+        test("file:/tmp/data.txt", &[("file:///tmp/data.txt", None)]);
+        test("FILE:/tmp/*.txt", &[("file:///tmp/", Some("*.txt"))]);
         test("file:///tmp/*.txt", &[("file:///tmp/", Some("*.txt"))]);
         test("file:///foo/../bar", &[("file:///bar", None)]);
         test("/tmp/data.txt", &[("file:///tmp/data.txt", None)]);
