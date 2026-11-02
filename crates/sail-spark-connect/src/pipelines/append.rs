@@ -15,8 +15,11 @@
 //! A streaming read of a data source lists its path the same way. Flows run
 //! one at a time and each reads to the end of what it listed, as one batch.
 //! A Delta source, as a table or a path, is read from its log instead, and its
-//! progress is a version: see [`sail_delta_lake::stream`]. Other sources that
-//! are not plain files are refused, not read wrongly.
+//! progress is a version: see [`sail_delta_lake::stream`]. A [`BoundedSource`]
+//! such as an Iggy topic is read as exact ranges from each partition's cursor,
+//! at most [`MAX_RANGE_ROWS`] at a time, so one run writes several batches up
+//! to a frontier it captures once. Other sources that are not plain files are
+//! refused, not read wrongly.
 //! The only stateful query is an aggregate over a tumbling window with a
 //! watermark: a window's rows are held under the checkpoint until the
 //! watermark passes its end, and then aggregated once. Rows behind the
@@ -44,9 +47,13 @@ use sail_common_datafusion::datasource::is_lakehouse_format;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_common_datafusion::session::job::JobService;
+use sail_common_datafusion::streaming::bounded::{
+    BoundedSource, Cursor, Incarnation, PartitionId, Range, ScanError, SourceError,
+};
 use sail_delta_lake::stream::{
     DeltaStream, DeltaStreamError, DeltaStreamFailure, DeltaStreamOffset, DeltaStreamRange,
 };
+use sail_iggy_bounded::{FORMAT as IGGY_FORMAT, IggyBoundedConfig, IggyBoundedSource};
 use sail_plan::config::PlanConfig;
 use sail_plan::error::{PlanError, PlanResult};
 use sail_plan::resolver::PlanResolver;
@@ -65,6 +72,8 @@ const FILE_FORMATS: [&str; 6] = ["parquet", "orc", "json", "csv", "text", "avro"
 const HIVE_DEFAULT_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
 const STATE_FILE: &str = "state.json";
 const MAX_VIEW_DEPTH: usize = 32;
+/// The most rows one partition adds to a batch. A range is held in memory.
+const MAX_RANGE_ROWS: usize = 100_000;
 
 /// One flow's progress. `pending` is the batch being written.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -88,7 +97,23 @@ struct FlowState {
     /// to read yet, which still counts as one of this flow's sources.
     #[serde(default)]
     pending_delta: Option<BTreeMap<String, Option<DeltaStreamRange>>>,
+    /// How far each partition of each bounded source has been read.
+    #[serde(default)]
+    bounded: BTreeMap<String, BTreeMap<String, BoundedOffset>>,
+    /// The ranges of the batch being written.
+    #[serde(default)]
+    pending_bounded: Option<BTreeMap<String, Vec<Range>>>,
 }
+
+/// A partition's position, under the existence of the partition it was read in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct BoundedOffset {
+    incarnation: Incarnation,
+    cursor: Cursor,
+}
+
+/// Where a run stops reading each partition of each bounded source.
+type Frontiers = BTreeMap<String, BTreeMap<String, Cursor>>;
 
 /// What one batch reads from each source.
 #[derive(Default)]
@@ -96,17 +121,26 @@ struct Batch {
     files: BTreeMap<String, Vec<String>>,
     delta: BTreeMap<String, Option<DeltaStreamRange>>,
     delta_rows: bool,
+    bounded: BTreeMap<String, Vec<Range>>,
+    frontiers: Frontiers,
+    /// A partition has rows past this batch, up to the frontier.
+    more: bool,
+    /// This run rebuilds the table, so a source must still hold its start.
+    reset: bool,
 }
 
 impl Batch {
     fn has_rows(&self) -> bool {
-        self.delta_rows || self.files.values().any(|files| !files.is_empty())
+        self.delta_rows
+            || self.files.values().any(|files| !files.is_empty())
+            || self.bounded.values().any(|ranges| !ranges.is_empty())
     }
 
     fn sources(&self) -> BTreeSet<String> {
         self.files
             .keys()
             .chain(self.delta.keys())
+            .chain(self.bounded.keys())
             .cloned()
             .collect()
     }
@@ -378,11 +412,31 @@ struct Streamed {
 /// the checkpoint. It cannot collide with a table, which has no such part.
 fn source_name(source: &spec::ReadDataSource) -> Name {
     let format = source.format.clone().unwrap_or_default();
-    vec![
-        STREAM_SOURCE_PART.to_string(),
-        format,
-        source.paths.join(","),
-    ]
+    let location = if is_iggy(&format) {
+        iggy_location(&source.options)
+    } else {
+        source.paths.join(",")
+    };
+    vec![STREAM_SOURCE_PART.to_string(), format, location]
+}
+
+fn is_iggy(format: &str) -> bool {
+    format.eq_ignore_ascii_case(IGGY_FORMAT)
+}
+
+/// A topic's identity. The URL can carry credentials, and this name is stored
+/// in the checkpoint, so only its host is kept.
+fn iggy_location(options: &[(String, String)]) -> String {
+    let option = |name: &str| {
+        options
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map_or("", |(_, value)| value.as_str())
+    };
+    let url = option("url");
+    let address = url.rsplit('@').next().unwrap_or_default();
+    let address = address.rsplit("://").next().unwrap_or_default();
+    format!("{address}/{}/{}", option("stream"), option("topic"))
 }
 
 pub(super) fn view_flow<'a>(graph: &'a GraphDefinition, name: &Name) -> Option<&'a Flow> {
@@ -793,6 +847,161 @@ async fn delta_plan(
         .build()?)
 }
 
+/// The columns of a data source, as planning sees them.
+async fn source_schema(
+    ctx: &SessionContext,
+    config: &Arc<PlanConfig>,
+    source: &spec::ReadDataSource,
+) -> SparkResult<datafusion::arrow::datatypes::SchemaRef> {
+    let read = spec::QueryPlan::new(spec::QueryNode::Read {
+        read_type: spec::ReadType::DataSource(Box::new(source.clone())),
+        is_streaming: false,
+    });
+    let resolved = PlanResolver::new(ctx, config.clone())
+        .resolve_named_plan(spec::Plan::Query(read))
+        .await?;
+    let plan = match resolved.fields {
+        Some(fields) => rename_logical_plan(resolved.plan, &fields)?,
+        None => resolved.plan,
+    };
+    Ok(Arc::new(plan.schema().as_arrow().clone()))
+}
+
+/// A source's calls block on its own runtime.
+async fn bounded_call<T: Send + 'static>(
+    call: impl FnOnce() -> Result<T, SourceError> + Send + 'static,
+) -> SparkResult<T> {
+    tokio::task::spawn_blocking(call)
+        .await
+        .map_err(|e| SparkError::internal(format!("bounded source call: {e}")))?
+        .map_err(SparkError::from)
+}
+
+/// The next ranges of a source, from each partition's offset towards the
+/// frontier. A partition first seen starts at its earliest position. Offsets
+/// are never moved past a gap or into a recreated partition: the source
+/// refuses the scan, or this refuses the range.
+fn plan_ranges(
+    source: &dyn BoundedSource,
+    offsets: &BTreeMap<String, BoundedOffset>,
+    frontiers: &mut BTreeMap<String, Cursor>,
+    reset: bool,
+) -> Result<(Vec<Range>, bool), SourceError> {
+    let partitions = source.describe()?.partitions;
+    for id in offsets.keys() {
+        if !partitions.iter().any(|partition| &partition.id.0 == id) {
+            return Err(ScanError::UnknownPartition {
+                partition: PartitionId(id.clone()),
+            }
+            .into());
+        }
+    }
+    let (mut ranges, mut more) = (vec![], false);
+    for partition in partitions {
+        let start = match offsets.get(&partition.id.0) {
+            Some(offset) if offset.incarnation != partition.incarnation => {
+                return Err(ScanError::IncarnationMismatch {
+                    partition: partition.id,
+                    expected: offset.incarnation.clone(),
+                    actual: partition.incarnation,
+                }
+                .into());
+            }
+            Some(offset) => offset.cursor.clone(),
+            None => {
+                let earliest = source.earliest(&partition.id)?;
+                // A full refresh cannot rebuild what the source no longer holds.
+                if reset && !source.retains_origin(&partition.id)? {
+                    return Err(ScanError::RetentionGap {
+                        partition: partition.id,
+                        expected: Cursor("the start of the partition".into()),
+                        first_retained: earliest,
+                    }
+                    .into());
+                }
+                earliest
+            }
+        };
+        let frontier = match frontiers.get(&partition.id.0) {
+            Some(frontier) => frontier.clone(),
+            None => {
+                let frontier = source.frontier(&partition.id)?;
+                frontiers.insert(partition.id.0.clone(), frontier.clone());
+                frontier
+            }
+        };
+        let end = source.plan_end(&partition.id, &start, &frontier, MAX_RANGE_ROWS)?;
+        if end == start {
+            continue;
+        }
+        more |= end != frontier;
+        ranges.push(Range {
+            partition: partition.id,
+            incarnation: partition.incarnation,
+            start,
+            end,
+        });
+    }
+    Ok((ranges, more))
+}
+
+/// The rows of a bounded source that this flow has not read, or of the
+/// replayed batch.
+async fn bounded_plan(
+    source: Arc<dyn BoundedSource>,
+    name: &Name,
+    state: &FlowState,
+    batch: &mut Batch,
+) -> SparkResult<LogicalPlan> {
+    let key = name.join(".");
+    let ranges = match batch.bounded.get(&key) {
+        Some(ranges) => {
+            // What follows a replayed batch is read by the next one.
+            batch.more = true;
+            ranges.clone()
+        }
+        None => {
+            let offsets = state.bounded.get(&key).cloned().unwrap_or_default();
+            let mut frontiers = batch.frontiers.get(&key).cloned().unwrap_or_default();
+            let reset = batch.reset;
+            let planning = source.clone();
+            let (ranges, more, frontiers) = bounded_call(move || {
+                let (ranges, more) =
+                    plan_ranges(planning.as_ref(), &offsets, &mut frontiers, reset)?;
+                Ok((ranges, more, frontiers))
+            })
+            .await?;
+            batch.frontiers.insert(key.clone(), frontiers);
+            batch.more |= more;
+            batch.bounded.insert(key, ranges.clone());
+            ranges
+        }
+    };
+    let mut plans = vec![];
+    for range in ranges {
+        let reading = source.clone();
+        let provider = bounded_call(move || reading.scan(&range)).await?;
+        plans.push(
+            LogicalPlanBuilder::scan(SOURCE_ALIAS, provider_as_source(provider), None)?.build()?,
+        );
+    }
+    let mut plans = plans.into_iter();
+    let builder = match plans.next() {
+        None => {
+            let table = MemTable::try_new(source.schema(), vec![vec![]])?;
+            LogicalPlanBuilder::scan(SOURCE_ALIAS, provider_as_source(Arc::new(table)), None)?
+        }
+        Some(first) => {
+            let mut builder = LogicalPlanBuilder::from(first);
+            for plan in plans {
+                builder = builder.union(plan)?;
+            }
+            builder
+        }
+    };
+    Ok(builder.alias(SOURCE_ALIAS)?.build()?)
+}
+
 /// `readStream.format(...).load(path)` over a directory of files. Other
 /// sources have no files to list and stay refused: without this refusal a
 /// flow over one would complete having read nothing.
@@ -814,18 +1023,7 @@ async fn file_source(
     if source.paths.iter().any(|path| path.contains(',')) {
         return Err(SparkError::unsupported("a stream path containing a comma"));
     }
-    let read = spec::QueryPlan::new(spec::QueryNode::Read {
-        read_type: spec::ReadType::DataSource(Box::new(source.clone())),
-        is_streaming: false,
-    });
-    let resolved = PlanResolver::new(ctx, config.clone())
-        .resolve_named_plan(spec::Plan::Query(read))
-        .await?;
-    let plan = match resolved.fields {
-        Some(fields) => rename_logical_plan(resolved.plan, &fields)?,
-        None => resolved.plan,
-    };
-    let empty = Arc::new(plan.schema().as_arrow().clone());
+    let empty = source_schema(ctx, config, &source).await?;
     let schema = source
         .schema
         .clone()
@@ -1053,6 +1251,16 @@ fn bind_streams<'a>(
                 streams.insert(name, plan);
                 continue;
             }
+            if source.format.as_deref().is_some_and(is_iggy) {
+                let schema = source_schema(ctx, config, &source).await?;
+                let options = IggyBoundedConfig::from_options(source.options.iter().cloned())
+                    .map_err(SparkError::from)?;
+                let iggy: Arc<dyn BoundedSource> =
+                    Arc::new(IggyBoundedSource::try_new(options, schema)?);
+                let plan = bounded_plan(iggy, &name, state, batch).await?;
+                streams.insert(name, plan);
+                continue;
+            }
             let source = file_source(ctx, config, source).await?;
             check_stream_options(&source.options)?;
             let plan = unread_plan(ctx, config, &source, &name, state, batch).await?;
@@ -1148,12 +1356,28 @@ pub(super) struct AppendFlow<'a> {
     pub reset: bool,
 }
 
-/// Run one flow to the end of its unread input.
+/// Run one flow to the end of its unread input, in as many batches as its
+/// bounded sources need to reach the frontier this run captures.
 pub(super) async fn run(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
-    run: AppendFlow<'_>,
+    mut run: AppendFlow<'_>,
 ) -> SparkResult<()> {
+    let mut frontiers = Frontiers::new();
+    while run_batch(ctx, config.clone(), &run, &mut frontiers).await? {
+        // The checkpoint of a refresh exists now, and later batches continue it.
+        run.reset = false;
+    }
+    Ok(())
+}
+
+/// One batch. Whether another one follows.
+async fn run_batch(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    run: &AppendFlow<'_>,
+    frontiers: &mut Frontiers,
+) -> SparkResult<bool> {
     let scope = GraphScope::new(run.graph, run.inputs, run.flow);
     let names = streamed_names(ctx, &config, &scope, &run.flow.query).await?;
     if names.names.is_empty() && names.sources.is_empty() {
@@ -1169,6 +1393,10 @@ pub(super) async fn run(
         files: state.pending.take().unwrap_or_default(),
         delta: state.pending_delta.take().unwrap_or_default(),
         delta_rows: false,
+        bounded: state.pending_bounded.take().unwrap_or_default(),
+        frontiers: std::mem::take(frontiers),
+        more: false,
+        reset: run.reset,
     };
     let mut streams = BTreeMap::new();
     bind_streams(
@@ -1184,6 +1412,7 @@ pub(super) async fn run(
         0,
     )
     .await?;
+    *frontiers = std::mem::take(&mut batch.frontiers);
     let sources = batch.sources();
     if !state.sources.is_empty() && state.sources != sources {
         return Err(sources_changed_error(
@@ -1216,11 +1445,13 @@ pub(super) async fn run(
             advance_delta(&mut state, batch.delta);
             checkpoint.store(&state).await?;
         }
-        return Ok(());
+        return Ok(false);
     }
-    let write = pad_dropped_columns(ctx, run.destination, run.write, &outputs).await?;
+    let write = pad_dropped_columns(ctx, run.destination, run.write.clone(), &outputs).await?;
+    let more = batch.more;
     state.pending = Some(batch.files);
     state.pending_delta = Some(batch.delta);
+    state.pending_bounded = Some(batch.bounded);
     checkpoint.store(&state).await?;
     match windowed {
         Some(windowed) => {
@@ -1249,8 +1480,21 @@ pub(super) async fn run(
     }
     let ranges = state.pending_delta.take().unwrap_or_default();
     advance_delta(&mut state, ranges);
+    for (source, ranges) in state.pending_bounded.take().unwrap_or_default() {
+        let offsets = state.bounded.entry(source).or_default();
+        for range in ranges {
+            offsets.insert(
+                range.partition.0,
+                BoundedOffset {
+                    incarnation: range.incarnation,
+                    cursor: range.end,
+                },
+            );
+        }
+    }
     state.batches += 1;
-    checkpoint.store(&state).await
+    checkpoint.store(&state).await?;
+    Ok(more)
 }
 
 fn advance_delta(state: &mut FlowState, ranges: BTreeMap<String, Option<DeltaStreamRange>>) {
@@ -1414,3 +1658,7 @@ async fn run_windowed(
     state.watermark = watermark;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "append_bounded_tests.rs"]
+mod bounded_tests;
