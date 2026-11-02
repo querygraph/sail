@@ -1060,7 +1060,7 @@ pub(super) struct Windowed {
     source: Name,
     pub event_time: String,
     pub delay_micros: i64,
-    window_micros: i64,
+    pub window_micros: i64,
 }
 
 fn duration_micros(text: &str) -> Option<i64> {
@@ -1191,7 +1191,7 @@ pub(super) fn windowed_aggregate(
 }
 
 /// The event time as whole microseconds, for arithmetic.
-fn event_micros(plan: &LogicalPlan, column: &str) -> SparkResult<Expr> {
+pub(super) fn event_micros(plan: &LogicalPlan, column: &str) -> SparkResult<Expr> {
     let (_, field) = plan
         .schema()
         .qualified_field_with_unqualified_name(column)

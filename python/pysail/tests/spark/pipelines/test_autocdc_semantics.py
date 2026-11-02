@@ -522,6 +522,35 @@ def test_a_windowed_aggregate_feeds_a_flow_once_its_window_closes(stateful):
     assert run(transform) == [(1, 3)]
 
 
+def test_a_deduplication_keeps_the_first_row_of_a_key_across_runs(stateful):
+    send, run = stateful
+    transform = lambda frame: frame.dropDuplicates(["id"])  # noqa: E731
+    send("a", (1, "a", 1, T0))
+    assert run(transform) == [(1, 1)]
+    send("b", (1, "b", 2, T0), (2, "b", 1, T0))
+    assert run(transform) == [(1, 1), (2, 1)]
+
+
+def test_a_row_behind_the_watermark_changes_only_an_open_window(stateful):
+    send, run = stateful
+
+    def transform(frame):
+        grouped = frame.withWatermark("ts", "1 hour").groupBy("id", sf.window("ts", "1 minute"))
+        return grouped.agg(sf.max("seq").alias("seq"))
+
+    send("a", (1, "a", 1, T0))
+    assert run(transform) == []
+    # The watermark moves to 01:00:30, which closes the window of 00:00.
+    send("b", (2, "b", 9, "2024-01-01T02:00:30Z"))
+    assert run(transform) == [(1, 1)]
+    # A row for the closed window is late. A row at 01:00:10 is behind the
+    # watermark too, but its window ends after it, so it counts.
+    send("c", (1, "c", 7, T0), (3, "c", 4, "2024-01-01T01:00:10Z"))
+    assert run(transform) == [(1, 1)]
+    send("d", (4, "d", 2, "2024-01-01T03:00:00Z"))
+    assert run(transform) == [(1, 1), (3, 4)]
+
+
 def test_an_aggregate_without_a_watermark_is_refused(stateful):
     send, run = stateful
     send("a", (1, "a", 1, T0))
