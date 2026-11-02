@@ -222,11 +222,6 @@ def test_a_union_of_streaming_and_batch_views_has_the_merged_schema(suite):
     assert suite.columns("d") == [("value", "int")]
 
 
-@pytest.mark.xfail(
-    not is_jvm_spark(),
-    strict=True,
-    reason="Sail starts a stream unioned with a batch relation, and the run completes",
-)
 def test_a_union_of_streaming_and_batch_views_cannot_start(suite):
     """ConnectValidPipelineSuite:159: resolution accepts this union, and Structured Streaming then refuses it."""
     suite.table()

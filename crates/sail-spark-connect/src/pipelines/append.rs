@@ -698,6 +698,23 @@ pub(super) fn check_stateless(plan: &LogicalPlan, windowed: bool) -> SparkResult
             LogicalPlan::Aggregate(_) if !windowed && reads_a_stream(node)? => {
                 Some(append_mode_error())
             }
+            LogicalPlan::Union(union) => {
+                let mut streams = 0;
+                for input in &union.inputs {
+                    streams += usize::from(reads_a_stream(input)?);
+                }
+                (streams > 0 && streams < union.inputs.len()).then(|| {
+                    SparkError::from(Box::new(StructuredSparkError {
+                        class: "org.apache.spark.sql.AnalysisException".into(),
+                        condition: "_LEGACY_ERROR_TEMP_3102".into(),
+                        sql_state: String::new(),
+                        message: "Union between streaming and batch DataFrames/Datasets is not \
+                                  supported"
+                            .into(),
+                        parameters: HashMap::new(),
+                    }))
+                })
+            }
             LogicalPlan::Distinct(_) if reads_a_stream(node)? => {
                 Some(SparkError::unsupported("streaming deduplication"))
             }
