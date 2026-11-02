@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov ∈ LakeSail Team" />
+  <meta name="dcterms.date" content="2026-11-02" />
+  <meta name="description" content="How Sail implements Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines CLI, with batch, streaming, Apache Iggy and AutoCDC, and how it was verified against Spark." />
+  <title>Verification methodology</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-007.html" accesskey="n" rel="next">Differences from Spark</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-005.html" accesskey="p" rel="previous">Components</a>
+</span>
+</div>
+</nav>
+<h1 data-number="5" id="verification-methodology"><span
+class="header-section-number">5</span> Verification methodology</h1>
+<h2 data-number="5.1" id="principles"><span
+class="header-section-number">5.1</span> Principles</h2>
+<p>The gates were built to stop two failure modes: counting a pass that
+was not real, and missing a regression outside the pipelines module. The
+rules (§15):</p>
+<ul>
+<li><strong>Spark first.</strong> Spark 4.2.1 is measured before Sail
+behavior is accepted. A test that fails on Spark is rerun alone, in its
+own session with an empty warehouse, before it counts as a difference.
+In the first such run, 32 of 40 Spark failures were leftovers from
+earlier tests sharing the <code>default</code> schema.</li>
+<li><strong>Controls.</strong> A control run with the fix reverted must
+fail the new tests.</li>
+<li><strong>Honest records.</strong> Failed runs are kept and never
+relabelled. No upstream assertion is removed, no xfail is added, and no
+table is swapped for a materialized view (or streaming for batch) to get
+a pass. No debug RPC or Spark-internal clone is added to satisfy
+fixtures.</li>
+<li><strong>Frozen sources.</strong> Changing a frozen test source
+requires a named alignment record in the harness
+<code>preparation.json</code>.</li>
+<li><strong>Immutable gates.</strong> Each verdict names one detached
+commit with its own target directory. The toolchain is Rust 1.98.1 with
+<code>--locked</code>, nightly fmt per crate (never
+<code>cargo fmt --all</code>, which rewrites <code>vendor/</code>),
+strict Clippy, and a Python 3.12 venv with PySpark 4.2.1.</li>
+<li><strong>Landing.</strong> Only through <code>gate-run.sh</code> then
+<code>land.sh</code>, or <code>gate-merge.sh</code> then a fast-forward,
+and only after the frozen harness prints PASS.</li>
+</ul>
+<h2 data-number="5.2" id="frozen-ports"><span
+class="header-section-number">5.2</span> Frozen ports</h2>
+<p>Spark’s internal Scala suites instantiate Catalyst and Spark
+internals; they cannot run against a Rust server. The user excluded them
+from the goal. Instead, 300 selected public tests and 67 upstream Python
+tests are frozen, with hashes, and run on every gate. They must print
+PASS.</p>
+<p>An audit of the non-AutoCDC Scala suites maps each case to a Sail
+test. Final state: 384 ported, 37 partial, 14 internal, 0 missing. The
+37 partial entries are wire-invisible: the Scala assertion checks
+internal state the Connect protocol does not expose (event fields and
+capacity that never reach a client, states a client cannot request),
+plus AutoCDC cases of PythonPipelineSuite and the <code>memory</code>
+writeStream case. The user accepted them as finished scope.</p>
+<h2 data-number="5.3" id="gate-steps"><span
+class="header-section-number">5.3</span> Gate steps</h2>
+<p>The batch lane’s gate, which lands every commit on the root,
+runs:</p>
+<ul>
+<li>native tests on 15 crates;</li>
+<li>the frozen 300 + 67;</li>
+<li>the pipelines and ORC Python suites;</li>
+<li>the CLI test, with <code>catalog.shared_memory</code> on;</li>
+<li>the Hive metastore profile and the second-catalog profile;</li>
+<li>the Delta suite, compared by failure name with the baseline.</li>
+</ul>
+<p>The CDC lane’s gate adds, for every offer:</p>
+<ul>
+<li>fmt and strict Clippy;</li>
+<li>the Spark Connect, Delta, control-store and sail-session
+libraries;</li>
+<li>the whole Spark Python tree;</li>
+<li>local-cluster, Iceberg, Hive and Unity runs;</li>
+<li>the Spark oracle, <code>crash.py</code> seeds and
+<code>iceberg_on_spark</code> (the AutoCDC files on Spark with
+Iceberg).</li>
+</ul>
+<p>Gates launch with SIGINT unblocked. A blocked SIGINT is inherited by
+every Sail server, and the Hive script then hangs in teardown.</p>
+<h2 data-number="5.4" id="whole-tree-comparison-against-upstream"><span
+class="header-section-number">5.4</span> Whole-tree comparison against
+upstream</h2>
+<p>For a while the whole Spark Python tree was compared only with
+earlier roots of this branch. “No new failures” then meant none since
+the last root. Run against the upstream merge base
+<code>0ba425c03</code>, 75 tests passed upstream and failed on the
+branch. The causes were general changes: the ANSI string cast lowering
+broke correlated subquery decorrelation (56 tests) and VALUES NaN
+detection; a CASE coercion used the non-ANSI policy; unresolved-column
+reporting failed on internal columns (8 tests); the partition-column
+check refused nested sources. All were fixed.</p>
+<p>A second correction followed. TPC-H, TPC-DS and two utility tests had
+never collected because duckdb and jedi were missing, and other tests
+failed for harness reasons. <code>run-full.py</code> pins the optional
+test dependencies as in <code>pyproject.toml</code>. Under it, upstream
+<code>0ba425c03</code> has 0 failures and 12 JVM fixture errors. The CDC
+lane’s gate on <code>44b2f5f73</code> ran the whole tree: 12133 passed,
+0 errors.</p>
+<h2 data-number="5.5" id="spark-oracle-runs"><span
+class="header-section-number">5.5</span> Spark oracle runs</h2>
+<p><strong>Batch.</strong> Batch test files are identical on
+<code>df2457e50</code> and on the root. Every non-AutoCDC pipelines
+file, 61 files, was run on Spark 4.2.1 (delta-spark 4.4.1,
+<code>local[2]</code>), each in its own Spark session. That run had 40
+failures. Rerun alone with an empty warehouse, 36 passed. The 4 that
+fail on Spark alone are all documented Sail differences:</p>
+<ul>
+<li><code>test_rejected_flow_does_not_execute_insert</code>: Sail
+rejects before the INSERT child runs.</li>
+<li><code>test_a_failed_sql_file_registers_no_partial_definitions</code>:
+file-atomic registration.</li>
+<li><code>test_quoted_identifier_with_dot</code> and
+<code>test_escaped_hyphenated_dataset_dependencies</code>: Spark’s
+session catalog refuses these names.</li>
+</ul>
+<p>Before the <code>2e73a0b87</code> fixes the same run had 8 real
+differences; bare <code>USE</code>, declared view columns and
+<code>DATA_SOURCE_NOT_FOUND</code> now pass on Spark too.</p>
+<p><strong>AutoCDC.</strong> Plain Spark lacks a catalog whose tables
+support row-level MERGE, so the AutoCDC oracle uses a row-level test
+catalog. With Iceberg, Spark needs the Iceberg 1.13.0-SNAPSHOT nightly
+for Spark 4.2; the 1.12.0 runtime, built for Spark 4.1, does not load.
+On this root, <code>test_autocdc_semantics.py</code>: 41 passed;
+<code>test_autocdc_spark_suites.py</code>: 43 passed and 4 skipped
+(Sail-only cases). Spark with Iceberg refuses 3 nested-type AutoCDC
+cases that Sail completes.</p>
+<h2 data-number="5.6" id="crash-seeds-and-local-cluster"><span
+class="header-section-number">5.6</span> Crash seeds and
+local-cluster</h2>
+<p><code>crash.py</code> kills the server with SIGKILL at seeded points
+of the durable AutoCDC run and checks that the next run recovers
+exactly. On the CDC gate every recovery was exact. Separately, the
+pipelines suite runs in local-cluster mode: 95 passed on the CDC gate.
+The racy release tests were repeated 12 rounds in local-cluster mode
+while fixing the driver hang: the fixed binary was clean all 12 rounds,
+with the 30-second bound firing once; the prior binary failed one
+round.</p>
+<h2 data-number="5.7" id="results-on-the-root"><span
+class="header-section-number">5.7</span> Results on the root</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Gate</th>
+<th>Commit</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Native tests</td>
+<td><code>fb3a6ab03</code></td>
+<td>15 crates</td>
+</tr>
+<tr>
+<td>Frozen 300 + 67</td>
+<td><code>fb3a6ab03</code></td>
+<td>PASS</td>
+</tr>
+<tr>
+<td>Pipelines and ORC</td>
+<td><code>fb3a6ab03</code></td>
+<td>1262 passed, 23 skipped, 4 strict xfail</td>
+</tr>
+<tr>
+<td>CLI, shared memory on</td>
+<td><code>fb3a6ab03</code></td>
+<td>passed</td>
+</tr>
+<tr>
+<td>Hive metastore</td>
+<td><code>fb3a6ab03</code></td>
+<td>69 passed, 2 xfailed</td>
+</tr>
+<tr>
+<td>Second catalog</td>
+<td><code>fb3a6ab03</code></td>
+<td>13 passed</td>
+</tr>
+<tr>
+<td>Delta suite</td>
+<td><code>fb3a6ab03</code></td>
+<td>same failures by name as baseline</td>
+</tr>
+<tr>
+<td>Shutdown</td>
+<td><code>fb3a6ab03</code></td>
+<td>no session cleanup failures</td>
+</tr>
+<tr>
+<td>Whole Spark Python tree</td>
+<td><code>44b2f5f73</code></td>
+<td>12133 passed, 0 errors</td>
+</tr>
+<tr>
+<td>Local-cluster</td>
+<td><code>44b2f5f73</code></td>
+<td>95 passed</td>
+</tr>
+<tr>
+<td>Iceberg / Hive / Unity</td>
+<td><code>44b2f5f73</code></td>
+<td>86 / 88 / 230 passed</td>
+</tr>
+<tr>
+<td>Crash seeds</td>
+<td><code>44b2f5f73</code></td>
+<td>every recovery exact</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

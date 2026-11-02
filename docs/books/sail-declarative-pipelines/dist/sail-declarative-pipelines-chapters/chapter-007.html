@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov ∈ LakeSail Team" />
+  <meta name="dcterms.date" content="2026-11-02" />
+  <meta name="description" content="How Sail implements Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines CLI, with batch, streaming, Apache Iggy and AutoCDC, and how it was verified against Spark." />
+  <title>Differences from Spark</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-008.html" accesskey="n" rel="next">Scope decisions, limits and open work</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-006.html" accesskey="p" rel="previous">Verification methodology</a>
+</span>
+</div>
+</nav>
+<h1 data-number="6" id="differences-from-spark"><span
+class="header-section-number">6</span> Differences from Spark</h1>
+<h2 data-number="6.1" id="strict-expected-failures"><span
+class="header-section-number">6.1</span> Strict expected failures</h2>
+<p>These are pinned as strict expected failures and accepted as finished
+scope (user decision 6).</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Difference</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Interrupting a run stops its flows. Spark lets them finish.</td>
+<td>Otherwise nothing could stop such a run, and session shutdown needs
+the flows stopped.</td>
+</tr>
+<tr>
+<td>Releasing a session during a run stops its flows.</td>
+<td>Same reason.</td>
+</tr>
+<tr>
+<td>Added columns follow the target table’s order.</td>
+<td>Spark’s order comes from a Scala Map and is unstable past four
+fields.</td>
+</tr>
+<tr>
+<td><code>writeStream</code> to <code>memory</code> outside a pipeline
+is not supported.</td>
+<td>Not in scope; inside a pipeline the memory sink works.</td>
+</tr>
+</tbody>
+</table>
+<p>A union of streaming and batch inputs was once a fifth. Since
+<code>609a6c251</code> Sail refuses it, as Spark does.</p>
+<h2 data-number="6.2" id="other-deliberate-differences"><span
+class="header-section-number">6.2</span> Other deliberate
+differences</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Difference</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A SQL file registers all-or-nothing.</td>
+<td>Spark keeps definitions before a failing statement, but the client
+aborts the run anyway. All-or-nothing leaves no partial graph.</td>
+</tr>
+<tr>
+<td>A rejected flow is rejected before its INSERT runs.</td>
+<td>Spark writes the INSERT child first. Sail makes no effect for a
+statement it refuses.</td>
+</tr>
+<tr>
+<td>Dotted and hyphenated table names are accepted.</td>
+<td>Sail’s engine-wide identifier policy; not pipeline-specific.</td>
+</tr>
+<tr>
+<td><code>DATA_SOURCE_NOT_FOUND</code> arrives unwrapped.</td>
+<td>Spark wraps it in <code>TableMaterializationException</code> inside
+<code>UnknownException</code>. The text matches; the class difference is
+disclosed.</td>
+</tr>
+<tr>
+<td>Failure events are sorted.</td>
+<td>Scala’s Map order is unspecified.</td>
+</tr>
+<tr>
+<td>A view that repeats a column is refused during analysis.</td>
+<td>Spark accepts <code>SELECT *</code> over it and refuses a
+reference.</td>
+</tr>
+<tr>
+<td>ORC instants in ORC-763’s pre-epoch window fail the write.</td>
+<td>Spark writes them and reads back a wrong value.</td>
+</tr>
+<tr>
+<td>AutoCDC ties keep the last row.</td>
+<td>Spark leaves ties undefined.</td>
+</tr>
+<tr>
+<td>3 Iceberg nested-type AutoCDC cases complete.</td>
+<td>Spark with Iceberg 1.13 refuses them; Sail keeps completing them
+(user decision 12).</td>
+</tr>
+<tr>
+<td>Delta AutoCDC targets are accepted.</td>
+<td>Spark refuses with
+<code>AUTOCDC_TARGET_DOES_NOT_SUPPORT_MERGE</code>. Recorded, but not
+yet confirmed as policy.</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

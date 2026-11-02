@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov ∈ LakeSail Team" />
+  <meta name="dcterms.date" content="2026-11-02" />
+  <meta name="description" content="How Sail implements Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines CLI, with batch, streaming, Apache Iggy and AutoCDC, and how it was verified against Spark." />
+  <title>Sail Declarative Pipelines</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+</span>
+<span class="navlink">
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-001.html" accesskey="n" rel="next">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+</span>
+</div>
+</nav>
+<header id="title-block-header">
+<h1 class="title">Sail Declarative Pipelines</h1>
+<p class="subtitle">Spark 4.2.1 Declarative Pipelines on Sail: Technical
+Report, Milestone 1</p>
+<p class="author">Alexy Khrabrov ∈ LakeSail Team</p>
+<p class="date">2026-11-02</p>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="chapter-002.html#summary" id="toc-summary"><span
+class="toc-section-number">1</span> Summary</a>
+<ul>
+<li><a href="chapter-002.html#what-milestone-1-delivers"
+id="toc-what-milestone-1-delivers"><span
+class="toc-section-number">1.1</span> What milestone 1 delivers</a></li>
+<li><a href="chapter-002.html#headline-results"
+id="toc-headline-results"><span class="toc-section-number">1.2</span>
+Headline results</a></li>
+</ul></li>
+<li><a
+href="chapter-003.html#background-spark-declarative-pipelines-in-4.2.1"
+id="toc-background-spark-declarative-pipelines-in-4.2.1"><span
+class="toc-section-number">2</span> Background: Spark Declarative
+Pipelines in 4.2.1</a>
+<ul>
+<li><a href="chapter-003.html#the-model" id="toc-the-model"><span
+class="toc-section-number">2.1</span> The model</a></li>
+<li><a href="chapter-003.html#the-protocol" id="toc-the-protocol"><span
+class="toc-section-number">2.2</span> The protocol</a></li>
+<li><a href="chapter-003.html#what-an-implementation-must-provide"
+id="toc-what-an-implementation-must-provide"><span
+class="toc-section-number">2.3</span> What an implementation must
+provide</a></li>
+</ul></li>
+<li><a href="chapter-004.html#architecture" id="toc-architecture"><span
+class="toc-section-number">3</span> Architecture</a>
+<ul>
+<li><a href="chapter-004.html#where-sdp-lives"
+id="toc-where-sdp-lives"><span class="toc-section-number">3.1</span>
+Where SDP lives</a></li>
+<li><a href="chapter-004.html#crates-touched"
+id="toc-crates-touched"><span class="toc-section-number">3.2</span>
+Crates touched</a></li>
+<li><a href="chapter-004.html#the-pipelines-module"
+id="toc-the-pipelines-module"><span
+class="toc-section-number">3.3</span> The <code>pipelines</code>
+module</a></li>
+<li><a href="chapter-004.html#run-phases" id="toc-run-phases"><span
+class="toc-section-number">3.4</span> Run phases</a></li>
+</ul></li>
+<li><a href="chapter-005.html#components" id="toc-components"><span
+class="toc-section-number">4</span> Components</a>
+<ul>
+<li><a href="chapter-005.html#graph-registration-and-identifiers"
+id="toc-graph-registration-and-identifiers"><span
+class="toc-section-number">4.1</span> Graph registration and
+identifiers</a></li>
+<li><a href="chapter-005.html#sql-pipeline-files"
+id="toc-sql-pipeline-files"><span class="toc-section-number">4.2</span>
+SQL pipeline files</a></li>
+<li><a href="chapter-005.html#analysis-and-validation-order"
+id="toc-analysis-and-validation-order"><span
+class="toc-section-number">4.3</span> Analysis and validation
+order</a></li>
+<li><a href="chapter-005.html#flow-configuration-fusion"
+id="toc-flow-configuration-fusion"><span
+class="toc-section-number">4.4</span> Flow configuration fusion</a></li>
+<li><a href="chapter-005.html#materialization-and-catalog-publication"
+id="toc-materialization-and-catalog-publication"><span
+class="toc-section-number">4.5</span> Materialization and catalog
+publication</a></li>
+<li><a href="chapter-005.html#batch-execution"
+id="toc-batch-execution"><span class="toc-section-number">4.6</span>
+Batch execution</a></li>
+<li><a href="chapter-005.html#errors-and-spark-fidelity"
+id="toc-errors-and-spark-fidelity"><span
+class="toc-section-number">4.7</span> Errors and Spark fidelity</a></li>
+<li><a href="chapter-005.html#streaming" id="toc-streaming"><span
+class="toc-section-number">4.8</span> Streaming</a></li>
+<li><a href="chapter-005.html#autocdc" id="toc-autocdc"><span
+class="toc-section-number">4.9</span> AutoCDC</a></li>
+<li><a
+href="chapter-005.html#session-lifecycle-shutdown-and-effect-ownership"
+id="toc-session-lifecycle-shutdown-and-effect-ownership"><span
+class="toc-section-number">4.10</span> Session lifecycle, shutdown and
+effect ownership</a></li>
+<li><a href="chapter-005.html#cluster-mode" id="toc-cluster-mode"><span
+class="toc-section-number">4.11</span> Cluster mode</a></li>
+<li><a href="chapter-005.html#orc" id="toc-orc"><span
+class="toc-section-number">4.12</span> ORC</a></li>
+<li><a href="chapter-005.html#time-type" id="toc-time-type"><span
+class="toc-section-number">4.13</span> TIME type</a></li>
+<li><a href="chapter-005.html#catalogs" id="toc-catalogs"><span
+class="toc-section-number">4.14</span> Catalogs</a></li>
+</ul></li>
+<li><a href="chapter-006.html#verification-methodology"
+id="toc-verification-methodology"><span
+class="toc-section-number">5</span> Verification methodology</a>
+<ul>
+<li><a href="chapter-006.html#principles" id="toc-principles"><span
+class="toc-section-number">5.1</span> Principles</a></li>
+<li><a href="chapter-006.html#frozen-ports" id="toc-frozen-ports"><span
+class="toc-section-number">5.2</span> Frozen ports</a></li>
+<li><a href="chapter-006.html#gate-steps" id="toc-gate-steps"><span
+class="toc-section-number">5.3</span> Gate steps</a></li>
+<li><a href="chapter-006.html#whole-tree-comparison-against-upstream"
+id="toc-whole-tree-comparison-against-upstream"><span
+class="toc-section-number">5.4</span> Whole-tree comparison against
+upstream</a></li>
+<li><a href="chapter-006.html#spark-oracle-runs"
+id="toc-spark-oracle-runs"><span class="toc-section-number">5.5</span>
+Spark oracle runs</a></li>
+<li><a href="chapter-006.html#crash-seeds-and-local-cluster"
+id="toc-crash-seeds-and-local-cluster"><span
+class="toc-section-number">5.6</span> Crash seeds and
+local-cluster</a></li>
+<li><a href="chapter-006.html#results-on-the-root"
+id="toc-results-on-the-root"><span class="toc-section-number">5.7</span>
+Results on the root</a></li>
+</ul></li>
+<li><a href="chapter-007.html#differences-from-spark"
+id="toc-differences-from-spark"><span
+class="toc-section-number">6</span> Differences from Spark</a>
+<ul>
+<li><a href="chapter-007.html#strict-expected-failures"
+id="toc-strict-expected-failures"><span
+class="toc-section-number">6.1</span> Strict expected failures</a></li>
+<li><a href="chapter-007.html#other-deliberate-differences"
+id="toc-other-deliberate-differences"><span
+class="toc-section-number">6.2</span> Other deliberate
+differences</a></li>
+</ul></li>
+<li><a href="chapter-008.html#scope-decisions-limits-and-open-work"
+id="toc-scope-decisions-limits-and-open-work"><span
+class="toc-section-number">7</span> Scope decisions, limits and open
+work</a>
+<ul>
+<li><a href="chapter-008.html#scope-the-user-set"
+id="toc-scope-the-user-set"><span class="toc-section-number">7.1</span>
+Scope the user set</a></li>
+<li><a href="chapter-008.html#architectural-limits"
+id="toc-architectural-limits"><span
+class="toc-section-number">7.2</span> Architectural limits</a></li>
+<li><a href="chapter-008.html#open-work" id="toc-open-work"><span
+class="toc-section-number">7.3</span> Open work</a></li>
+</ul></li>
+<li><a href="chapter-009.html#the-demo" id="toc-the-demo"><span
+class="toc-section-number">8</span> The demo</a>
+<ul>
+<li><a href="chapter-009.html#running-it" id="toc-running-it"><span
+class="toc-section-number">8.1</span> Running it</a></li>
+<li><a href="chapter-009.html#what-it-does" id="toc-what-it-does"><span
+class="toc-section-number">8.2</span> What it does</a></li>
+<li><a href="chapter-009.html#what-it-found"
+id="toc-what-it-found"><span class="toc-section-number">8.3</span> What
+it found</a></li>
+</ul></li>
+</ul>
+</nav>
+
+</body>
+</html>
