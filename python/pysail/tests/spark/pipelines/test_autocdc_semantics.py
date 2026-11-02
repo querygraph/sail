@@ -608,6 +608,57 @@ def test_a_watermark_follows_only_the_rows_that_reach_it(stateful):
     assert run(transform) == [(1, 1)]
 
 
+@pytest.mark.parametrize(
+    ("each", "after_one"),
+    [
+        pytest.param(False, [(1, 2)], id="one-watermark-over-a-union"),
+        pytest.param(True, [], id="a-watermark-on-each-stream"),
+    ],
+)
+def test_a_windowed_aggregate_over_two_streams(pipeline_spark, pipeline_factory, tmp_path, each, after_one):
+    clean(pipeline_spark)
+    landings = [tmp_path / "left", tmp_path / "right"]
+    for landing in landings:
+        landing.mkdir()
+
+    def send(side, name, *rows):
+        lines = [json.dumps({"id": key, "name": value, "seq": seq, "ts": ts}) + "\n" for key, value, seq, ts in rows]
+        (landings[side] / f"{name}.json").write_text("".join(lines))
+
+    def run():
+        _, registry, start = pipeline_factory()
+        with graph_element_registration_context(registry):
+
+            @dp.temporary_view
+            def changes():
+                left, right = (pipeline_spark.readStream.format("json").schema(STATEFUL).load(str(x)) for x in landings)
+                if each:
+                    both = left.withWatermark("ts", "1 hour").union(right.withWatermark("ts", "1 hour"))
+                else:
+                    both = left.union(right).withWatermark("ts", "1 hour")
+                grouped = both.groupBy("id", sf.window("ts", "1 minute"))
+                return grouped.agg(sf.max("seq").alias("seq"))
+
+            dp.create_streaming_table(TARGET, **FORMAT)
+            dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["id"], sequence_by="seq")
+        start()
+        return sorted(tuple(row) for row in pipeline_spark.table(TARGET).select("id", "seq").collect())
+
+    send(0, "a", (1, "a", 1, T0))
+    send(1, "a", (1, "b", 2, T0))
+    assert run() == []
+    # Only the left stream moves. With a watermark on each stream, the
+    # query's watermark is the least of them, so the right one holds it back.
+    send(0, "b", (2, "x", 9, "2024-01-01T02:00:30Z"))
+    assert run() == after_one
+    # Spark keeps only the query's watermark across a restart, so each
+    # watermark counts again from the rows of this run, and both must move.
+    send(0, "c", (4, "x", 9, "2024-01-01T02:00:40Z"))
+    send(1, "b", (3, "y", 5, "2024-01-01T02:00:30Z"))
+    assert run() == [(1, 2)]
+    clean(pipeline_spark)
+
+
 def test_an_aggregate_without_a_watermark_is_refused(stateful):
     send, run = stateful
     send("a", (1, "a", 1, T0))

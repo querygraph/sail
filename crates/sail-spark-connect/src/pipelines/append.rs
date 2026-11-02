@@ -1065,8 +1065,62 @@ pub(super) struct Windowed {
     pub slide_micros: Option<i64>,
     /// Whether the window starts at an offset from the epoch.
     pub offset: bool,
-    /// What the watermark applies to when it is not the streaming read itself.
-    pub input: Option<spec::QueryPlan>,
+    /// Every `withWatermark` under the aggregate, the first of them the one
+    /// described above.
+    pub watermarks: Vec<Watermark>,
+}
+
+/// One `withWatermark` under a watermarked aggregate.
+#[derive(Debug, Clone)]
+pub(super) struct Watermark {
+    pub event_time: String,
+    pub delay_micros: i64,
+    /// What the watermark applies to.
+    pub input: spec::QueryPlan,
+    /// Whether that is a streaming read itself.
+    pub direct: bool,
+}
+
+/// The watermarks under `plan`, through row-wise transformations and unions.
+fn find_watermarks(plan: &spec::QueryPlan, found: &mut Vec<Watermark>) -> SparkResult<()> {
+    match &plan.node {
+        spec::QueryNode::WithWatermark(watermark) => {
+            let delay_micros = duration_micros(&watermark.delay_threshold).ok_or_else(|| {
+                SparkError::unsupported(format!(
+                    "the watermark delay '{}'",
+                    watermark.delay_threshold
+                ))
+            })?;
+            found.push(Watermark {
+                event_time: watermark.event_time.clone(),
+                delay_micros,
+                input: watermark.input.as_ref().clone(),
+                direct: matches!(
+                    &watermark.input.node,
+                    spec::QueryNode::Read {
+                        is_streaming: true,
+                        ..
+                    }
+                ),
+            });
+            Ok(())
+        }
+        spec::QueryNode::Project {
+            input: Some(input), ..
+        }
+        | spec::QueryNode::Filter { input, .. }
+        | spec::QueryNode::TableAlias { input, .. }
+        | spec::QueryNode::WithColumns { input, .. }
+        | spec::QueryNode::WithColumnsRenamed { input, .. }
+        | spec::QueryNode::Drop { input, .. } => find_watermarks(input, found),
+        spec::QueryNode::SetOperation(operation)
+            if operation.set_op_type == spec::SetOpType::Union =>
+        {
+            find_watermarks(&operation.left, found)?;
+            find_watermarks(&operation.right, found)
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The one streaming read under a chain of row-wise transformations.
@@ -1212,46 +1266,31 @@ pub(super) fn windowed_aggregate(
         | spec::QueryNode::Sort { input, .. } => return windowed_aggregate(scope, input),
         _ => return Ok(None),
     };
-    let mut input = aggregate.input.as_ref();
-    loop {
-        match &input.node {
-            spec::QueryNode::WithWatermark(watermark) => {
-                let direct = matches!(
-                    &watermark.input.node,
-                    spec::QueryNode::Read {
-                        is_streaming: true,
-                        ..
-                    }
-                );
-                let source = streaming_read(scope, &watermark.input)?
-                    .ok_or_else(|| SparkError::unsupported("a watermark on this streaming read"))?;
-                let delay_micros =
-                    duration_micros(&watermark.delay_threshold).ok_or_else(|| {
-                        SparkError::unsupported(format!(
-                            "the watermark delay '{}'",
-                            watermark.delay_threshold
-                        ))
-                    })?;
-                let (window_micros, slide_micros, offset) =
-                    event_window(&aggregate.grouping, &watermark.event_time)?;
-                return Ok(Some(Windowed {
-                    source,
-                    event_time: watermark.event_time.clone(),
-                    delay_micros,
-                    window_micros,
-                    slide_micros,
-                    offset,
-                    input: (!direct).then(|| watermark.input.as_ref().clone()),
-                }));
-            }
-            spec::QueryNode::Project {
-                input: Some(next), ..
-            }
-            | spec::QueryNode::Filter { input: next, .. } => input = next,
-            spec::QueryNode::TableAlias { input: next, .. } => input = next,
-            _ => return Ok(None),
+    let mut watermarks = vec![];
+    find_watermarks(&aggregate.input, &mut watermarks)?;
+    let Some(first) = watermarks.first() else {
+        return Ok(None);
+    };
+    let source = match streaming_read(scope, &first.input)? {
+        Some(source) => source,
+        None if watermarks.len() > 1 || !first.direct => vec![],
+        None => {
+            return Err(SparkError::unsupported(
+                "a watermark on this streaming read",
+            ));
         }
-    }
+    };
+    let (window_micros, slide_micros, offset) =
+        event_window(&aggregate.grouping, &first.event_time)?;
+    Ok(Some(Windowed {
+        source,
+        event_time: first.event_time.clone(),
+        delay_micros: first.delay_micros,
+        window_micros,
+        slide_micros,
+        offset,
+        watermarks,
+    }))
 }
 
 /// The event time as whole microseconds, for arithmetic.
@@ -1508,7 +1547,7 @@ async fn run_batch(
         if windowed.slide_micros.is_some() {
             return Err(SparkError::unsupported("a sliding streaming window"));
         }
-        if windowed.input.is_some() {
+        if windowed.watermarks.len() > 1 || windowed.watermarks.iter().any(|w| !w.direct) {
             return Err(SparkError::unsupported(
                 "a watermark on this streaming read",
             ));

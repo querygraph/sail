@@ -43,7 +43,7 @@ use crate::pipelines::streaming::source::{
     SourceError,
 };
 
-/// Where a watermarked aggregate keeps its open rows.
+/// Where a watermarked aggregate keeps each stream's open rows.
 const WINDOW_STATE: &str = "window";
 
 /// Files read in one batch at most.
@@ -488,6 +488,9 @@ impl Leaf {
 pub(in crate::pipelines) struct FlowSource {
     schema: SchemaRef,
     leaves: BTreeMap<String, Leaf>,
+    /// Each watermark's value in this run. Spark keeps only the query's
+    /// watermark across a restart, so each watermark starts again unset.
+    watermarks: Mutex<BTreeMap<usize, i64>>,
 }
 
 impl std::fmt::Debug for FlowSource {
@@ -586,7 +589,11 @@ impl FlowSource {
                 "an AutoCDC flow has no streaming read",
             ));
         }
-        Ok(Self { schema, leaves })
+        Ok(Self {
+            schema,
+            leaves,
+            watermarks: Mutex::new(BTreeMap::new()),
+        })
     }
 
     /// See what the file leaves hold now. A run calls this before capturing
@@ -651,12 +658,14 @@ impl FlowSource {
         Ok(plan)
     }
 
-    /// A watermarked aggregate, as Spark runs it in append mode. The
-    /// watermark is the latest event time in milliseconds less the delay,
-    /// never below 0 and never moving back. A window is emitted in the batch
-    /// whose watermark passes its end, and a row whose window the watermark
-    /// had already passed is late and changes nothing. The state is the rows
-    /// of windows still open.
+    /// A watermarked aggregate, as Spark runs it in append mode. Each
+    /// watermark is the latest event time in milliseconds that reaches it,
+    /// less its delay. The query's watermark is the least of them, a stream
+    /// with no rows yet counting as 0, as Spark's default `min` policy has it,
+    /// and it never moves back. A window is emitted in the batch whose
+    /// watermark passes its end, and a row whose window the watermark had
+    /// already passed is late and changes nothing. The state is each
+    /// stream's rows of windows still open and the query's watermark.
     #[expect(clippy::too_many_arguments)]
     async fn windowed_batch(
         &self,
@@ -670,91 +679,108 @@ impl FlowSource {
         state: &StateKeys,
         origin: bool,
     ) -> SparkResult<LogicalPlan> {
-        let [key] = self.leaves.keys().collect::<Vec<_>>()[..] else {
-            return Err(SparkError::unsupported(
-                "a watermarked aggregate over several streams",
-            ));
-        };
-        let mut streams = self.leaf_streams(ctx, config, &batch.ranges).await?;
-        let new_rows = streams
-            .remove(key)
-            .ok_or_else(|| SparkError::internal("watermarked source is not bound"))?;
-        let before = match state.load(WINDOW_STATE)? {
-            Some(before) => before,
-            None if origin => Snapshot::empty(Arc::new(new_rows.schema().as_arrow().clone())),
-            None => return Err(missing_state(flow)),
-        };
-        // The rows kept from earlier batches are part of the stream.
-        let kept = LogicalPlanBuilder::from(before.plan("state")?)
-            .alias(SOURCE_ALIAS)?
-            .build()?;
-        let rows = LogicalPlanBuilder::from(kept)
-            .union(new_rows.clone())?
-            .alias(SOURCE_ALIAS)?
-            .build()?;
-        // The watermark follows the rows that reach it, after any
-        // transformation of the read beneath it.
-        let marked = match &windowed.input {
-            Some(input) => {
-                let mut only = streams.clone();
-                only.insert(key.clone(), new_rows.clone());
-                self.resolve_query(ctx, config, scope, graph, input, only)
-                    .await?
-                    .0
-            }
-            None => new_rows.clone(),
-        };
-        let delay_ms = windowed.delay_micros / 1000;
-        let watermark = max_event(ctx, &marked, &windowed.event_time)
-            .await?
-            .map(|latest| (latest.div_euclid(1000) - delay_ms) * 1000)
-            .map_or(before.watermark, |next| next.max(before.watermark));
-        streams.insert(key.clone(), rows.clone());
+        let new_streams = self.leaf_streams(ctx, config, &batch.ranges).await?;
+        let mut streams = new_streams.clone();
+        let mut leaves = vec![];
+        let mut watermark_before = 0;
+        for (index, (key, new_rows)) in new_streams.iter().enumerate() {
+            let before = match state.load(&format!("{WINDOW_STATE}-{index}"))? {
+                Some(before) => before,
+                None if origin => Snapshot::empty(Arc::new(new_rows.schema().as_arrow().clone())),
+                None => return Err(missing_state(flow)),
+            };
+            watermark_before = watermark_before.max(before.watermark);
+            // The rows kept from earlier batches are part of the stream.
+            let kept = LogicalPlanBuilder::from(before.plan("state")?)
+                .alias(SOURCE_ALIAS)?
+                .build()?;
+            let rows = LogicalPlanBuilder::from(kept)
+                .union(new_rows.clone())?
+                .alias(SOURCE_ALIAS)?
+                .build()?;
+            streams.insert(key.clone(), rows.clone());
+            leaves.push((index, rows, new_rows.clone()));
+        }
+        // Each watermark follows the rows of this batch that reach it, after
+        // any transformation beneath it.
+        let mut operators = vec![];
+        for (index, mark) in windowed.watermarks.iter().enumerate() {
+            let previous = self
+                .watermarks
+                .lock()
+                .map_err(lock_error)?
+                .get(&index)
+                .copied();
+            let (marked, _) = self
+                .resolve_query(ctx, config, scope, graph, &mark.input, new_streams.clone())
+                .await?;
+            let delay_ms = mark.delay_micros / 1000;
+            let next = max_event(ctx, &marked, &mark.event_time)
+                .await?
+                .map(|latest| (latest.div_euclid(1000) - delay_ms) * 1000);
+            let value = match (previous, next) {
+                (Some(previous), Some(next)) => Some(previous.max(next)),
+                (previous, next) => previous.or(next),
+            };
+            operators.push((index, value));
+        }
+        let watermark = operators
+            .iter()
+            .map(|(_, value)| value.unwrap_or(0))
+            .min()
+            .unwrap_or(0)
+            .max(watermark_before);
         let (plan, _) = self
-            .resolve_query(ctx, config, scope, graph, &flow.query, streams.clone())
+            .resolve_query(ctx, config, scope, graph, &flow.query, streams)
             .await?;
         check_stateless(&plan, true)?;
         // A row can belong only to a window ending within a window's length
-        // of it. Rows transformed before the watermark are all kept, because
+        // of it. Rows transformed before a watermark are all kept, because
         // the event time is not a column of the read.
-        let open = match &windowed.input {
-            Some(_) => rows,
-            None => {
-                let micros = event_micros(&rows, &windowed.event_time)?;
-                LogicalPlanBuilder::from(rows)
+        let direct = windowed.watermarks.iter().all(|mark| mark.direct);
+        for (index, rows, new_rows) in leaves {
+            let open = match event_micros(&rows, &windowed.event_time) {
+                Ok(micros) if direct => LogicalPlanBuilder::from(rows)
                     .filter(micros.gt(lit(watermark.saturating_sub(windowed.window_micros))))?
-                    .build()?
+                    .build()?,
+                _ => rows,
+            };
+            let (schema, batches) = collect(ctx, open, "c").await?;
+            let schema = Arc::new(Schema::new(
+                new_rows
+                    .schema()
+                    .fields()
+                    .iter()
+                    .zip(schema.fields())
+                    .map(|(named, typed)| Field::new(named.name(), typed.data_type().clone(), true))
+                    .collect::<Vec<_>>(),
+            ));
+            let batches = batches
+                .into_iter()
+                .map(|batch| {
+                    Ok(RecordBatch::try_new(
+                        schema.clone(),
+                        batch.columns().to_vec(),
+                    )?)
+                })
+                .collect::<SparkResult<Vec<_>>>()?;
+            state.store(
+                &format!("{WINDOW_STATE}-{index}"),
+                &Snapshot {
+                    schema,
+                    batches,
+                    watermark,
+                },
+            )?;
+        }
+        let mut watermarks = self.watermarks.lock().map_err(lock_error)?;
+        for (index, value) in operators {
+            if let Some(value) = value {
+                watermarks.insert(index, value);
             }
-        };
-        let (schema, batches) = collect(ctx, open, "c").await?;
-        let schema = Arc::new(Schema::new_with_metadata(
-            new_rows
-                .schema()
-                .fields()
-                .iter()
-                .zip(schema.fields())
-                .map(|(named, typed)| Field::new(named.name(), typed.data_type().clone(), true))
-                .collect::<Vec<_>>(),
-            Default::default(),
-        ));
-        let batches = batches
-            .into_iter()
-            .map(|batch| {
-                Ok(RecordBatch::try_new(
-                    schema.clone(),
-                    batch.columns().to_vec(),
-                )?)
-            })
-            .collect::<SparkResult<Vec<_>>>()?;
-        state.store(
-            WINDOW_STATE,
-            &Snapshot {
-                schema,
-                batches,
-                watermark,
-            },
-        )?;
-        windows_between(plan, before.watermark, watermark)
+        }
+        drop(watermarks);
+        windows_between(plan, watermark_before, watermark)
     }
 
     /// The ranges from each partition's origin to the end of the batch, and to
