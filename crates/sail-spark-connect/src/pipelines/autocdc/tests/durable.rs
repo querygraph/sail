@@ -171,6 +171,7 @@ impl Fixture {
                 control: control.clone(),
                 owner,
                 lease_ms: LEASE,
+                lease_wait_ms: 0,
                 reset,
                 stage_hook: hook,
             },

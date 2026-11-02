@@ -42,6 +42,10 @@ pub struct TargetGuard {
     /// The unfinished intent the last reset retired; retained with its
     /// receipts, never advanced and never acknowledged.
     pub superseded_intent: Option<IntentId>,
+    /// Where the auxiliary table is, so a catalog that forgot it mid-batch
+    /// does not lose the batch's effects.
+    #[serde(default)]
+    pub auxiliary_location: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

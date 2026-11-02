@@ -181,16 +181,15 @@ fn auto_cdc_flow_targeting_a_persisted_view_is_rejected() -> SparkResult<()> {
         });
     }
     define_cdc_flow(&mut graph, "target_view", "target_view", "events")?;
-    let message = format!("{:?}", post_resolution_checks(&graph));
-    for expected in [
+    check_error(
+        post_resolution_checks(&graph),
         "INVALID_FLOW_QUERY_TYPE.STREAMING_RELATION_FOR_PERSISTED_VIEW",
         "42000",
-        "flowIdentifier",
-        "viewIdentifier",
-        "target_view",
-    ] {
-        assert!(message.contains(expected), "{expected} in {message}");
-    }
+        &[
+            ("flowIdentifier", "`test_catalog`.`test_db`.`target_view`"),
+            ("viewIdentifier", "`test_catalog`.`test_db`.`target_view`"),
+        ],
+    );
     Ok(())
 }
 

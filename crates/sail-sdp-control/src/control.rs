@@ -340,9 +340,10 @@ impl<S: Store> Control<S> {
                     reason: "another target enrolled this physical table".into(),
                 }));
             }
-            let guard = guard_of(&tx, target).await?;
+            let mut guard = guard_of(&tx, target).await?;
             tx.put(Table::Physical, physical_key, None, &encode(target)?)
                 .await?;
+            guard.auxiliary_location = Some(physical_key.to_string());
             put_guard(&tx, &guard).await?;
             Ok::<_, Fail>(())
         })

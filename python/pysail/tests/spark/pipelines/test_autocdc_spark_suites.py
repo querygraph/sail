@@ -28,10 +28,13 @@ except ImportError:
 
 ORACLE = os.environ.get("AUTOCDC_ORACLE_NAMESPACE")
 PREFIX = f"{ORACLE}." if ORACLE else ""
-FORMAT = {} if ORACLE else {"format": "delta"}
-USING = "" if ORACLE else "USING delta"
+# Spark-verified expectations also run on Sail's other target formats.
+TARGET_FORMAT = os.environ.get("AUTOCDC_TARGET_FORMAT", "delta")
+FORMAT = {} if ORACLE else {"format": TARGET_FORMAT}
+USING = "" if ORACLE else f"USING {TARGET_FORMAT}"
 TARGET = f"{PREFIX}target"
 AUXILIARY = f"{PREFIX}__spark_autocdc_aux_state_target"
+delta_only = pytest.mark.skipif(TARGET_FORMAT != "delta", reason="about Delta targets or sources")
 sail_only = pytest.mark.skipif(ORACLE is not None, reason="behaviour Spark's test catalog does not have")
 
 
@@ -136,7 +139,7 @@ def test_a_target_without_the_metadata_column_gains_it(space, pipeline_factory, 
     space.sql(f"CREATE TABLE {TARGET} (id INT NOT NULL, name STRING, seq BIGINT NOT NULL) {USING}")
     broker.send({"id": 1, "name": "alice", "seq": 1})
     run(space, pipeline_factory, broker.url, BASE)
-    assert "__spark_autocdc_metadata" in space.table(TARGET).columns
+    assert space.table(TARGET).columns == ["id", "name", "seq", "__spark_autocdc_metadata"]
     assert rows(space, "id", "name", "seq", *META) == [(1, "alice", 1, None, 1)]
 
 
@@ -550,6 +553,7 @@ def test_a_full_refresh_creates_a_target_that_does_not_exist(space, pipeline_fac
 
 
 @sail_only
+@delta_only
 def test_an_alter_of_an_enrolled_table_is_refused(space, pipeline_factory, broker):  # noqa: F811
     broker.send({"id": 1, "name": "alice", "seq": 1})
     run(space, pipeline_factory, broker.url, BASE)
@@ -692,6 +696,7 @@ def test_a_composite_key_merges_on_every_key(space, pipeline_factory, broker):  
 
 
 @sail_only
+@delta_only
 def test_a_flow_reads_a_delta_table_incrementally(space, pipeline_factory):
     space.sql(f"CREATE TABLE {PREFIX}bronze (id INT, name STRING, seq BIGINT) {USING}")
     space.sql(f"INSERT INTO {PREFIX}bronze VALUES (1, 'alice', 1), (2, 'bob', 1)")
@@ -796,3 +801,43 @@ def test_a_single_part_source_inherits_the_graph_defaults(space, pipeline_factor
     finally:
         for table in ["target", "bronze", "__spark_autocdc_aux_state_target"]:
             space.sql(f"DROP TABLE IF EXISTS {catalog}.{database}.{table}")
+
+
+def test_a_key_with_a_dot_needs_quoting_as_a_column(space, pipeline_factory, broker):  # noqa: F811
+    broker.send({"a.b": 1, "c": "x", "seq": 1})
+    run(space, pipeline_factory, broker.url, "`a.b` INT, c STRING, seq BIGINT", keys="`a.b`")
+    assert [tuple(row) for row in space.table(TARGET).select("`a.b`", "c").collect()] == [(1, "x")]
+    with pytest.raises(FAILURE, match="UNRESOLVED_COLUMN.WITH_SUGGESTION") as failure:
+        space.table(TARGET).select("a.b").collect()
+    assert "42703" in str(failure.value)
+    assert "`a`.`b`" in str(failure.value)
+
+
+def test_a_dropped_auxiliary_table_forgets_its_tombstones(space, pipeline_factory, broker):  # noqa: F811
+    schema = "id INT, name STRING, seq BIGINT, is_delete BOOLEAN"
+
+    def go():
+        _, registry, start = pipeline_factory()
+        with graph_element_registration_context(registry):
+
+            @dp.temporary_view
+            def changes():
+                return space.readStream.format("json").schema(schema).load(broker.url)
+
+            dp.create_streaming_table(TARGET, **FORMAT)
+            dp.create_auto_cdc_flow(
+                target=TARGET,
+                source="changes",
+                keys=["id"],
+                sequence_by="seq",
+                apply_as_deletes=sf.expr("is_delete"),
+                except_column_list=["is_delete"],
+            )
+        start()
+
+    broker.send({"id": 1, "name": "gone", "seq": 10, "is_delete": True})
+    go()
+    space.sql(f"DROP TABLE {AUXILIARY}")
+    broker.send({"id": 1, "name": "late", "seq": 5, "is_delete": False})
+    go()
+    assert rows(space, "id", "name", "seq") == [(1, "late", 5)]

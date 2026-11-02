@@ -9,6 +9,7 @@ here needs a broker.
 from __future__ import annotations
 
 import json
+import json
 import os
 
 import pytest
@@ -29,7 +30,9 @@ SCHEMA = "id INT, name STRING, seq BIGINT, is_delete BOOLEAN"
 # As an oracle it runs this file over its test catalog: set this to `cat.ns1`.
 ORACLE = os.environ.get("AUTOCDC_ORACLE_NAMESPACE")
 PREFIX = f"{ORACLE}." if ORACLE else ""
-FORMAT = {} if ORACLE else {"format": "delta"}
+# Spark-verified expectations also run on Sail's other target formats.
+TARGET_FORMAT = os.environ.get("AUTOCDC_TARGET_FORMAT", "delta")
+FORMAT = {} if ORACLE else {"format": TARGET_FORMAT}
 TARGET = f"{PREFIX}target"
 AUXILIARY = f"{PREFIX}__spark_autocdc_aux_state_target"
 META = ("__spark_autocdc_metadata.deleteSequence", "__spark_autocdc_metadata.upsertSequence")
@@ -436,3 +439,91 @@ def test_a_literal_dot_key_resolves_only_when_quoted(pipeline_spark, pipeline_fa
     assert sorted(tuple(row) for row in frame.select("`a.b`").collect()) == [(1,), (3,)]
     with pytest.raises(FAILURE, match="UNRESOLVED_COLUMN.WITH_SUGGESTION"):
         frame.select("a.b").collect()
+
+
+STATEFUL = "id INT, name STRING, seq BIGINT, ts TIMESTAMP"
+
+
+def stateful_run(spark, factory, landing, transform):
+    _, registry, start = factory()
+    with graph_element_registration_context(registry):
+
+        @dp.temporary_view
+        def changes():
+            return transform(spark.readStream.format("json").schema(STATEFUL).load(landing))
+
+        dp.create_streaming_table(TARGET, **FORMAT)
+        dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["id"], sequence_by="seq")
+    start()
+
+
+@pytest.fixture
+def stateful(pipeline_spark, pipeline_factory, tmp_path):
+    clean(pipeline_spark)
+    landing = tmp_path / "stateful"
+    landing.mkdir()
+
+    def send(name, *rows):
+        lines = [
+            json.dumps({"id": key, "name": value, "seq": seq, "ts": ts}) + "\n"
+            for key, value, seq, ts in rows
+        ]
+        (landing / f"{name}.json").write_text("".join(lines))
+
+    def run(transform):
+        stateful_run(pipeline_spark, pipeline_factory, str(landing), transform)
+        rows = pipeline_spark.table(TARGET).select("id", "seq").collect()
+        return sorted(tuple(row) for row in rows)
+
+    yield send, run
+    clean(pipeline_spark)
+
+
+T0 = "2024-01-01T00:00:00Z"
+
+
+@pytest.mark.parametrize(
+    "transform",
+    [
+        pytest.param(lambda frame: frame.dropDuplicates(["id", "seq"]), id="keys"),
+        pytest.param(lambda frame: frame.dropDuplicates(), id="all-columns"),
+        pytest.param(lambda frame: frame.withWatermark("ts", "1 hour").dropDuplicates(["id", "seq", "ts"]), id="watermark"),
+    ],
+)
+def test_a_deduplicated_stream_feeds_a_flow_across_runs(stateful, transform):
+    send, run = stateful
+    send("a", (1, "a", 1, T0), (1, "a", 1, T0))
+    assert run(transform) == [(1, 1)]
+    send("b", (1, "a", 1, T0), (2, "b", 1, T0))
+    assert run(transform) == [(1, 1), (2, 1)]
+    send("c", (1, "c", 2, T0))
+    assert run(transform) == [(1, 2), (2, 1)]
+
+
+def test_a_stream_joined_with_itself_feeds_a_flow_across_runs(stateful):
+    send, run = stateful
+    transform = lambda frame: frame.join(frame.select("id").distinct(), "id")  # noqa: E731
+    send("a", (1, "a", 1, T0))
+    assert run(transform) == [(1, 1)]
+    send("b", (2, "b", 1, T0))
+    assert run(transform) == [(1, 1), (2, 1)]
+
+
+def test_a_windowed_aggregate_feeds_a_flow_once_its_window_closes(stateful):
+    send, run = stateful
+
+    def transform(frame):
+        grouped = frame.withWatermark("ts", "1 hour").groupBy("id", sf.window("ts", "1 minute"))
+        return grouped.agg(sf.max("seq").alias("seq"))
+
+    send("a", (1, "a", 1, T0), (1, "a", 3, T0))
+    assert run(transform) == []
+    send("b", (2, "b", 9, "2024-01-01T02:00:00Z"))
+    assert run(transform) == [(1, 3)]
+
+
+def test_an_aggregate_without_a_watermark_is_refused(stateful):
+    send, run = stateful
+    send("a", (1, "a", 1, T0))
+    with pytest.raises(FAILURE, match="STREAMING_OUTPUT_MODE.UNSUPPORTED_OPERATION"):
+        run(lambda frame: frame.groupBy("id").agg(sf.max("seq").alias("seq")))

@@ -238,9 +238,6 @@ async fn extend_casts_the_sequence_fields_to_the_resolved_type() -> TestResult {
     Ok(())
 }
 
-// Spark fails this at analysis with DATATYPE_MISMATCH.CAST_WITHOUT_SUGGESTION;
-// Sail's cast of a struct to BIGINT fails when the plan runs, without the
-// Spark condition. Pinned as a diagnostic gap, not a behaviour difference.
 #[tokio::test]
 async fn extend_fails_when_the_sequencing_column_cannot_be_cast() -> TestResult {
     let batch = scan(

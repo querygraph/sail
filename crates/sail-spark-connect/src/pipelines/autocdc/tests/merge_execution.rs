@@ -815,7 +815,10 @@ async fn a_mis_cased_key_fails_a_case_sensitive_merge() -> TestResult {
     )
     .await;
     let message = format!("{:?}", refused.err().ok_or("the merge must fail")?);
-    assert!(message.contains("UNRESOLVED_COLUMN"), "{message}");
+    assert!(
+        message.contains("UNRESOLVED_COLUMN.WITH_SUGGESTION"),
+        "{message}"
+    );
     assert_eq!(
         rows(&ctx, config.clone(), &target_name()).await?,
         vec![row(&["1", "old", &meta("NULL", "10")])]

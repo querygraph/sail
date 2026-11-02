@@ -28,7 +28,9 @@ use sail_sdp_control::digest::digest;
 use sail_sdp_control::identity::{
     EffectStep, FenceToken, FlowKey, IntentId, SinkIdentity, TargetKey,
 };
-use sail_sdp_control::records::{FlowCheckpoint, Intent, IntentKind, ReceiptKind, TargetState};
+use sail_sdp_control::records::{
+    FlowCheckpoint, Intent, IntentKind, ReceiptKind, TargetGuard, TargetState,
+};
 use sail_sdp_control::store::Store;
 use sail_sdp_control::transitions::{Outcome, ResetIdentities};
 use serde_json::{Value, json};
@@ -38,9 +40,10 @@ use url::Url;
 use super::authority::{ControlCommits, effect_step_name};
 use super::run::{FlowRun, flow_schema};
 use super::write::{
-    IN_COMMIT_TIMESTAMPS_PROPERTY, PreparedBatch, drop_table, enable_commit_timestamps,
-    ensure_auxiliary_table, evolve_fenced, flow_output_schema, merge_auxiliary, merge_destination,
-    noop_fenced, prepare_microbatch, publish_prepared, read_table, replace_with_view,
+    AuxiliaryPlacement, IN_COMMIT_TIMESTAMPS_PROPERTY, PreparedBatch, drop_table,
+    enable_commit_timestamps, ensure_auxiliary_table, evolve_fenced, flow_output_schema,
+    merge_auxiliary, merge_destination, noop_fenced, prepare_microbatch, publish_prepared,
+    read_table, replace_delta_with_view,
 };
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
@@ -73,6 +76,9 @@ pub(super) struct DurableRun<'a, S> {
     pub control: Arc<Control<S>>,
     pub owner: &'a str,
     pub lease_ms: i64,
+    /// How long to wait for an owner that died to lose its lease. A run that
+    /// starts after a crash waits rather than fails.
+    pub lease_wait_ms: i64,
     /// Rebuild the target from the source's origin before reading it.
     pub reset: bool,
     pub stage_hook: Option<StageHook<'a>>,
@@ -596,9 +602,19 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             serde_json::from_value(intent.request.clone()).map_err(encoding_error)?;
         let run = self.run;
         let plan = if let Some(flow_source) = run.flow_source {
+            let end: Progress =
+                serde_json::from_value(intent.end_progress.clone()).map_err(encoding_error)?;
             let graph_scope = GraphScope::new(run.graph, run.relations, run.flow);
             flow_source
-                .batch_plan(ctx, &config, &graph_scope, run.graph, run.flow, &batch)
+                .batch_plan(
+                    ctx,
+                    &config,
+                    &graph_scope,
+                    run.graph,
+                    run.flow,
+                    &batch,
+                    &end,
+                )
                 .await?
         } else {
             let scans = batch
@@ -791,7 +807,6 @@ impl<S: Store + 'static> DurableRun<'_, S> {
         intent: &Intent,
     ) -> SparkResult<u64> {
         let control = &self.control;
-        let destination = self.run.write.destination;
         let write = self.run.write;
         let output = flow_output_schema(
             ctx,
@@ -822,7 +837,8 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             publish_prepared(ctx, &empty).await?;
             let fenced = fence(token, intent, EffectStep::ResetTarget, &digest)?;
             self.install_with(ctx, Some(fenced));
-            let replaced = replace_with_view(ctx, config.clone(), destination, "delta").await;
+            let replaced =
+                replace_delta_with_view(ctx, config.clone(), &enrolled.destination.url).await;
             self.install(ctx);
             replaced?;
         }
@@ -854,6 +870,7 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             write,
             &flow_schema(self.run.source, write)?,
             false,
+            Some(fresh_auxiliary(intent.generation)),
         )
         .await?;
         // A table's location is unique to it, so the new one has its own.
@@ -987,6 +1004,51 @@ async fn lacks_commit_timestamps(ctx: &SessionContext, name: &Name) -> SparkResu
             .any(|(key, value)| key == IN_COMMIT_TIMESTAMPS_PROPERTY && value == "true"))
 }
 
+/// Where a missing auxiliary table belongs. Mid-batch it holds state to recover.
+/// Otherwise it starts empty, as Spark starts a dropped table, at a path nothing
+/// can be left at: a metastore gives a recreated target its old location.
+fn auxiliary_placement(guard: Option<&TargetGuard>) -> AuxiliaryPlacement {
+    let open = guard
+        .filter(|guard| guard.active_intent.is_some() && guard.state != TargetState::Resetting);
+    match open.and_then(|guard| guard.auxiliary_location.as_ref()) {
+        Some(location) => AuxiliaryPlacement::At(location.clone()),
+        None => fresh_auxiliary(guard.map_or(0, |guard| guard.generation)),
+    }
+}
+
+fn fresh_auxiliary(generation: u64) -> AuxiliaryPlacement {
+    AuxiliaryPlacement::BesideTarget(format!("{generation}-{}", uuid::Uuid::new_v4()))
+}
+
+/// Wait for another owner's lease to end. Only a dead or concurrent run holds
+/// one, and this is the one place a run may still be waiting for it.
+async fn await_lease<S: Store>(durable: &DurableRun<'_, S>, destination: &Name) -> SparkResult<()> {
+    let target = TargetKey(destination.join("."));
+    let control = &durable.control;
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(u64::try_from(durable.lease_wait_ms).unwrap_or(0));
+    loop {
+        if control
+            .guard(&target)
+            .await
+            .map_err(control_error)?
+            .is_none()
+        {
+            return Ok(());
+        }
+        match control
+            .acquire(&target, durable.owner, durable.lease_ms)
+            .await
+        {
+            Err(Outcome::Conflict { .. }) if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            Err(outcome) => return Err(control_error(outcome)),
+            Ok(_) => return Ok(()),
+        }
+    }
+}
+
 /// Hand the target back when the source stops a run, so that the next run,
 /// perhaps the full refresh that error asks for, need not wait out the lease.
 /// A release failure leaves the lease to expire; the source's error is the
@@ -1029,6 +1091,7 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
         || guard
             .as_ref()
             .is_some_and(|guard| guard.state == TargetState::Resetting);
+    let placement = auxiliary_placement(guard.as_ref());
     // An enrolled table already has them, and DDL cannot carry a fence.
     if guard.is_none() && lacks_commit_timestamps(ctx, run.write.destination).await? {
         enable_commit_timestamps(ctx, config.clone(), run.write.destination).await?;
@@ -1039,8 +1102,10 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
         run.write,
         &flow_schema(run.source, run.write)?,
         resetting,
+        Some(placement),
     )
     .await?;
+    await_lease(durable, run.write.destination).await?;
     let mut enrolled = enroll(ctx, config.clone(), durable, auxiliary_name.clone()).await?;
     durable.install(ctx);
     let mut outcome = DurableOutcome::default();
