@@ -692,21 +692,40 @@ impl FlowSource {
             .union(new_rows.clone())?
             .alias(SOURCE_ALIAS)?
             .build()?;
+        // The watermark follows the rows that reach it, after any
+        // transformation of the read beneath it.
+        let marked = match &windowed.input {
+            Some(input) => {
+                let mut only = streams.clone();
+                only.insert(key.clone(), new_rows.clone());
+                self.resolve_query(ctx, config, scope, graph, input, only)
+                    .await?
+                    .0
+            }
+            None => new_rows.clone(),
+        };
         let delay_ms = windowed.delay_micros / 1000;
-        let watermark = max_event(ctx, &new_rows, &windowed.event_time)
+        let watermark = max_event(ctx, &marked, &windowed.event_time)
             .await?
             .map(|latest| (latest.div_euclid(1000) - delay_ms) * 1000)
             .map_or(before.watermark, |next| next.max(before.watermark));
         streams.insert(key.clone(), rows.clone());
         let (plan, _) = self
-            .resolve_query(ctx, config, scope, graph, flow, streams)
+            .resolve_query(ctx, config, scope, graph, &flow.query, streams.clone())
             .await?;
         check_stateless(&plan, true)?;
-        // A row can belong only to a window ending within a window's length of it.
-        let micros = event_micros(&rows, &windowed.event_time)?;
-        let open = LogicalPlanBuilder::from(rows)
-            .filter(micros.gt(lit(watermark.saturating_sub(windowed.window_micros))))?
-            .build()?;
+        // A row can belong only to a window ending within a window's length
+        // of it. Rows transformed before the watermark are all kept, because
+        // the event time is not a column of the read.
+        let open = match &windowed.input {
+            Some(_) => rows,
+            None => {
+                let micros = event_micros(&rows, &windowed.event_time)?;
+                LogicalPlanBuilder::from(rows)
+                    .filter(micros.gt(lit(watermark.saturating_sub(windowed.window_micros))))?
+                    .build()?
+            }
+        };
         let (schema, batches) = collect(ctx, open, "c").await?;
         let schema = Arc::new(Schema::new_with_metadata(
             new_rows
@@ -778,7 +797,7 @@ impl FlowSource {
         ranges: &[Range],
     ) -> SparkResult<(LogicalPlan, BTreeMap<String, LogicalPlan>)> {
         let streams = self.leaf_streams(ctx, config, ranges).await?;
-        self.resolve_query(ctx, config, scope, graph, flow, streams)
+        self.resolve_query(ctx, config, scope, graph, &flow.query, streams)
             .await
     }
 
@@ -823,7 +842,7 @@ impl FlowSource {
         config: &Arc<PlanConfig>,
         scope: &GraphScope<'_>,
         graph: &GraphDefinition,
-        flow: &Flow,
+        query: &spec::QueryPlan,
         mut streams: BTreeMap<String, LogicalPlan>,
     ) -> SparkResult<(LogicalPlan, BTreeMap<String, LogicalPlan>)> {
         // Inner views resolve first, so an outer view finds them bound.
@@ -870,7 +889,7 @@ impl FlowSource {
         };
         let resolved = PlanResolver::new(ctx, config.clone())
             .with_relation_scope(&bound)
-            .resolve_named_plan(spec::Plan::Query(flow.query.clone()))
+            .resolve_named_plan(spec::Plan::Query(query.clone()))
             .await?;
         let plan = match resolved.fields {
             Some(fields) => rename_logical_plan(resolved.plan, &fields)?,

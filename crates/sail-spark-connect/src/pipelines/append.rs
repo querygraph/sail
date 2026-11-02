@@ -1063,6 +1063,36 @@ pub(super) struct Windowed {
     pub window_micros: i64,
     /// The slide of a sliding window, `None` for a tumbling one.
     pub slide_micros: Option<i64>,
+    /// Whether the window starts at an offset from the epoch.
+    pub offset: bool,
+    /// What the watermark applies to when it is not the streaming read itself.
+    pub input: Option<spec::QueryPlan>,
+}
+
+/// The one streaming read under a chain of row-wise transformations.
+fn streaming_read(scope: &GraphScope<'_>, plan: &spec::QueryPlan) -> SparkResult<Option<Name>> {
+    match &plan.node {
+        spec::QueryNode::Read {
+            read_type: spec::ReadType::NamedTable(read),
+            is_streaming: true,
+        } => {
+            let name: Vec<String> = read.name.clone().into();
+            Ok(Some(qualified(scope, &name)?))
+        }
+        spec::QueryNode::Read {
+            read_type: spec::ReadType::DataSource(source),
+            is_streaming: true,
+        } => Ok(Some(source_name(source))),
+        spec::QueryNode::Project {
+            input: Some(input), ..
+        }
+        | spec::QueryNode::Filter { input, .. }
+        | spec::QueryNode::TableAlias { input, .. }
+        | spec::QueryNode::WithColumns { input, .. }
+        | spec::QueryNode::WithColumnsRenamed { input, .. }
+        | spec::QueryNode::Drop { input, .. } => streaming_read(scope, input),
+        _ => Ok(None),
+    }
 }
 
 fn duration_micros(text: &str) -> Option<i64> {
@@ -1097,7 +1127,10 @@ fn string_literal(expression: &spec::Expr) -> Option<&str> {
 
 /// The `window(eventTime, '5 seconds')` duration among the grouping keys,
 /// and the slide of `window(eventTime, '10 seconds', '5 seconds')`.
-fn event_window(grouping: &[spec::Expr], event_time: &str) -> SparkResult<(i64, Option<i64>)> {
+fn event_window(
+    grouping: &[spec::Expr],
+    event_time: &str,
+) -> SparkResult<(i64, Option<i64>, bool)> {
     let duration = |expr: &spec::Expr| {
         string_literal(expr)
             .and_then(duration_micros)
@@ -1115,16 +1148,18 @@ fn event_window(grouping: &[spec::Expr], event_time: &str) -> SparkResult<(i64, 
         {
             continue;
         }
-        let (name, size, slide) = match function.arguments.as_slice() {
-            [spec::Expr::UnresolvedAttribute { name, .. }, size] => (name, size, None),
+        let (name, size, slide, start) = match function.arguments.as_slice() {
+            [spec::Expr::UnresolvedAttribute { name, .. }, size] => (name, size, None, None),
             [spec::Expr::UnresolvedAttribute { name, .. }, size, slide] => {
-                (name, size, Some(slide))
+                (name, size, Some(slide), None)
             }
-            _ => {
-                return Err(SparkError::unsupported(
-                    "a streaming window with a start time",
-                ));
-            }
+            [
+                spec::Expr::UnresolvedAttribute { name, .. },
+                size,
+                slide,
+                start,
+            ] => (name, size, Some(slide), Some(start)),
+            _ => return Err(SparkError::unsupported("this streaming window")),
         };
         let column: Vec<String> = name.clone().into();
         if !column
@@ -1145,7 +1180,18 @@ fn event_window(grouping: &[spec::Expr], event_time: &str) -> SparkResult<(i64, 
                 "a streaming window that slides past its length",
             ));
         }
-        return Ok((size, slide));
+        let offset = match start.map(string_literal) {
+            None => false,
+            Some(Some(start)) => {
+                duration_micros(start)
+                    .ok_or_else(|| SparkError::unsupported("this streaming window start time"))?
+                    != 0
+            }
+            Some(None) => {
+                return Err(SparkError::unsupported("this streaming window start time"));
+            }
+        };
+        return Ok((size, slide, offset));
     }
     Err(SparkError::unsupported(
         "a watermarked aggregate without a tumbling window",
@@ -1170,24 +1216,15 @@ pub(super) fn windowed_aggregate(
     loop {
         match &input.node {
             spec::QueryNode::WithWatermark(watermark) => {
-                let source = match &watermark.input.node {
+                let direct = matches!(
+                    &watermark.input.node,
                     spec::QueryNode::Read {
-                        read_type: spec::ReadType::NamedTable(read),
                         is_streaming: true,
-                    } => {
-                        let name: Vec<String> = read.name.clone().into();
-                        qualified(scope, &name)?
+                        ..
                     }
-                    spec::QueryNode::Read {
-                        read_type: spec::ReadType::DataSource(source),
-                        is_streaming: true,
-                    } => source_name(source),
-                    _ => {
-                        return Err(SparkError::unsupported(
-                            "a watermark on this streaming read",
-                        ));
-                    }
-                };
+                );
+                let source = streaming_read(scope, &watermark.input)?
+                    .ok_or_else(|| SparkError::unsupported("a watermark on this streaming read"))?;
                 let delay_micros =
                     duration_micros(&watermark.delay_threshold).ok_or_else(|| {
                         SparkError::unsupported(format!(
@@ -1195,7 +1232,7 @@ pub(super) fn windowed_aggregate(
                             watermark.delay_threshold
                         ))
                     })?;
-                let (window_micros, slide_micros) =
+                let (window_micros, slide_micros, offset) =
                     event_window(&aggregate.grouping, &watermark.event_time)?;
                 return Ok(Some(Windowed {
                     source,
@@ -1203,6 +1240,8 @@ pub(super) fn windowed_aggregate(
                     delay_micros,
                     window_micros,
                     slide_micros,
+                    offset,
+                    input: (!direct).then(|| watermark.input.as_ref().clone()),
                 }));
             }
             spec::QueryNode::Project {
@@ -1465,11 +1504,20 @@ async fn run_batch(
     }
     state.sources = sources;
     let windowed = windowed_aggregate(&scope, &run.flow.query)?;
-    if windowed
-        .as_ref()
-        .is_some_and(|windowed| windowed.slide_micros.is_some())
-    {
-        return Err(SparkError::unsupported("a sliding streaming window"));
+    if let Some(windowed) = &windowed {
+        if windowed.slide_micros.is_some() {
+            return Err(SparkError::unsupported("a sliding streaming window"));
+        }
+        if windowed.input.is_some() {
+            return Err(SparkError::unsupported(
+                "a watermark on this streaming read",
+            ));
+        }
+        if windowed.offset {
+            return Err(SparkError::unsupported(
+                "a streaming window with a start time",
+            ));
+        }
     }
     let outputs = {
         let bound = BatchScope {

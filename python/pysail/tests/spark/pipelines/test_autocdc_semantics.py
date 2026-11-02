@@ -577,6 +577,37 @@ def test_a_sliding_window_emits_each_window_once_it_closes(stateful):
     assert run(transform) == [(-1, 1), (0, 3), (1, 3)]
 
 
+def test_a_window_with_a_start_time_feeds_a_flow(stateful):
+    send, run = stateful
+
+    def transform(frame):
+        window = sf.window("ts", "1 minute", startTime="30 seconds")
+        grouped = frame.withWatermark("ts", "1 hour").groupBy(window)
+        half = ((sf.col("window.start").cast("long") - 1704067200) / 30).cast("int")
+        return grouped.agg(sf.max("seq").alias("seq")).select(half.alias("id"), "seq")
+
+    send("a", (1, "a", 1, "2024-01-01T00:00:10Z"), (1, "a", 3, "2024-01-01T00:00:40Z"))
+    assert run(transform) == []
+    send("b", (2, "b", 9, "2024-01-01T02:00:30Z"))
+    assert run(transform) == [(-1, 1), (1, 3)]
+
+
+def test_a_watermark_follows_only_the_rows_that_reach_it(stateful):
+    send, run = stateful
+
+    def transform(frame):
+        kept = frame.filter(sf.col("name") != "x").withWatermark("ts", "1 hour")
+        return kept.groupBy("id", sf.window("ts", "1 minute")).agg(sf.max("seq").alias("seq"))
+
+    send("a", (1, "a", 1, T0))
+    assert run(transform) == []
+    # The filter drops this row before the watermark, so it does not move it.
+    send("b", (9, "x", 9, "2024-01-01T05:00:00Z"))
+    assert run(transform) == []
+    send("c", (2, "c", 2, "2024-01-01T02:00:30Z"))
+    assert run(transform) == [(1, 1)]
+
+
 def test_an_aggregate_without_a_watermark_is_refused(stateful):
     send, run = stateful
     send("a", (1, "a", 1, T0))
