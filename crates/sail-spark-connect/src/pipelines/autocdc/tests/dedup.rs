@@ -309,10 +309,6 @@ async fn literal_dot_column_names_survive() -> SparkResult<()> {
 
 #[tokio::test]
 async fn a_key_column_named_like_the_winning_row_column_fails() -> SparkResult<()> {
-    // Spark reports AMBIGUOUS_REFERENCE (42704) from its analyzer; DataFusion
-    // rejects the aggregate's duplicate output column with its own error. The
-    // failure is asserted, the Spark condition is not: recorded as partial.
-    let ctx = SessionContext::new();
     let plan = scan(vec![
         (
             WINNING_ROW_COLUMN,
@@ -324,11 +320,9 @@ async fn a_key_column_named_like_the_winning_row_column_fails() -> SparkResult<(
             Arc::new(StringArray::from(vec!["loser", "winner"])),
         ),
     ])?;
-    let result = match deduplicate(plan, &[0], col("seq")) {
-        Ok(plan) => answer(&ctx, plan).await.map(|_| ()),
-        Err(error) => Err(error),
-    };
-    assert!(result.is_err(), "{result:?}");
+    let message = format!("{:?}", deduplicate(plan, &[0], col("seq")));
+    assert!(message.contains("AMBIGUOUS_REFERENCE"), "{message}");
+    assert!(message.contains("42704"), "{message}");
     Ok(())
 }
 

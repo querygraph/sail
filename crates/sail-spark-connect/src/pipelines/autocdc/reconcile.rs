@@ -7,8 +7,10 @@
 //! expressions against the batch schema; nothing here reads a table or
 //! writes one. The merges that follow are a separate unit.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use datafusion::arrow::compute::can_cast_types;
 use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Column, JoinType, ScalarValue};
 use datafusion::functions::core::expr_fn::get_field;
@@ -20,7 +22,7 @@ use sail_function::scalar::struct_function::StructFunction;
 
 use super::schema::{Case, DELETE_SEQUENCE_FIELD, METADATA_COLUMN, UPSERT_SEQUENCE_FIELD};
 use super::{ColumnSelection, UnqualifiedColumnName, dedup};
-use crate::error::{SparkError, SparkResult};
+use crate::error::{SparkError, SparkResult, StructuredSparkError};
 
 /// The column at a batch field index, qualified as the plan qualifies it.
 fn column_at(plan: &LogicalPlan, index: usize) -> Expr {
@@ -60,6 +62,23 @@ pub(super) fn extend_with_metadata(
     };
     let upsert_sequence = when(delete_sequence.clone().is_null(), sequencing).otherwise(null())?;
     let schema = batch.schema();
+    // A client cannot reach this: the type comes from the batch itself.
+    let source = upsert_sequence.get_type(schema)?;
+    if !can_cast_types(&source, sequencing_type) {
+        return Err(Box::new(StructuredSparkError {
+            class: "org.apache.spark.sql.AnalysisException".into(),
+            condition: "DATATYPE_MISMATCH.CAST_WITHOUT_SUGGESTION".into(),
+            sql_state: "42K09".into(),
+            message: format!(
+                "Cannot resolve the sequencing column: cannot cast {source} to {sequencing_type}."
+            ),
+            parameters: HashMap::from([
+                ("srcType".into(), source.to_string()),
+                ("targetType".into(), sequencing_type.to_string()),
+            ]),
+        })
+        .into());
+    }
     let members = vec![
         delete_sequence.cast_to(sequencing_type, schema)?,
         upsert_sequence.cast_to(sequencing_type, schema)?,

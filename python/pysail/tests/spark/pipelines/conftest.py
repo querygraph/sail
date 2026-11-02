@@ -29,8 +29,8 @@ def pipeline_factory(pipeline_spark, tmp_path):
     registry_module = pytest.importorskip("pyspark.pipelines.spark_connect_graph_element_registry")
     client = pytest.importorskip("pyspark.pipelines.spark_connect_pipeline")
 
-    def create():
-        graph_id = client.create_dataflow_graph(pipeline_spark, None, None, None)
+    def create(catalog=None, database=None):
+        graph_id = client.create_dataflow_graph(pipeline_spark, catalog, database, None)
         registry = registry_module.SparkConnectGraphElementRegistry(pipeline_spark, graph_id)
 
         def run(dry=False, refresh=None, full_refresh=None, full_refresh_all=False):

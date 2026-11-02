@@ -15,6 +15,11 @@ pub(crate) struct CatalogManagedDeltaTable {
     pub(crate) table_id: String,
 }
 
+/// Whether the catalog, not the Delta log, serializes this table's commits.
+pub fn is_catalog_managed(kind: TableKind) -> bool {
+    catalog_managed_delta_table(kind).is_some()
+}
+
 pub(crate) fn catalog_managed_delta_table(kind: TableKind) -> Option<CatalogManagedDeltaTable> {
     let TableKind::Table {
         columns,

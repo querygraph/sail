@@ -6,6 +6,7 @@ use sail_common_datafusion::error::{CommonErrorCause, RemoteError, StructuredSpa
 use tonic::Status;
 use tonic_types::StatusExt;
 
+use super::rendered;
 use crate::error::{SparkError, SparkThrowable};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -28,7 +29,7 @@ fn fixture() -> StructuredSparkError {
 fn assert_status(status: Status) -> TestResult {
     let expected = fixture();
     assert_eq!(status.code(), tonic::Code::Internal);
-    assert_eq!(status.message(), expected.to_string());
+    assert_eq!(status.message(), rendered(&expected));
     let details = status.get_error_details();
     let info = details.error_info().ok_or("missing error metadata")?;
     assert_eq!(info.reason, expected.class);
@@ -68,7 +69,7 @@ fn direct_and_wrapped_structured_errors_preserve_complete_connect_metadata() -> 
 fn stored_throwable_exposes_native_message_class_and_metadata() -> TestResult {
     let error = fixture();
     let throwable = SparkThrowable::from(CommonErrorCause::Structured(Box::new(error.clone())));
-    assert_eq!(throwable.message(), error.to_string());
+    assert_eq!(throwable.message(), rendered(&error));
     assert_eq!(throwable.class_name(), error.class);
     assert_status(throwable.into())
 }
@@ -126,7 +127,7 @@ fn missing_catalog_execution_errors_keep_spark_metadata() -> TestResult {
             assert_eq!(
                 status.message(),
                 format!(
-                    "[CATALOG_NOT_FOUND] The catalog {quoted} not found. Consider to set the SQL config {config} to a catalog plugin."
+                    "[CATALOG_NOT_FOUND] The catalog {quoted} not found. Consider to set the SQL config {config} to a catalog plugin. SQLSTATE: 42P08"
                 )
             );
         }

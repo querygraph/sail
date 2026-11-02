@@ -2,15 +2,7 @@
 //! (`graph/FlowExecution.scala:398–440`) and `Scd1ForeachBatchHandler.execute`
 //! (`autocdc/Scd1ForeachBatchHandler.scala:39–72`), Spark 4.2.1 at `617618396`,
 //! over the pure components: the auxiliary state contract, microbatch
-//! validation, reconciliation and the two merges. Nothing calls this from
-//! the pipeline runner: tests invoke it per microbatch, and activation
-//! (the streaming runner, checkpoints, `execution::execute`) is a later,
-//! user-notified step.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "activated by the streaming runner unit")
-)]
-
+//! validation, reconciliation and the two merges.
 use std::sync::Arc;
 
 use datafusion::arrow::array::RecordBatch;
@@ -321,6 +313,10 @@ pub(super) async fn flow_output_schema(
     let plan = LogicalPlanBuilder::scan("source", provider_as_source(Arc::new(empty)), None)?
         .build()
         .map_err(PlanError::from)?;
+    // The selection is checked first: a mis-cased selection reports that, not
+    // the sequence that would fail after it.
+    let names: Vec<String> = source.fields().iter().map(|x| x.name().clone()).collect();
+    let selected = output_field_names(args, &names, case)?;
     let evaluated = vec![(SEQUENCING_COLUMN.to_string(), args.sequencing.clone())];
     let evaluated = with_evaluated_columns(ctx, config, plan, evaluated).await?;
     let sequencing = evaluated
@@ -330,8 +326,6 @@ pub(super) async fn flow_output_schema(
         .find(|field| field.name() == SEQUENCING_COLUMN)
         .map(|field| field.data_type().clone())
         .ok_or_else(|| SparkError::internal("AutoCDC sequencing column was not evaluated"))?;
-    let names: Vec<String> = source.fields().iter().map(|x| x.name().clone()).collect();
-    let selected = output_field_names(args, &names, case)?;
     let member = |name: &str| Field::new(name, sequencing.clone(), true);
     let metadata = Fields::from(vec![
         member(DELETE_SEQUENCE_FIELD),
@@ -515,6 +509,7 @@ pub(super) async fn replace_with_view(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
     table: &Name,
+    format: &str,
 ) -> SparkResult<()> {
     let input = spec::QueryPlan::new(spec::QueryNode::Read {
         read_type: spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
@@ -527,7 +522,7 @@ pub(super) async fn replace_with_view(
     });
     let write = spec::Write {
         input: Box::new(input),
-        source: Some("delta".to_string()),
+        source: Some(format.to_string()),
         save_type: spec::SaveType::Table {
             table: spec::ObjectName::from(table.to_vec()),
             save_method: spec::TableSaveMethod::SaveAsTable,

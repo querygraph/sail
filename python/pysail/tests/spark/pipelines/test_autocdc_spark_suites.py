@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 import uuid
 
 import pytest
@@ -50,6 +52,15 @@ def broker(tmp_path):
     return Landing(tmp_path)
 
 
+@pytest.fixture
+def second(tmp_path):
+    """A landing of its own: Spark gives each pipeline a separate stream."""
+    root = tmp_path / "second"
+    root.mkdir()
+    return Landing(root)
+
+
+META = ("__spark_autocdc_metadata.deleteSequence", "__spark_autocdc_metadata.upsertSequence")
 METADATA = "__spark_autocdc_metadata STRUCT<deleteSequence:BIGINT,upsertSequence:BIGINT>"
 FAILURE = (PySparkException, SparkConnectGrpcException)
 
@@ -108,6 +119,8 @@ def preload(spark, values, sequence):
 
 
 BASE = "id INT, name STRING, seq BIGINT"
+PLAIN = "id INT NOT NULL, name STRING, seq BIGINT NOT NULL"
+WITH_EMAIL = "id INT NOT NULL, name STRING, email STRING, seq BIGINT NOT NULL"
 
 
 def test_a_preloaded_row_outranks_a_lower_sequence(space, pipeline_factory, broker):  # noqa: F811
@@ -116,7 +129,7 @@ def test_a_preloaded_row_outranks_a_lower_sequence(space, pipeline_factory, brok
     preload(space, "2, 'bob', 5", 5)
     broker.send({"id": 1, "name": "stale", "seq": 2}, {"id": 2, "name": "bob2", "seq": 10})
     run(space, pipeline_factory, broker.url, BASE)
-    assert rows(space, "id", "name", "seq") == [(1, "alice", 5), (2, "bob2", 10)]
+    assert rows(space, "id", "name", "seq", *META) == [(1, "alice", 5, None, 5), (2, "bob2", 10, None, 10)]
 
 
 def test_a_target_without_the_metadata_column_gains_it(space, pipeline_factory, broker):  # noqa: F811
@@ -124,16 +137,18 @@ def test_a_target_without_the_metadata_column_gains_it(space, pipeline_factory, 
     broker.send({"id": 1, "name": "alice", "seq": 1})
     run(space, pipeline_factory, broker.url, BASE)
     assert "__spark_autocdc_metadata" in space.table(TARGET).columns
-    assert rows(space, "id", "name", "seq") == [(1, "alice", 1)]
+    assert rows(space, "id", "name", "seq", *META) == [(1, "alice", 1, None, 1)]
 
 
 def test_a_nullable_column_merges_mixed_values(space, pipeline_factory, broker):  # noqa: F811
     schema = "id INT, name STRING, email STRING, seq BIGINT"
+    space.sql(f"CREATE TABLE {TARGET} ({WITH_EMAIL}, {METADATA}) {USING}")
     broker.send({"id": 1, "name": "alice", "email": None, "seq": 1})
     run(space, pipeline_factory, broker.url, schema)
+    assert rows(space, "*") == [(1, "alice", None, 1, (None, 1))]
     broker.send({"id": 1, "name": "alice2", "email": "a@x.com", "seq": 2})
     run(space, pipeline_factory, broker.url, schema)
-    assert rows(space, "id", "name", "email", "seq") == [(1, "alice2", "a@x.com", 2)]
+    assert rows(space, "*") == [(1, "alice2", "a@x.com", 2, (None, 2))]
 
 
 @pytest.mark.parametrize(
@@ -149,44 +164,54 @@ def test_a_type_change_between_runs_is_refused(space, pipeline_factory, broker, 
     broker.send({"id": 1, "age": original, "seq": 1})
     run(space, pipeline_factory, broker.url, f"id INT, age {first}, seq BIGINT")
     broker.send({"id": 1, "age": value, "seq": 2})
-    with pytest.raises(FAILURE, match="CANNOT_MERGE_INCOMPATIBLE_DATA_TYPE") as failure:
+    expected = (
+        rf'(?s)CANNOT_MERGE_INCOMPATIBLE_DATA_TYPE.*Failed to merge incompatible data types "{left}" and "{right}"'
+        r".*SQLSTATE: 42825"
+    )
+    with pytest.raises(FAILURE, match=expected):
         run(space, pipeline_factory, broker.url, f"id INT, age {second}, seq BIGINT")
-    assert f'"{left}"' in str(failure.value)
-    assert f'"{right}"' in str(failure.value)
 
 
 def test_a_new_source_column_is_added_to_the_target(space, pipeline_factory, broker):  # noqa: F811
+    space.sql(f"CREATE TABLE {TARGET} ({PLAIN}, {METADATA}) {USING}")
     broker.send({"id": 1, "name": "alice", "seq": 1})
     run(space, pipeline_factory, broker.url, BASE)
+    assert rows(space, "*") == [(1, "alice", 1, (None, 1))]
     broker.send({"id": 2, "name": "bob", "email": "b@x.com", "seq": 2})
     run(space, pipeline_factory, broker.url, "id INT, name STRING, email STRING, seq BIGINT")
-    assert rows(space, "id", "email") == [(1, None), (2, "b@x.com")]
+    assert rows(space, "*") == [(1, "alice", 1, (None, 1), None), (2, "bob", 2, (None, 2), "b@x.com")]
 
 
 def test_a_dropped_source_column_keeps_its_rows_and_is_null_on_new_ones(space, pipeline_factory, broker):  # noqa: F811
+    space.sql(f"CREATE TABLE {TARGET} ({PLAIN}, {METADATA}) {USING}")
     broker.send({"id": 1, "name": "alice", "email": "a@x.com", "seq": 1})
     run(space, pipeline_factory, broker.url, "id INT, name STRING, email STRING, seq BIGINT")
+    assert rows(space, "*") == [(1, "alice", 1, (None, 1), "a@x.com")]
     broker.send({"id": 2, "name": "bob", "seq": 2})
     run(space, pipeline_factory, broker.url, BASE)
-    assert rows(space, "id", "email") == [(1, "a@x.com"), (2, None)]
+    assert rows(space, "*") == [(1, "alice", 1, (None, 1), "a@x.com"), (2, "bob", 2, (None, 2), None)]
 
 
 def test_broadening_the_selection_adds_the_column(space, pipeline_factory, broker):  # noqa: F811
     schema = "id INT, name STRING, email STRING, seq BIGINT"
+    space.sql(f"CREATE TABLE {TARGET} ({PLAIN}, {METADATA}) {USING}")
     broker.send({"id": 1, "name": "alice", "email": "ignored", "seq": 1})
     run(space, pipeline_factory, broker.url, schema, columns=["id", "name", "seq"])
+    assert rows(space, "*") == [(1, "alice", 1, (None, 1))]
     broker.send({"id": 2, "name": "bob", "email": "b@x.com", "seq": 2})
     run(space, pipeline_factory, broker.url, schema)
-    assert rows(space, "id", "email") == [(1, None), (2, "b@x.com")]
+    assert rows(space, "*") == [(1, "alice", 1, (None, 1), None), (2, "bob", 2, (None, 2), "b@x.com")]
 
 
 def test_narrowing_the_selection_keeps_the_column(space, pipeline_factory, broker):  # noqa: F811
     schema = "id INT, name STRING, email STRING, seq BIGINT"
+    space.sql(f"CREATE TABLE {TARGET} ({WITH_EMAIL}, {METADATA}) {USING}")
     broker.send({"id": 1, "name": "alice", "email": "a@x.com", "seq": 1})
     run(space, pipeline_factory, broker.url, schema)
+    assert rows(space, "*") == [(1, "alice", "a@x.com", 1, (None, 1))]
     broker.send({"id": 2, "name": "bob", "email": "ignored", "seq": 2})
     run(space, pipeline_factory, broker.url, schema, columns=["id", "name", "seq"])
-    assert rows(space, "id", "email") == [(1, "a@x.com"), (2, None)]
+    assert rows(space, "*") == [(1, "alice", "a@x.com", 1, (None, 1)), (2, "bob", None, 2, (None, 2))]
 
 
 def test_a_column_differing_from_the_target_by_case_is_ambiguous(space, pipeline_factory, broker):  # noqa: F811
@@ -206,22 +231,44 @@ def test_extra_target_columns_survive_the_merge(space, pipeline_factory, broker)
     assert rows(space, "id", "name", "seq", "extra") == [(1, "alice", 1, 42), (2, "bob", 1, None)]
 
 
-def test_two_pipelines_merge_into_a_shared_target(space, pipeline_factory, broker):  # noqa: F811
+def test_two_pipelines_merge_into_a_shared_target(space, pipeline_factory, broker, second):  # noqa: F811
     space.sql(f"CREATE TABLE {TARGET} (id INT NOT NULL, name STRING, seq BIGINT NOT NULL, {METADATA}) {USING}")
     broker.send({"id": 1, "name": "alice", "seq": 1}, {"id": 2, "name": "bob", "seq": 1})
     run(space, pipeline_factory, broker.url, BASE, flow="flow_one")
-    broker.send({"id": 2, "name": "bob-v2", "seq": 2}, {"id": 3, "name": "carol", "seq": 1})
-    run(space, pipeline_factory, broker.url, BASE, flow="flow_two")
-    assert rows(space, "id", "name", "seq") == [(1, "alice", 1), (2, "bob-v2", 2), (3, "carol", 1)]
+    assert rows(space, "*") == [(1, "alice", 1, (None, 1)), (2, "bob", 1, (None, 1))]
+    second.send({"id": 2, "name": "bob-v2", "seq": 2}, {"id": 3, "name": "carol", "seq": 1})
+    run(space, pipeline_factory, second.url, BASE, flow="flow_two")
+    assert rows(space, "*") == [
+        (1, "alice", 1, (None, 1)),
+        (2, "bob-v2", 2, (None, 2)),
+        (3, "carol", 1, (None, 1)),
+    ]
+    assert space.catalog.tableExists(AUXILIARY)
 
 
-def test_a_second_pipeline_with_other_keys_is_refused(space, pipeline_factory, broker):  # noqa: F811
+def refused_for_other_keys(space, factory, broker, second):
     space.sql(f"CREATE TABLE {TARGET} (id INT NOT NULL, name STRING NOT NULL, seq BIGINT NOT NULL, {METADATA}) {USING}")
     broker.send({"id": 1, "name": "alice", "seq": 1})
-    run(space, pipeline_factory, broker.url, BASE, flow="flow_one")
-    broker.send({"id": 2, "name": "alice", "seq": 1})
-    with pytest.raises(FAILURE, match="KEY_SCHEMA_DRIFT"):
-        run(space, pipeline_factory, broker.url, BASE, keys="name", flow="flow_two")
+    run(space, factory, broker.url, BASE, flow="flow_one")
+    second.send({"id": 2, "name": "alice", "seq": 1})
+    with pytest.raises(FAILURE) as failure:
+        run(space, factory, second.url, BASE, keys="name", flow="flow_two")
+    return failure.value
+
+
+def test_a_second_pipeline_with_other_keys_is_refused(space, pipeline_factory, broker, second):  # noqa: F811
+    expected = (
+        r"(?s)AUTOCDC_INVALID_STATE\.KEY_SCHEMA_DRIFT.*AutoCDC flow \S*flow_two detected.*"
+        r"current key columns name STRING do not match the keys recorded in the auxiliary table "
+        r"\S*__spark_autocdc_aux_state_target \(recorded keys id INT\)"
+    )
+    failure = refused_for_other_keys(space, pipeline_factory, broker, second)
+    assert re.search(expected, str(failure))
+    assert failure.getSqlState() == "42000"
+
+
+def test_a_key_drift_failure_renders_its_sqlstate(space, pipeline_factory, broker, second):  # noqa: F811
+    assert "SQLSTATE: 42000" in str(refused_for_other_keys(space, pipeline_factory, broker, second))
 
 
 def test_preloaded_rows_merge_and_the_auxiliary_table_appears_on_the_first_run(space, pipeline_factory, broker):  # noqa: F811
@@ -231,11 +278,12 @@ def test_preloaded_rows_merge_and_the_auxiliary_table_appears_on_the_first_run(s
     assert not space.catalog.tableExists(auxiliary)
     broker.send({"id": 1, "name": "bob", "seq": 2})
     run(space, pipeline_factory, broker.url, BASE)
-    assert rows(space, "id", "name", "seq") == [(1, "bob", 2)]
+    assert rows(space, "id", "name", "seq", *META) == [(1, "bob", 2, None, 2)]
     assert space.catalog.tableExists(auxiliary)
 
 
 def test_a_later_pipeline_reads_a_target_without_its_metadata_column(space, pipeline_factory, broker):  # noqa: F811
+    space.sql(f"CREATE TABLE {TARGET} ({PLAIN}, {METADATA}) {USING}")
     broker.send({"id": 1, "name": "alice", "seq": 1}, {"id": 2, "name": "bob", "seq": 1})
     run(space, pipeline_factory, broker.url, BASE)
     _, registry, start = pipeline_factory()
@@ -246,19 +294,29 @@ def test_a_later_pipeline_reads_a_target_without_its_metadata_column(space, pipe
             return space.read.table(TARGET).select("id", "name", "seq")
 
     start()
-    assert rows(space, "id", "name", "seq", table="downstream") == [(1, "alice", 1), (2, "bob", 1)]
+    assert rows(space, "*", table="downstream") == [(1, "alice", 1), (2, "bob", 1)]
 
 
-def test_two_pipelines_with_other_columns_evolve_a_shared_target(space, pipeline_factory, broker):  # noqa: F811
+def test_two_pipelines_with_other_columns_evolve_a_shared_target(space, pipeline_factory, broker, second):  # noqa: F811
     space.sql(f"CREATE TABLE {TARGET} (id INT NOT NULL, name STRING, seq BIGINT NOT NULL, {METADATA}) {USING}")
     broker.send({"id": 1, "name": "alice", "seq": 1}, {"id": 2, "name": "bob", "seq": 1})
     run(space, pipeline_factory, broker.url, BASE, flow="flow_one")
-    broker.send({"id": 2, "name": "bob-v2", "age": 25, "seq": 2}, {"id": 3, "name": "carol", "age": 30, "seq": 1})
-    run(space, pipeline_factory, broker.url, "id INT, name STRING, age INT, seq BIGINT", flow="flow_two")
-    assert rows(space, "id", "name", "seq", "age") == [
-        (1, "alice", 1, None),
-        (2, "bob-v2", 2, 25),
-        (3, "carol", 1, 30),
+    assert rows(space, "*") == [(1, "alice", 1, (None, 1)), (2, "bob", 1, (None, 1))]
+    second.send({"id": 2, "name": "bob-v2", "age": 25, "seq": 2}, {"id": 3, "name": "carol", "age": 30, "seq": 1})
+    run(space, pipeline_factory, second.url, "id INT, name STRING, age INT, seq BIGINT", flow="flow_two")
+    assert rows(space, "*") == [
+        (1, "alice", 1, (None, 1), None),
+        (2, "bob-v2", 2, (None, 2), 25),
+        (3, "carol", 1, (None, 1), 30),
+    ]
+    # The first pipeline returns on its old schema, and the evolved column persists.
+    broker.send({"id": 1, "name": "alice-v2", "seq": 2}, {"id": 4, "name": "dave", "seq": 1})
+    run(space, pipeline_factory, broker.url, BASE, flow="flow_one")
+    assert rows(space, "*") == [
+        (1, "alice-v2", 2, (None, 2), None),
+        (2, "bob-v2", 2, (None, 2), 25),
+        (3, "carol", 1, (None, 1), 30),
+        (4, "dave", 1, (None, 1), None),
     ]
 
 
@@ -286,13 +344,15 @@ def test_an_autocdc_target_feeds_a_materialized_view_in_the_same_graph(space, pi
     assert rows(space, "id", "name", table="downstream") == [(1, "alicia")]
 
 
-def test_two_targets_keep_independent_state(space, pipeline_factory, broker):  # noqa: F811
+def test_two_targets_keep_independent_state(space, pipeline_factory, broker, second):  # noqa: F811
+    space.sql(f"CREATE TABLE {PREFIX}t_a ({PLAIN}, {METADATA}) {USING}")
+    space.sql(f"CREATE TABLE {PREFIX}t_b ({PLAIN}, {METADATA}) {USING}")
     broker.send({"id": 1, "name": "alice", "seq": 100})
     run(space, pipeline_factory, broker.url, BASE, name="t_a", flow="flow_a")
-    broker.send({"id": 9, "name": "bob", "seq": 1})
-    run(space, pipeline_factory, broker.url, BASE, name="t_b", flow="flow_b")
-    assert rows(space, "id", "name", "seq", table="t_a") == [(1, "alice", 100)]
-    assert rows(space, "id", "name", "seq", table="t_b") == [(1, "alice", 100), (9, "bob", 1)]
+    second.send({"id": 9, "name": "bob", "seq": 1})
+    run(space, pipeline_factory, second.url, BASE, name="t_b", flow="flow_b")
+    assert rows(space, "id", "name", "seq", *META, table="t_a") == [(1, "alice", 100, None, 100)]
+    assert rows(space, "id", "name", "seq", *META, table="t_b") == [(9, "bob", 1, None, 1)]
     assert space.catalog.tableExists(f"{PREFIX}__spark_autocdc_aux_state_t_a")
     assert space.catalog.tableExists(f"{PREFIX}__spark_autocdc_aux_state_t_b")
 
@@ -316,6 +376,22 @@ def cdc_view_graph(spark, factory, url, transform):
         dp.create_streaming_table(TARGET, **FORMAT)
         dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["id"], sequence_by="seq")
     start()
+
+
+def test_key_nullability_and_metadata_changes_are_not_drift(space, pipeline_factory, broker):  # noqa: F811
+    space.sql(f"CREATE TABLE {TARGET} (id INT, name STRING, seq BIGINT NOT NULL, {METADATA}) {USING}")
+    broker.send({"id": 1, "name": "a", "seq": 1, "noise": "x"})
+
+    def not_null(frame):
+        return frame.select(sf.coalesce("id", sf.lit(0)).alias("id"), "name", "seq")
+
+    def described(frame):
+        return frame.select(sf.col("id").alias("id", metadata={"description": "primary key"}), "name", "seq")
+
+    cdc_view_graph(space, pipeline_factory, broker.url, not_null)
+    broker.send({"id": 2, "name": "b", "seq": 2, "noise": "x"})
+    cdc_view_graph(space, pipeline_factory, broker.url, described)
+    assert rows(space, "id", "name") == [(1, "a"), (2, "b")]
 
 
 def test_a_flow_reads_through_a_transforming_view(space, pipeline_factory, broker):  # noqa: F811
@@ -416,10 +492,10 @@ def test_an_unknown_streaming_format_is_refused(space, pipeline_factory):
 
         @dp.temporary_view
         def changes():
-            return space.readStream.format("rate").load()
+            return space.readStream.format("socket").option("host", "localhost").option("port", "1").load()
 
         dp.create_streaming_table(TARGET, **FORMAT)
-        dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["value"], sequence_by="timestamp")
+        dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["value"], sequence_by="value")
     with pytest.raises(FAILURE, match="incremental pipeline execution"):
         start()
 
@@ -463,7 +539,7 @@ def test_a_dropped_auxiliary_table_is_recreated(space, pipeline_factory, broker)
     space.sql(f"DROP TABLE {AUXILIARY}")
     broker.send({"id": 1, "name": "alicia", "seq": 2})
     run(space, pipeline_factory, broker.url, BASE)
-    assert rows(space, "id", "name") == [(1, "alicia")]
+    assert rows(space, "id", "name", "seq", *META) == [(1, "alicia", 2, None, 2)]
     assert space.catalog.tableExists(AUXILIARY)
 
 
@@ -580,7 +656,8 @@ def test_dropping_a_nested_struct_field_is_refused(space, pipeline_factory, brok
     broker.send(_event(1, 1, 1, 1, 1), _event(2, 1, 2, 2, 2))
     nested_run(space, pipeline_factory, broker.url, _struct(("c", "b_c"), ("d", "b_d")))
     broker.send(_event(1, 2, 10, 99, 10), _event(3, 1, 3, 99, 3))
-    with pytest.raises(FAILURE, match="INCOMPATIBLE_DATA_FOR_TABLE.CANNOT_FIND_DATA"):
+    expected = r"(?s)INCOMPATIBLE_DATA_FOR_TABLE.CANNOT_FIND_DATA.*table ``: Cannot find data for the output column `value`\.`b`\.`c`"  # noqa: E501
+    with pytest.raises(FAILURE, match=expected):
         nested_run(space, pipeline_factory, broker.url, _struct(("d", "b_d")))
 
 
@@ -597,7 +674,8 @@ def test_dropping_a_field_in_an_array_of_structs_is_refused(space, pipeline_fact
     broker.send(_event(1, 1, 1, 1, 1), _event(2, 1, 2, 2, 2))
     nested_run(space, pipeline_factory, broker.url, _array(("c", "b_c"), ("d", "b_d")))
     broker.send(_event(1, 2, 10, 10, 99), _event(3, 1, 3, 3, 99))
-    with pytest.raises(FAILURE, match="INCOMPATIBLE_DATA_FOR_TABLE.CANNOT_FIND_DATA"):
+    expected = r"(?s)INCOMPATIBLE_DATA_FOR_TABLE.CANNOT_FIND_DATA.*table ``: Cannot find data for the output column `vals`\.`element`\.`b`\.`d`"  # noqa: E501
+    with pytest.raises(FAILURE, match=expected):
         nested_run(space, pipeline_factory, broker.url, _array(("c", "b_c")))
 
 
@@ -637,3 +715,84 @@ def test_a_flow_reads_a_delta_table_incrementally(space, pipeline_factory):
     assert rows(space, "id", "name") == [(1, "alicia"), (2, "bob")]
     go()
     assert rows(space, "id", "name") == [(1, "alicia"), (2, "bob")]
+
+
+@sail_only
+def test_an_iceberg_target_merges_evolves_and_refreshes(space, pipeline_factory, broker):  # noqa: F811
+    def go(schema, keys="id", **options):
+        _, registry, start = pipeline_factory()
+        with graph_element_registration_context(registry):
+
+            @dp.temporary_view
+            def changes():
+                return space.readStream.format("json").schema(schema).load(broker.url)
+
+            dp.create_streaming_table("target", format="iceberg")
+            dp.create_auto_cdc_flow(target="target", source="changes", keys=[keys], sequence_by="seq")
+        start(**options)
+
+    space.sql("DROP TABLE IF EXISTS target")
+    broker.send({"id": 1, "name": "alice", "seq": 1}, {"id": 2, "name": "bob", "seq": 1})
+    go(BASE)
+    assert rows(space, "id", "name") == [(1, "alice"), (2, "bob")]
+    broker.send({"id": 1, "name": "alicia", "seq": 2, "age": 30})
+    go("id INT, name STRING, seq BIGINT, age INT")
+    assert rows(space, "id", "name", "age") == [(1, "alicia", 30), (2, "bob", None)]
+    go("id BIGINT, name STRING, seq BIGINT", keys="name", full_refresh_all=True)
+    assert rows(space, "id", "name") == [(1, "alice"), (1, "alicia"), (2, "bob")]
+    assert space.table("target").schema["id"].dataType.simpleString() == "bigint"
+
+
+def test_a_rate_source_feeds_a_flow(space, pipeline_factory):
+    def go():
+        _, registry, start = pipeline_factory()
+        with graph_element_registration_context(registry):
+
+            @dp.temporary_view
+            def changes():
+                return space.readStream.format("rate").option("rowsPerSecond", "5").load()
+
+            dp.create_streaming_table(TARGET, **FORMAT)
+            dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["value"], sequence_by="timestamp")
+        start()
+
+    go()
+    time.sleep(2.2)
+    go()
+    assert space.table(TARGET).columns[:2] == ["timestamp", "value"]
+    values = [row[0] for row in space.table(TARGET).select("value").orderBy("value").collect()]
+    assert len(values) >= 5  # noqa: PLR2004
+    assert values == list(range(values[0], values[0] + len(values)))
+
+
+def direct_source(spark, factory, target, source, bronze, **defaults):
+    """The flow is declared before `bronze`, so order cannot stand in for the dependency."""
+    _, registry, start = factory(**defaults)
+    with graph_element_registration_context(registry):
+        dp.create_streaming_table(target, **FORMAT)
+        dp.create_auto_cdc_flow(target=target, source=source, keys=["id"], sequence_by="seq")
+
+        @dp.materialized_view(name=bronze)
+        def bronze_rows():
+            return spark.sql("SELECT * FROM VALUES (1, 'alice', 1L), (1, 'alicia', 2L) AS t(id, name, seq)")
+
+    start()
+
+
+@pytest.mark.parametrize("qualified", [False, True])
+def test_a_source_named_directly_is_the_flows_input(space, pipeline_factory, qualified):
+    prefix = f"{ORACLE or space.catalog.currentDatabase()}." if qualified else PREFIX
+    direct_source(space, pipeline_factory, f"{prefix}target", f"{prefix}bronze", f"{prefix}bronze")
+    assert rows(space, "id", "name") == [(1, "alicia")]
+
+
+def test_a_single_part_source_inherits_the_graph_defaults(space, pipeline_factory):
+    catalog, database = ORACLE.split(".") if ORACLE else (space.catalog.currentCatalog(), "cdc_defaults")
+    space.sql(f"CREATE NAMESPACE IF NOT EXISTS {catalog}.{database}")
+    try:
+        direct_source(space, pipeline_factory, "target", "bronze", "bronze", catalog=catalog, database=database)
+        frame = space.table(f"{catalog}.{database}.target")
+        assert sorted(tuple(row) for row in frame.select("id", "name").collect()) == [(1, "alicia")]
+    finally:
+        for table in ["target", "bronze", "__spark_autocdc_aux_state_target"]:
+            space.sql(f"DROP TABLE IF EXISTS {catalog}.{database}.{table}")

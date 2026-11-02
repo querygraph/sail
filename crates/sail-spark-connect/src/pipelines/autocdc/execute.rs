@@ -8,12 +8,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::{MemTable, provider_as_source};
 use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
 use datafusion::prelude::SessionContext;
+use object_store::{ObjectStoreExt, PutPayload};
 use sail_catalog::error::CatalogError;
 use sail_catalog::manager::CatalogManager;
 use sail_common::spec;
+use sail_common_datafusion::catalog::TableKind;
 use sail_common_datafusion::extension::{SessionExtension, SessionExtensionAccessor};
 use sail_common_datafusion::task_resources::TaskResourceScope;
 use sail_plan::config::PlanConfig;
@@ -21,12 +24,13 @@ use sail_plan::error::PlanError;
 use sail_sdp_control::control::Control;
 use sail_sdp_control::store::SystemClock;
 use sail_sdp_control::turso_store::TursoStore;
+use sha2::{Digest, Sha256};
 use tokio::runtime::Handle;
 
 use super::ScdType;
 use super::durable::{DurableOutcome, DurableRun, run_durable_flow};
 use super::flow_source::FlowSource;
-use super::run::{FlowRun, checkpoint_dir};
+use super::run::{FlowRun, checkpoint_dir, run_plain_flow};
 use super::schema::{Case, METADATA_COLUMN};
 use super::write::{IN_COMMIT_TIMESTAMPS_PROPERTY, Scd1Write, flow_output_schema, read_table};
 use crate::error::{SparkError, SparkResult, StructuredSparkError};
@@ -42,6 +46,9 @@ use crate::spark::connect::{OutputType, pipeline_command as pc};
 
 /// A lease long enough to outlive one microbatch; each batch renews it.
 const LEASE_MS: i64 = 60_000;
+/// Overrides where a remote warehouse keeps its local AutoCDC state.
+const STATE_DIR_ENV: &str = "SAIL_AUTOCDC_STATE_DIR";
+const STATE_MARKER: &str = "_autocdc_state_owner";
 /// The microbatch bound per partition.
 const MAX_ROWS_PER_PARTITION: usize = 10_000;
 
@@ -91,6 +98,34 @@ pub(in crate::pipelines) fn admitted(
     Ok(true)
 }
 
+/// The format of a target as the catalog records it.
+async fn target_commits(ctx: &SessionContext, name: &Name) -> SparkResult<TargetCommits> {
+    let table = ctx
+        .extension::<CatalogManager>()?
+        .get_table_or_view(name)
+        .await
+        .map_err(PlanError::from)?;
+    let managed = sail_delta_lake::is_catalog_managed(table.kind.clone());
+    match table.kind {
+        TableKind::Table { format, .. } => Ok(TargetCommits { format, managed }),
+        _ => Err(SparkError::internal("AutoCDC target is not a table")),
+    }
+}
+
+/// How a target's commits are ordered. The authority fences a Delta table whose
+/// log it can watch. An Iceberg table, or a Delta table its catalog ratifies,
+/// has that ordering already and takes the plain path.
+struct TargetCommits {
+    format: String,
+    managed: bool,
+}
+
+impl TargetCommits {
+    fn fenced(&self) -> bool {
+        self.format.eq_ignore_ascii_case("delta") && !self.managed
+    }
+}
+
 /// The graph inputs of a flow, resolved now.
 async fn flow_relations(
     ctx: &SessionContext,
@@ -133,16 +168,52 @@ fn flow_root(warehouse: &std::path::Path, flow: &Flow) -> PathBuf {
         .join(flow.name.join("."))
 }
 
-/// The local warehouse directory. The authority is a file owned by one
-/// process, so a remote warehouse is refused rather than given a local one.
-fn local_warehouse(directory: &str) -> SparkResult<PathBuf> {
+/// Where the authority, archives and file lists live. They are local files
+/// even when the warehouse is not, so one machine owns a remote warehouse's
+/// flows. A marker in the warehouse records that. Without it, a machine that
+/// lost this directory would start over against tables that have history, so
+/// a marker with no local state stops the run.
+async fn state_root(ctx: &SessionContext, directory: &str) -> SparkResult<PathBuf> {
     let path = directory.strip_prefix("file://").unwrap_or(directory);
-    if path.contains("://") {
-        return Err(SparkError::unsupported(
-            "a durable AutoCDC run needs a local warehouse directory",
-        ));
+    if !path.contains("://") {
+        return Ok(PathBuf::from(path));
     }
-    Ok(PathBuf::from(path))
+    let base = std::env::var_os(STATE_DIR_ENV)
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".sail/autocdc")))
+        .ok_or_else(|| {
+            SparkError::invalid(format!("set {STATE_DIR_ENV} for a remote warehouse"))
+        })?;
+    let digest: String = Sha256::digest(directory.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let root = base.join(digest);
+    let url = ListingTableUrl::parse(directory)?;
+    let store = ctx.runtime_env().object_store(url.object_store())?;
+    let marker = url.prefix().clone().join(STATE_MARKER);
+    let storage = |error: object_store::Error| {
+        SparkError::internal(format!("AutoCDC warehouse marker: {error}"))
+    };
+    match store.get(&marker).await {
+        Ok(_) if !root.join("_control").join("authority.db").exists() => {
+            return Err(SparkError::invalid(format!(
+                "the warehouse {directory} has AutoCDC state, but this machine does not hold it \
+                 at {}: restore that directory, or remove {STATE_MARKER} and run a full refresh",
+                root.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(object_store::Error::NotFound { .. }) => {
+            let body = root.to_string_lossy().into_owned();
+            store
+                .put(&marker, PutPayload::from(body.into_bytes()))
+                .await
+                .map_err(storage)?;
+        }
+        Err(error) => return Err(storage(error)),
+    }
+    Ok(root)
 }
 
 /// Analysis gives an AutoCDC target the schema of the query that feeds it;
@@ -355,6 +426,10 @@ fn with_commit_timestamps(graph: &GraphDefinition) -> GraphDefinition {
     for output in &mut graph.outputs {
         if let Some(pc::define_output::Details::TableDetails(details)) =
             &mut output.definition.details
+            && details
+                .format
+                .as_deref()
+                .is_none_or(|format| format.eq_ignore_ascii_case("delta"))
         {
             details.table_properties.insert(
                 IN_COMMIT_TIMESTAMPS_PROPERTY.to_string(),
@@ -395,7 +470,7 @@ impl CdcRun {
         selection: &Selection,
     ) -> SparkResult<Self> {
         let spark = ctx.extension::<SparkSession>()?;
-        let warehouse = local_warehouse(&spark.plan_config()?.default_warehouse_directory)?;
+        let warehouse = state_root(ctx, &spark.plan_config()?.default_warehouse_directory).await?;
         let registered = ctx
             .extension::<BoundedSources>()
             .map(|x| x.as_ref().clone())
@@ -522,7 +597,10 @@ impl CdcRun {
             sequencing_type: &sequencing,
             case: case_of(&config),
         };
-        let checkpoint = checkpoint_dir(&self.warehouse, name, &flow.name, false)?;
+        let resets = crate::pipelines::materialize::resets(output, selection);
+        let commits = target_commits(ctx, name).await?;
+        let plain = !commits.fenced();
+        let checkpoint = checkpoint_dir(&self.warehouse, name, &flow.name, plain && resets)?;
         let relations = flow_relations(ctx, graph, analyzed, flow, config.clone()).await?;
         let run = FlowRun {
             graph,
@@ -535,6 +613,16 @@ impl CdcRun {
             max_rows_per_partition: MAX_ROWS_PER_PARTITION,
             flow_source: self.sources.1.get(&flow.name).map(Arc::as_ref),
         };
+        let reset = crate::pipelines::materialize::resets(output, selection);
+        if plain {
+            let format = &commits.format;
+            let outcome = run_plain_flow(ctx, config, &self.scope, &run, format, reset).await?;
+            return Ok(DurableOutcome {
+                batches: outcome.batches,
+                recovered: None,
+                reset: reset.then_some(0),
+            });
+        }
         run_durable_flow(
             ctx,
             config,
@@ -544,7 +632,7 @@ impl CdcRun {
                 control: self.control.clone(),
                 owner: &self.owner,
                 lease_ms: LEASE_MS,
-                reset: crate::pipelines::materialize::resets(output, selection),
+                reset,
                 stage_hook: None,
             },
         )

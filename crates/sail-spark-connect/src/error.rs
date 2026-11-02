@@ -288,7 +288,7 @@ impl SparkThrowable {
             | SparkThrowable::SparkUpgradeException(message)
             | SparkThrowable::SparkException(message)
             | SparkThrowable::PythonException(message) => Cow::Borrowed(message),
-            SparkThrowable::Structured(error) => Cow::Owned(error.to_string()),
+            SparkThrowable::Structured(error) => Cow::Owned(structured::rendered(error)),
         }
     }
 
