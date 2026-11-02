@@ -65,9 +65,10 @@ impl JobScheduler {
         )?;
         debug!("job {job_id} job graph \n{graph}");
 
-        let (output, stream) =
+        let (output, forwarder, stream) =
             build_job_output(ctx, job_id, graph.schema().clone(), self.stopping.clone());
-        let descriptor = JobDescriptor::try_new(graph, JobState::Running { output }, context)?;
+        let mut descriptor = JobDescriptor::try_new(graph, JobState::Running { output }, context)?;
+        descriptor.forwarder = Some(forwarder);
         self.jobs.insert(job_id, descriptor);
 
         if let Some(job) = self.jobs.get(&job_id) {
@@ -711,14 +712,12 @@ impl JobScheduler {
         for (job_id, job) in self.jobs.iter_mut() {
             let job_id = u64::from(*job_id);
             if matches!(job.state, JobState::Running { .. } | JobState::Draining) {
-                // For running jobs, the job output is dropped here.
-                // Internally, the job output manages the receiving end of the output stream.
-                // So once the stream receiver is no longer available, all the running tasks
-                // will ultimately find that the sink (owned by the shuffle write node) is closed.
-                // The task will stop running even if the task produces an infinite stream.
-                // Once the tasks are stopped, the inputs (gRPC streaming responses owned by
-                // shuffle read nodes) are dropped. So the worker gRPC server will have no active
-                // clients subscribing to local streams, and the server can proceed with shutdown.
+                // The job output manager is dropped with the state, and the
+                // forwarder that owns the workers' Flight streams is aborted
+                // with it. Both must go before the workers are told to stop:
+                // a worker's server waits for its open responses to end, and
+                // the driver's forwarder was what kept them open.
+                job.abandon_output();
                 job.state = JobState::Canceled;
                 event_reporter.report(SystemEvent::JobUpdated {
                     session_id: session_id.to_string(),

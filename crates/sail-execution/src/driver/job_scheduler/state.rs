@@ -3,6 +3,7 @@ use std::sync::Arc;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlanProperties;
 use sail_common_datafusion::error::CommonErrorCause;
+use tokio::task::AbortHandle;
 
 use crate::driver::job_scheduler::topology::JobTopology;
 use crate::driver::output::{JobOutputManager, JobOutputOutcome};
@@ -17,6 +18,10 @@ pub struct JobDescriptor {
     pub stages: Vec<StageDescriptor>,
     pub regions: Vec<TaskRegionDescriptor>,
     pub state: JobState,
+    /// The task forwarding the job's output to its consumer. It outlives the
+    /// `Running` state: a draining job's forwarder still holds the workers'
+    /// streams until they end.
+    pub forwarder: Option<AbortHandle>,
 }
 
 pub enum JobState {
@@ -53,6 +58,16 @@ impl JobState {
 }
 
 impl JobDescriptor {
+    /// Stop forwarding the job's output. The forwarder's streams from the
+    /// workers are dropped, so the workers' servers can stop; the consumer
+    /// sees the output end without its terminal item, which the output's
+    /// truncation guard reports as a canceled job.
+    pub fn abandon_output(&mut self) {
+        if let Some(forwarder) = self.forwarder.take() {
+            forwarder.abort();
+        }
+    }
+
     pub fn try_new(
         graph: JobGraph,
         state: JobState,
@@ -78,6 +93,7 @@ impl JobDescriptor {
         Ok(Self {
             context,
             graph,
+            forwarder: None,
             topology,
             stages,
             regions,
@@ -185,5 +201,50 @@ impl TaskState {
             TaskState::Succeeded | TaskState::Failed | TaskState::Canceled => true,
             TaskState::Created | TaskState::Scheduled | TaskState::Running => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::execution::TaskContext;
+    use tokio::task::JoinSet;
+
+    use super::{JobDescriptor, JobState};
+    use crate::error::ExecutionResult;
+    use crate::job_graph::{JobGraph, JobGraphOptions};
+    use crate::shuffle::{ShuffleBackendKind, ShuffleCompression};
+
+    #[tokio::test]
+    async fn abandoning_the_output_ends_the_forwarder() -> ExecutionResult<()> {
+        let graph = JobGraph::try_new(
+            MemorySourceConfig::try_new_exec(&[vec![]], Arc::new(Schema::empty()), None)?,
+            JobGraphOptions {
+                shuffle_backend: ShuffleBackendKind::Flight {
+                    compression: ShuffleCompression::None,
+                    connection_count: std::num::NonZeroUsize::MIN,
+                    initial_stream_window_size: None,
+                    initial_connection_window_size: None,
+                },
+            },
+        )?;
+        let mut job =
+            JobDescriptor::try_new(graph, JobState::Draining, Arc::new(TaskContext::default()))?;
+        let mut tasks = JoinSet::new();
+        // A forwarder that would otherwise run for as long as a worker's
+        // response stays open.
+        job.forwarder = Some(tasks.spawn(std::future::pending::<()>()));
+
+        job.abandon_output();
+
+        let joined = tasks.join_next().await;
+        assert!(joined.is_some_and(|result| result.is_err_and(|e| e.is_cancelled())));
+        assert!(job.forwarder.is_none());
+        // Abandoning twice is harmless.
+        job.abandon_output();
+        Ok(())
     }
 }

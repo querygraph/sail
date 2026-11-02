@@ -156,8 +156,11 @@ impl Actor for WorkerActor {
                 .send(crate::task_runner::TaskRunnerMessage::Shutdown)
                 .await;
         }
-        self.server.stop().await;
+        // The task runner goes first: its tasks and local streams are gone
+        // when the server starts draining, so a response still open then is
+        // held by a client, not by this worker.
         ctx.children_mut().join().await;
+        self.server.stop().await;
         info!("worker {} server has stopped", self.options.worker_id);
     }
 }
