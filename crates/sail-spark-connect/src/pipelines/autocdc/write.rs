@@ -525,9 +525,40 @@ pub(super) async fn merge_auxiliary(
     run_command(ctx, config, spec::CommandNode::MergeInto(merge), None).await
 }
 
-/// Replace `table` with the published empty view: no rows, its schema. A
+/// Replace the Delta table at `url` with the published empty view. Writing to
+/// the path needs nothing of the catalog, which may not support REPLACE. A
 /// commit made by this write finds its fence in the session's authority.
-pub(super) async fn replace_with_view(
+pub(super) async fn replace_delta_with_view(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    url: &url::Url,
+) -> SparkResult<()> {
+    let input = spec::QueryPlan::new(spec::QueryNode::Read {
+        read_type: spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
+            name: spec::ObjectName::bare(RECONCILED_VIEW),
+            temporal: None,
+            sample: None,
+            options: vec![],
+        })),
+        is_streaming: false,
+    });
+    let write = spec::Write {
+        input: Box::new(input),
+        source: Some("delta".to_string()),
+        save_type: spec::SaveType::Path(url.to_string()),
+        mode: Some(spec::SaveMode::Overwrite),
+        sort_columns: vec![],
+        partitioning_columns: vec![],
+        clustering_columns: vec![],
+        bucket_by: None,
+        options: vec![("overwriteSchema".to_string(), "true".to_string())],
+    };
+    run_command(ctx, config, spec::CommandNode::Write(write), None).await
+}
+
+/// Create `table` from the published empty view: no rows, its schema. Not every
+/// catalog can replace a table, so the caller has dropped it.
+pub(super) async fn create_from_view(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
     table: &Name,
@@ -549,12 +580,12 @@ pub(super) async fn replace_with_view(
             table: spec::ObjectName::from(table.to_vec()),
             save_method: spec::TableSaveMethod::SaveAsTable,
         },
-        mode: Some(spec::SaveMode::Overwrite),
+        mode: Some(spec::SaveMode::ErrorIfExists),
         sort_columns: vec![],
         partitioning_columns: vec![],
         clustering_columns: vec![],
         bucket_by: None,
-        options: vec![("overwriteSchema".to_string(), "true".to_string())],
+        options: vec![],
     };
     run_command(ctx, config, spec::CommandNode::Write(write), None).await
 }

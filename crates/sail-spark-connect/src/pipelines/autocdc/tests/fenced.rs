@@ -84,10 +84,10 @@ pub(super) fn table_dir(
                     .ok()?
                     .flatten()
                     .filter_map(|entry| {
-                        let generation: u64 = entry.file_name().to_str()?.parse().ok()?;
-                        Some((generation, entry.path()))
+                        let modified = entry.metadata().ok()?.modified().ok()?;
+                        Some((modified, entry.path()))
                     })
-                    .max_by_key(|(generation, _)| *generation);
+                    .max_by_key(|(modified, _)| *modified);
                 if let Some((_, table)) = latest {
                     return Some(table);
                 }

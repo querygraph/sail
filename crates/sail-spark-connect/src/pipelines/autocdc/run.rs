@@ -35,8 +35,8 @@ use sha2::{Digest, Sha256};
 use super::auxiliary;
 use super::durable::evolved_schema;
 use super::write::{
-    PreparedBatch, Scd1Write, drop_table, ensure_auxiliary_table, flow_output_schema,
-    handle_microbatch, publish_prepared, read_table, replace_with_view,
+    PreparedBatch, Scd1Write, create_from_view, drop_table, ensure_auxiliary_table,
+    flow_output_schema, handle_microbatch, publish_prepared, read_table,
 };
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
@@ -300,7 +300,8 @@ pub(super) async fn run_plain_flow(
         )
         .await?;
         publish_empty(ctx, output).await?;
-        replace_with_view(ctx, config.clone(), run.write.destination, format).await?;
+        drop_table(ctx, config.clone(), run.write.destination).await?;
+        create_from_view(ctx, config.clone(), run.write.destination, format).await?;
     } else if let Some((schema, _)) = evolved_schema(ctx, config.clone(), run).await? {
         add_columns(ctx, config.clone(), run.write.destination, &schema).await?;
     }

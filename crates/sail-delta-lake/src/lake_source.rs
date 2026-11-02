@@ -164,7 +164,9 @@ async fn reject_enrolled_delta_alter(
     let Ok(commits) = ctx.extension::<FencedCommits>() else {
         return Ok(());
     };
+    // A metastore writes `file:/path`, and enrollment holds the parsed form.
     let table_url = format!("{}/", path.trim_end_matches('/'));
+    let table_url = Url::parse(&table_url).map_or(table_url, String::from);
     if commits.0.is_enrolled(&table_url).await? {
         return plan_err!("table {table_url} is enrolled and refuses a change without a fence");
     }

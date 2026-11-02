@@ -43,7 +43,7 @@ use super::write::{
     AuxiliaryPlacement, IN_COMMIT_TIMESTAMPS_PROPERTY, PreparedBatch, drop_table,
     enable_commit_timestamps, ensure_auxiliary_table, evolve_fenced, flow_output_schema,
     merge_auxiliary, merge_destination, noop_fenced, prepare_microbatch, publish_prepared,
-    read_table, replace_with_view,
+    read_table, replace_delta_with_view,
 };
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
@@ -807,7 +807,6 @@ impl<S: Store + 'static> DurableRun<'_, S> {
         intent: &Intent,
     ) -> SparkResult<u64> {
         let control = &self.control;
-        let destination = self.run.write.destination;
         let write = self.run.write;
         let output = flow_output_schema(
             ctx,
@@ -838,7 +837,8 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             publish_prepared(ctx, &empty).await?;
             let fenced = fence(token, intent, EffectStep::ResetTarget, &digest)?;
             self.install_with(ctx, Some(fenced));
-            let replaced = replace_with_view(ctx, config.clone(), destination, "delta").await;
+            let replaced =
+                replace_delta_with_view(ctx, config.clone(), &enrolled.destination.url).await;
             self.install(ctx);
             replaced?;
         }
@@ -870,9 +870,7 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             write,
             &flow_schema(self.run.source, write)?,
             false,
-            Some(AuxiliaryPlacement::BesideTarget(
-                intent.generation.to_string(),
-            )),
+            Some(fresh_auxiliary(intent.generation)),
         )
         .await?;
         // A table's location is unique to it, so the new one has its own.
@@ -1006,25 +1004,20 @@ async fn lacks_commit_timestamps(ctx: &SessionContext, name: &Name) -> SparkResu
             .any(|(key, value)| key == IN_COMMIT_TIMESTAMPS_PROPERTY && value == "true"))
 }
 
-/// Where a missing auxiliary table belongs. Mid-batch it holds state to recover,
-/// and mid-reset its path is fixed by the generation. Otherwise it was dropped,
-/// and Spark starts a dropped table empty, so it gets a path nothing can be
-/// left at.
+/// Where a missing auxiliary table belongs. Mid-batch it holds state to recover.
+/// Otherwise it starts empty, as Spark starts a dropped table, at a path nothing
+/// can be left at: a metastore gives a recreated target its old location.
 fn auxiliary_placement(guard: Option<&TargetGuard>) -> AuxiliaryPlacement {
-    match guard {
-        None => AuxiliaryPlacement::BesideTarget("0".to_string()),
-        Some(guard) if guard.state == TargetState::Resetting => {
-            AuxiliaryPlacement::BesideTarget(guard.generation.to_string())
-        }
-        Some(guard) => match (&guard.active_intent, &guard.auxiliary_location) {
-            (Some(_), Some(location)) => AuxiliaryPlacement::At(location.clone()),
-            _ => AuxiliaryPlacement::BesideTarget(format!(
-                "{}-{}",
-                guard.generation,
-                uuid::Uuid::new_v4()
-            )),
-        },
+    let open = guard
+        .filter(|guard| guard.active_intent.is_some() && guard.state != TargetState::Resetting);
+    match open.and_then(|guard| guard.auxiliary_location.as_ref()) {
+        Some(location) => AuxiliaryPlacement::At(location.clone()),
+        None => fresh_auxiliary(guard.map_or(0, |guard| guard.generation)),
     }
+}
+
+fn fresh_auxiliary(generation: u64) -> AuxiliaryPlacement {
+    AuxiliaryPlacement::BesideTarget(format!("{generation}-{}", uuid::Uuid::new_v4()))
 }
 
 /// Wait for another owner's lease to end. Only a dead or concurrent run holds
