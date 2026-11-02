@@ -591,7 +591,10 @@ fn missing_data_source_error(name: &str) -> datafusion::common::DataFusionError 
              `spark.dataSource.register(JdbcDataSource)`"
         )
     } else {
-        plan_datafusion_err!("No data source found for: {name}")
+        plan_datafusion_err!(
+            "[DATA_SOURCE_NOT_FOUND] Failed to find the data source: {name}. \
+             Make sure the provider name is correct and the package is properly registered."
+        )
     }
 }
 
@@ -856,7 +859,9 @@ mod tests {
 
         assert_eq!(
             error,
-            "Error during planning: No data source found for: unknown"
+            "Error during planning: [DATA_SOURCE_NOT_FOUND] Failed to find the data source: \
+             unknown. Make sure the provider name is correct and the package is properly \
+             registered."
         );
         Ok(())
     }

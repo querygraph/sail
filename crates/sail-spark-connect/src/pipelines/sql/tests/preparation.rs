@@ -173,7 +173,7 @@ async fn earlier_registration_error_wins_and_discards_the_entire_draft() -> Spar
     let mut graph = graph();
     let prepared = prepare(
         command(
-            "SET conf.test = changed; USE other_db; \
+            "SET conf.test = changed; USE SCHEMA other_db; \
          CREATE MATERIALIZED VIEW transient AS SELECT 1; \
          CREATE GLOBAL TEMPORARY VIEW rejected AS SELECT 1; SELECT 2",
         ),

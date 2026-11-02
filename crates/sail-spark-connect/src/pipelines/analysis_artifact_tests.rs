@@ -265,13 +265,11 @@ async fn persisted_view_publishes_captured_columns_after_source_is_unavailable()
         .get(&graph.outputs[0].name)
         .ok_or("view publication missing")?
         .clone();
-    assert_eq!(options.columns[0].name, "captured");
+    // Spark 4.2.1 publishes the columns of the query, not the declared ones.
+    assert_eq!(options.columns[0].name, "id");
     assert_eq!(options.columns[0].data_type, DataType::Int64);
     assert!(!options.columns[0].nullable);
-    assert_eq!(
-        options.columns[0].comment.as_deref(),
-        Some("column comment")
-    );
+    assert_eq!(options.columns[0].comment, None);
     assert!(
         leases
             .lock()

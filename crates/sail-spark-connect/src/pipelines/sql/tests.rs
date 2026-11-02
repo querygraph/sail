@@ -278,7 +278,7 @@ async fn view_source_intervals_preserve_file_atomicity_and_namespace_reset() -> 
     let mut graph = graph();
     register_sql(
         &mut graph,
-        "USE other_db; CREATE VIEW a AS SELECT 'é;雪' AS x; \
+        "USE SCHEMA other_db; CREATE VIEW a AS SELECT 'é;雪' AS x; \
          CREATE VIEW b AS SELECT /* ; */ x FROM a;",
         "views.sql",
     )
@@ -297,7 +297,7 @@ async fn view_source_intervals_preserve_file_atomicity_and_namespace_reset() -> 
     assert!(
         register_sql(
             &mut graph,
-            "USE failed_db; CREATE VIEW rejected AS SELECT 2; SELECT 3;",
+            "USE SCHEMA failed_db; CREATE VIEW rejected AS SELECT 2; SELECT 3;",
             "failed.sql",
         )
         .await

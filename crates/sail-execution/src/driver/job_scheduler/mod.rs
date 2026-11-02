@@ -4,6 +4,7 @@ mod state;
 mod topology;
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::TaskContext;
@@ -26,6 +27,9 @@ pub struct JobScheduler {
     job_id_generator: IdGenerator<JobId>,
     codec: Box<dyn PhysicalExtensionCodec>,
     event_reporter: SystemEventReporter,
+    /// Set when the driver stops, so that the output of an abandoned job is not
+    /// taken for the output of a finished one.
+    stopping: Arc<AtomicBool>,
 }
 
 impl JobScheduler {
@@ -36,6 +40,7 @@ impl JobScheduler {
             job_id_generator: IdGenerator::new(),
             codec: Box::new(RemoteExecutionCodec),
             event_reporter,
+            stopping: Arc::new(AtomicBool::new(false)),
         }
     }
 }

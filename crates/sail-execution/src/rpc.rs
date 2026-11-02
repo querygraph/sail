@@ -1,7 +1,9 @@
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Duration;
 
+use log::warn;
 use sail_common::telemetry::{TracingClientLayer, TracingClientService};
 use tokio::sync::{OnceCell, oneshot};
 use tokio::task::JoinHandle;
@@ -11,6 +13,8 @@ use tower::ServiceBuilder;
 use crate::driver::{CelebornLifecycleManagerServiceClient, DriverServiceClient};
 use crate::error::{ExecutionError, ExecutionResult};
 use crate::worker::WorkerServiceClient;
+
+const SERVER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub enum ServerMonitor {
     Stopped,
@@ -62,9 +66,18 @@ impl ServerMonitor {
             Self::Pending { handle } => {
                 handle.abort();
             }
-            Self::Running { signal, handle } => {
+            Self::Running { signal, mut handle } => {
                 let _ = signal.send(());
-                let _ = handle.await;
+                // A graceful stop waits for open requests, and a peer that is gone
+                // or stopping too may never finish one.
+                if tokio::time::timeout(SERVER_STOP_TIMEOUT, &mut handle)
+                    .await
+                    .is_err()
+                {
+                    warn!("server did not stop within {SERVER_STOP_TIMEOUT:?}, aborting it");
+                    handle.abort();
+                    let _ = handle.await;
+                }
             }
         }
     }
