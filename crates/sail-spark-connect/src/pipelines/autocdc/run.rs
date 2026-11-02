@@ -215,9 +215,18 @@ pub(super) async fn run_flow(
         run.max_rows_per_partition,
     )? {
         let plan = if let Some(flow_source) = run.flow_source {
+            let end = record.progress.clone().advance(&intent);
             let graph_scope = GraphScope::new(run.graph, run.relations, run.flow);
             flow_source
-                .batch_plan(ctx, &config, &graph_scope, run.graph, run.flow, &intent)
+                .batch_plan(
+                    ctx,
+                    &config,
+                    &graph_scope,
+                    run.graph,
+                    run.flow,
+                    &intent,
+                    &end,
+                )
                 .await?
         } else {
             let scans = intent

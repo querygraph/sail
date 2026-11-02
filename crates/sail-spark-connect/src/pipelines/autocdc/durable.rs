@@ -596,9 +596,19 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             serde_json::from_value(intent.request.clone()).map_err(encoding_error)?;
         let run = self.run;
         let plan = if let Some(flow_source) = run.flow_source {
+            let end: Progress =
+                serde_json::from_value(intent.end_progress.clone()).map_err(encoding_error)?;
             let graph_scope = GraphScope::new(run.graph, run.relations, run.flow);
             flow_source
-                .batch_plan(ctx, &config, &graph_scope, run.graph, run.flow, &batch)
+                .batch_plan(
+                    ctx,
+                    &config,
+                    &graph_scope,
+                    run.graph,
+                    run.flow,
+                    &batch,
+                    &end,
+                )
                 .await?
         } else {
             let scans = batch

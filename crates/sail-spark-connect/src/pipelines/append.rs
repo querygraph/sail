@@ -610,7 +610,7 @@ async fn source_plan(
     Ok(builder.alias(SOURCE_ALIAS)?.build()?)
 }
 
-fn reads_a_stream(plan: &LogicalPlan) -> datafusion::common::Result<bool> {
+pub(super) fn reads_a_stream(plan: &LogicalPlan) -> datafusion::common::Result<bool> {
     plan.exists(|node| {
         Ok(matches!(node, LogicalPlan::SubqueryAlias(alias)
             if alias.alias.table() == SOURCE_ALIAS))
@@ -841,10 +841,10 @@ async fn file_source(
 }
 
 /// What a watermarked aggregate needs from its query.
-struct Windowed {
+pub(super) struct Windowed {
     source: Name,
-    event_time: String,
-    delay_micros: i64,
+    pub event_time: String,
+    pub delay_micros: i64,
     window_micros: i64,
 }
 
@@ -916,7 +916,7 @@ fn tumbling_window(grouping: &[spec::Expr], event_time: &str) -> SparkResult<i64
 }
 
 /// Find the watermarked aggregate of a query, through the nodes around it.
-fn windowed_aggregate(
+pub(super) fn windowed_aggregate(
     scope: &GraphScope<'_>,
     query: &spec::QueryPlan,
 ) -> SparkResult<Option<Windowed>> {
@@ -992,7 +992,7 @@ fn event_micros(plan: &LogicalPlan, column: &str) -> SparkResult<Expr> {
     Ok(cast(cast(raw, micros), DataType::Int64))
 }
 
-async fn max_event(
+pub(super) async fn max_event(
     ctx: &SessionContext,
     plan: &LogicalPlan,
     column: &str,
