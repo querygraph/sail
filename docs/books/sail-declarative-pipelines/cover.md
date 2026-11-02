@@ -1,0 +1,1 @@
+![Sail Declarative Pipelines cover: a dataflow graph from sources through streaming tables, append flows and AutoCDC to materialized views.](docs/books/sail-declarative-pipelines/cover/sail-declarative-pipelines-cover.png)

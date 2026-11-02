@@ -187,12 +187,9 @@ async fn table_url(ctx: &SessionContext, name: &Name) -> SparkResult<Url> {
             name.join(".")
         )));
     };
-    let directory = format!("{}/", location.trim_end_matches('/'));
-    Url::parse(&directory)
-        .or_else(|_| {
-            Url::from_directory_path(&location)
-                .map_err(|()| url::ParseError::RelativeUrlWithoutBase)
-        })
+    // Resolve as Delta's table source does, so a relative location (the default
+    // `spark-warehouse`) names the same directory against the working directory.
+    sail_data_source::resolve_table_url(location.clone())
         .map_err(|e| SparkError::internal(format!("table location {location}: {e}")))
 }
 

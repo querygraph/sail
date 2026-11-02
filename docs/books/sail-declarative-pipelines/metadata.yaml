@@ -1,0 +1,11 @@
+title: Sail Declarative Pipelines
+subtitle: "Spark 4.2.1 Declarative Pipelines on Sail: Technical Report, Milestone 1"
+author: Alexy Khrabrov ∈ LakeSail Team
+language: en-US
+lang: en-US
+publisher: First Pair Press
+rights: Copyright 2026 LakeSail, Inc. and contributors. Apache License 2.0.
+title_stem: sail-declarative-pipelines
+cover_image: docs/books/sail-declarative-pipelines/cover/sail-declarative-pipelines-cover.png
+headboard_image: docs/books/sail-declarative-pipelines/cover/sail-declarative-pipelines-cover.png
+description: How Sail implements Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines CLI, with batch, streaming, Apache Iggy and AutoCDC, and how it was verified against Spark.
