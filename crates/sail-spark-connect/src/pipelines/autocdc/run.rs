@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use sail_common::spec;
@@ -36,7 +36,7 @@ use super::auxiliary;
 use super::durable::evolved_schema;
 use super::write::{
     PreparedBatch, Scd1Write, drop_table, ensure_auxiliary_table, flow_output_schema,
-    handle_microbatch, publish_prepared, replace_with_view,
+    handle_microbatch, publish_prepared, read_table, replace_with_view,
 };
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
@@ -300,10 +300,40 @@ pub(super) async fn run_plain_flow(
         .await?;
         publish_empty(ctx, output).await?;
         replace_with_view(ctx, config.clone(), run.write.destination, format).await?;
-    } else if let Some((schema, added)) = evolved_schema(ctx, config.clone(), run).await? {
-        add_columns(ctx, config.clone(), run.write.destination, &schema, &added).await?;
+    } else if let Some((schema, _)) = evolved_schema(ctx, config.clone(), run).await? {
+        add_columns(ctx, config.clone(), run.write.destination, &schema).await?;
     }
     run_flow(ctx, config, scope, run).await
+}
+
+/// What `evolved` has that `current` lacks, as `ADD COLUMNS` paths. Spark's
+/// grammar reaches into a struct by name and a list by `element`.
+fn added_paths(
+    path: &str,
+    current: &DataType,
+    evolved: &DataType,
+    out: &mut Vec<(String, DataType)>,
+) {
+    match (current, evolved) {
+        (DataType::Struct(current), DataType::Struct(evolved)) => {
+            for field in evolved {
+                let child = format!("{path}.`{}`", field.name());
+                match current.iter().find(|x| x.name() == field.name()) {
+                    Some(existing) => {
+                        added_paths(&child, existing.data_type(), field.data_type(), out);
+                    }
+                    None => out.push((child, field.data_type().clone())),
+                }
+            }
+        }
+        (DataType::List(current), DataType::List(evolved)) => added_paths(
+            &format!("{path}.element"),
+            current.data_type(),
+            evolved.data_type(),
+            out,
+        ),
+        _ => {}
+    }
 }
 
 /// Iceberg's MERGE has no schema evolution, and no fence needs one here.
@@ -312,22 +342,32 @@ async fn add_columns(
     config: Arc<PlanConfig>,
     table: &Name,
     schema: &SchemaRef,
-    added: &[String],
 ) -> SparkResult<()> {
+    let current = read_table(ctx, config.clone(), table).await?;
+    let current = current.schema().as_arrow().clone();
+    let mut added = vec![];
+    for field in schema.fields() {
+        let path = format!("`{}`", field.name());
+        match current.field_with_name(field.name()) {
+            Ok(existing) => {
+                added_paths(&path, existing.data_type(), field.data_type(), &mut added);
+            }
+            Err(_) => added.push((path, field.data_type().clone())),
+        }
+    }
     let name = table
         .iter()
         .map(|part| format!("`{part}`"))
         .collect::<Vec<_>>()
         .join(".");
-    let fields = spec_schema(schema)?.fields;
-    for column in added {
+    for (path, data_type) in added {
+        let fields = spec_schema(&Schema::new(vec![Field::new("c", data_type, true)]))?.fields;
         let field = fields
-            .iter()
-            .find(|field| &field.name == column)
-            .ok_or_else(|| SparkError::internal("evolved column missing"))?;
+            .first()
+            .ok_or_else(|| SparkError::internal("column has no type"))?;
         let data_type = quoted_type(&field.data_type)?;
         let sql = format!(
-            "ALTER TABLE {name} ADD COLUMNS (`{column}` {})",
+            "ALTER TABLE {name} ADD COLUMNS ({path} {})",
             data_type.trim_matches('"')
         );
         let statement = sail_sql_analyzer::parser::parse_one_statement(&sql)?;

@@ -30,7 +30,9 @@ SCHEMA = "id INT, name STRING, seq BIGINT, is_delete BOOLEAN"
 # As an oracle it runs this file over its test catalog: set this to `cat.ns1`.
 ORACLE = os.environ.get("AUTOCDC_ORACLE_NAMESPACE")
 PREFIX = f"{ORACLE}." if ORACLE else ""
-FORMAT = {} if ORACLE else {"format": "delta"}
+# Spark-verified expectations also run on Sail's other target formats.
+TARGET_FORMAT = os.environ.get("AUTOCDC_TARGET_FORMAT", "delta")
+FORMAT = {} if ORACLE else {"format": TARGET_FORMAT}
 TARGET = f"{PREFIX}target"
 AUXILIARY = f"{PREFIX}__spark_autocdc_aux_state_target"
 META = ("__spark_autocdc_metadata.deleteSequence", "__spark_autocdc_metadata.upsertSequence")

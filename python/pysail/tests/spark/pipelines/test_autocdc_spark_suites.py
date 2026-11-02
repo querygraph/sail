@@ -28,10 +28,13 @@ except ImportError:
 
 ORACLE = os.environ.get("AUTOCDC_ORACLE_NAMESPACE")
 PREFIX = f"{ORACLE}." if ORACLE else ""
-FORMAT = {} if ORACLE else {"format": "delta"}
-USING = "" if ORACLE else "USING delta"
+# Spark-verified expectations also run on Sail's other target formats.
+TARGET_FORMAT = os.environ.get("AUTOCDC_TARGET_FORMAT", "delta")
+FORMAT = {} if ORACLE else {"format": TARGET_FORMAT}
+USING = "" if ORACLE else f"USING {TARGET_FORMAT}"
 TARGET = f"{PREFIX}target"
 AUXILIARY = f"{PREFIX}__spark_autocdc_aux_state_target"
+delta_only = pytest.mark.skipif(TARGET_FORMAT != "delta", reason="about Delta targets or sources")
 sail_only = pytest.mark.skipif(ORACLE is not None, reason="behaviour Spark's test catalog does not have")
 
 
@@ -550,6 +553,7 @@ def test_a_full_refresh_creates_a_target_that_does_not_exist(space, pipeline_fac
 
 
 @sail_only
+@delta_only
 def test_an_alter_of_an_enrolled_table_is_refused(space, pipeline_factory, broker):  # noqa: F811
     broker.send({"id": 1, "name": "alice", "seq": 1})
     run(space, pipeline_factory, broker.url, BASE)
@@ -692,6 +696,7 @@ def test_a_composite_key_merges_on_every_key(space, pipeline_factory, broker):  
 
 
 @sail_only
+@delta_only
 def test_a_flow_reads_a_delta_table_incrementally(space, pipeline_factory):
     space.sql(f"CREATE TABLE {PREFIX}bronze (id INT, name STRING, seq BIGINT) {USING}")
     space.sql(f"INSERT INTO {PREFIX}bronze VALUES (1, 'alice', 1), (2, 'bob', 1)")
