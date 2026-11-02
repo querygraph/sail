@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -26,6 +27,9 @@ use crate::stream::reader::TaskStreamSource;
 use crate::task::definition::TaskDefinition;
 use crate::worker::{WorkerClientSet, WorkerLocation};
 use crate::worker_manager::WorkerLaunchOptions;
+
+const WORKER_STOP_ATTEMPTS: usize = 10;
+const WORKER_STOP_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 
 impl WorkerPool {
     pub async fn close(&mut self, ctx: &mut ActorContext<DriverActor>) -> ExecutionResult<()> {
@@ -201,8 +205,22 @@ impl WorkerPool {
                     }
                 };
                 ctx.spawn(async move {
-                    if let Err(e) = client.stop_worker().await {
-                        Self::log_worker_control_error("stop worker", worker_id, &e);
+                    // A worker that has just announced itself may not be reachable
+                    // yet, and a stop it misses would leave it running.
+                    for attempt in 1..=WORKER_STOP_ATTEMPTS {
+                        match client.stop_worker().await {
+                            Ok(()) => return,
+                            Err(e)
+                                if attempt < WORKER_STOP_ATTEMPTS
+                                    && Self::is_worker_unavailable(&e) =>
+                            {
+                                tokio::time::sleep(WORKER_STOP_RETRY_INTERVAL).await;
+                            }
+                            Err(e) => {
+                                Self::log_worker_control_error("stop worker", worker_id, &e);
+                                return;
+                            }
+                        }
                     }
                 });
                 worker.state = WorkerState::Completed;
