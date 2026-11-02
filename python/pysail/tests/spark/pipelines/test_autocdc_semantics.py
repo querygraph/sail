@@ -675,6 +675,28 @@ def test_a_watermark_on_a_renamed_event_time_closes_windows_across_runs(stateful
     assert run(transform) == [(1, 1), (2, 9)]
 
 
+def test_a_join_above_a_deduplication_keeps_its_own_state(stateful):
+    send, run = stateful
+
+    def transform(frame):
+        deduplicated = frame.dropDuplicates(["id"]).select("id", "name")
+        return deduplicated.join(frame.select("id", "seq"), "id")
+
+    send("a", (1, "a", 1, T0))
+    assert run(transform) == [(1, 1)]
+    # The deduplication emits nothing for a seen key, but the join still
+    # pairs the row it kept with the new right-side row.
+    send("b", (1, "b", 2, T0))
+    assert run(transform) == [(1, 2)]
+
+
+def test_an_aggregate_above_a_deduplication_still_needs_a_watermark(stateful):
+    send, run = stateful
+    send("a", (1, "a", 1, T0))
+    with pytest.raises(FAILURE, match="STREAMING_OUTPUT_MODE.UNSUPPORTED_OPERATION"):
+        run(lambda frame: frame.dropDuplicates(["id"]).groupBy("id").agg(sf.max("seq").alias("seq")))
+
+
 def test_an_aggregate_without_a_watermark_is_refused(stateful):
     send, run = stateful
     send("a", (1, "a", 1, T0))
