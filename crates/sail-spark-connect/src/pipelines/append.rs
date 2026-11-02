@@ -22,8 +22,8 @@
 //! refused, not read wrongly.
 //! The only stateful query is an aggregate over a tumbling window with a
 //! watermark: a window's rows are held under the checkpoint until the
-//! watermark passes its end, and then aggregated once. Rows behind the
-//! watermark are dropped, as Spark drops late rows.
+//! watermark passes its end, and then aggregated once. A row whose window has
+//! already ended by the watermark is dropped, as Spark drops late rows.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
@@ -1708,14 +1708,19 @@ async fn run_windowed(
         .remove(&windowed.source)
         .ok_or_else(|| SparkError::internal("watermarked source is not bound"))?;
     let column = windowed.event_time.as_str();
-    // Rows behind the watermark that this batch started with are late.
-    let micros = event_micros(&new_rows, column)?;
-    let on_time = match state.watermark {
-        Some(watermark) => LogicalPlanBuilder::from(new_rows.clone())
-            .filter(micros.clone().gt_eq(lit(watermark)))?
-            .build()?,
-        None => new_rows.clone(),
+    let size = lit(windowed.window_micros);
+    let window_end = |plan: &LogicalPlan| -> SparkResult<Expr> {
+        let micros = event_micros(plan, column)?;
+        Ok((micros / size.clone()) * size.clone() + size.clone())
     };
+    // Spark's watermark starts at 0 and never moves back (WatermarkTracker). A row
+    // is late only when its window has already ended by the watermark this batch
+    // started with (WatermarkSupport.watermarkExpression on window.end), not when
+    // its own event time is behind it.
+    let previous = state.watermark.unwrap_or(0);
+    let on_time = LogicalPlanBuilder::from(new_rows.clone())
+        .filter(window_end(&new_rows)?.gt(lit(previous)))?
+        .build()?;
     let mut rows = LogicalPlanBuilder::from(on_time);
     if !state.retained.is_empty() {
         let empty = Arc::new(new_rows.schema().as_arrow().clone());
@@ -1736,16 +1741,14 @@ async fn run_windowed(
         rows = rows.union(retained)?;
     }
     let rows = rows.build()?;
+    // Spark keeps the watermark in milliseconds: floorDiv(max event µs, 1000)
+    // minus the delay in whole milliseconds (EventTimeWatermarkExec).
     let latest = max_event(ctx, &new_rows, column).await?;
     let watermark = latest
-        .map(|latest| latest - windowed.delay_micros)
-        .into_iter()
-        .chain(state.watermark)
-        .max();
-    let micros = event_micros(&rows, column)?;
-    let size = lit(windowed.window_micros);
-    let window_end = (micros / size.clone()) * size.clone() + size;
-    let limit = lit(watermark.unwrap_or(i64::MIN));
+        .map(|latest| (latest.div_euclid(1000) - windowed.delay_micros / 1000) * 1000)
+        .map_or(previous, |watermark| watermark.max(previous));
+    let window_end = window_end(&rows)?;
+    let limit = lit(watermark);
     let closed = LogicalPlanBuilder::from(rows.clone())
         .filter(window_end.clone().lt_eq(limit.clone()))?
         .build()?;
@@ -1790,7 +1793,7 @@ async fn run_windowed(
     });
     run_command(ctx, config, write, Some(&bound)).await?;
     state.retained = data_files(ctx, &directory).await?.into_iter().collect();
-    state.watermark = watermark;
+    state.watermark = Some(watermark);
     Ok(())
 }
 

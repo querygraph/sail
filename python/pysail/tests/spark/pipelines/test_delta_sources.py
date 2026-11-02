@@ -457,6 +457,27 @@ def test_a_watermarked_window(source, stream):
     assert [row[1] for row in source.target()] == [1, 1]
 
 
+def test_a_row_behind_the_watermark_counts_while_its_window_is_open(source):
+    # Spark drops a late row only when its window has ended by the watermark
+    # (WatermarkSupport.watermarkExpression on window.end), not when the row's own
+    # event time is behind the watermark.
+    window = (
+        f'{TABLE}.withWatermark("ts", "1 second")'
+        '.groupBy(__import__("pyspark").sql.functions.window("ts", "10 seconds")).count()'
+    )
+    source.create("CREATE TABLE src (ts TIMESTAMP, id INT) USING delta LOCATION '{path}'")
+    source.rows("(CAST(1 AS TIMESTAMP), 1)", "(CAST(25 AS TIMESTAMP), 25)")
+    source.run(window)
+    assert [row[1] for row in source.target()] == [1]
+    # The watermark is now 24 seconds. 23 is behind it, but its window [20, 30)
+    # is open; 5 is in the closed window [0, 10) and is dropped.
+    source.rows("(CAST(23 AS TIMESTAMP), 23)", "(CAST(5 AS TIMESTAMP), 5)")
+    source.run(window)
+    source.rows("(CAST(50 AS TIMESTAMP), 50)")
+    source.run(window)
+    assert [row[1] for row in source.target()] == [1, 2]
+
+
 # Spark 4.2.1 fails this second run with DELTA_CANNOT_CHANGE_PROVIDER, a defect of its own.
 def test_a_delta_target_runs_twice(source):
     target = '@dp.table(format="delta")\ndef t():\n  return {read}\n'
