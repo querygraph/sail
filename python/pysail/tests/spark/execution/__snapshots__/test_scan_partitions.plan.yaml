@@ -106,7 +106,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=600, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CASE WHEN Int32(2) = Int32(0) THEN raise_error(Utf8("Remainder by zero")) ELSE Int32(2) END = Int32(0)
+          Filter: ?table?.#2 % spark_divisor_ansi_remainder(Int32(2)) = Int32(0)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -122,7 +122,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=600, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CAST(CASE WHEN Int32(2) = Int32(0) THEN CAST(raise_error(Utf8("Remainder by zero")) AS Int32) ELSE Int32(2) END AS Int64) = CAST(Int32(0) AS Int64)
+          Filter: ?table?.#2 % CAST(spark_divisor_ansi_remainder(Int32(2)) AS Int64) = CAST(Int32(0) AS Int64)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -593,7 +593,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=40000, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CASE WHEN Int32(2) = Int32(0) THEN raise_error(Utf8("Remainder by zero")) ELSE Int32(2) END = Int32(0)
+          Filter: ?table?.#2 % spark_divisor_ansi_remainder(Int32(2)) = Int32(0)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -609,7 +609,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=40000, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CAST(CASE WHEN Int32(2) = Int32(0) THEN CAST(raise_error(Utf8("Remainder by zero")) AS Int32) ELSE Int32(2) END AS Int64) = CAST(Int32(0) AS Int64)
+          Filter: ?table?.#2 % CAST(spark_divisor_ansi_remainder(Int32(2)) AS Int64) = CAST(Int32(0) AS Int64)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -1081,7 +1081,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=82000, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CASE WHEN Int32(2) = Int32(0) THEN raise_error(Utf8("Remainder by zero")) ELSE Int32(2) END = Int32(0)
+          Filter: ?table?.#2 % spark_divisor_ansi_remainder(Int32(2)) = Int32(0)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -1097,7 +1097,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=82000, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CAST(CASE WHEN Int32(2) = Int32(0) THEN CAST(raise_error(Utf8("Remainder by zero")) AS Int32) ELSE Int32(2) END AS Int64) = CAST(Int32(0) AS Int64)
+          Filter: ?table?.#2 % CAST(spark_divisor_ansi_remainder(Int32(2)) AS Int64) = CAST(Int32(0) AS Int64)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -1569,7 +1569,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=600, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CASE WHEN Int32(2) = Int32(0) THEN raise_error(Utf8("Remainder by zero")) ELSE Int32(2) END = Int32(0)
+          Filter: ?table?.#2 % spark_divisor_ansi_remainder(Int32(2)) = Int32(0)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -1585,7 +1585,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=600, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CAST(CASE WHEN Int32(2) = Int32(0) THEN CAST(raise_error(Utf8("Remainder by zero")) AS Int32) ELSE Int32(2) END AS Int64) = CAST(Int32(0) AS Int64)
+          Filter: ?table?.#2 % CAST(spark_divisor_ansi_remainder(Int32(2)) AS Int64) = CAST(Int32(0) AS Int64)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -2056,7 +2056,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=40000, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CASE WHEN Int32(2) = Int32(0) THEN raise_error(Utf8("Remainder by zero")) ELSE Int32(2) END = Int32(0)
+          Filter: ?table?.#2 % spark_divisor_ansi_remainder(Int32(2)) = Int32(0)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -2072,7 +2072,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=40000, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CAST(CASE WHEN Int32(2) = Int32(0) THEN CAST(raise_error(Utf8("Remainder by zero")) AS Int32) ELSE Int32(2) END AS Int64) = CAST(Int32(0) AS Int64)
+          Filter: ?table?.#2 % CAST(spark_divisor_ansi_remainder(Int32(2)) AS Int64) = CAST(Int32(0) AS Int64)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -2544,7 +2544,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=82000, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CASE WHEN Int32(2) = Int32(0) THEN raise_error(Utf8("Remainder by zero")) ELSE Int32(2) END = Int32(0)
+          Filter: ?table?.#2 % spark_divisor_ansi_remainder(Int32(2)) = Int32(0)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -2560,7 +2560,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=82000, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CAST(CASE WHEN Int32(2) = Int32(0) THEN CAST(raise_error(Utf8("Remainder by zero")) AS Int32) ELSE Int32(2) END AS Int64) = CAST(Int32(0) AS Int64)
+          Filter: ?table?.#2 % CAST(spark_divisor_ansi_remainder(Int32(2)) AS Int64) = CAST(Int32(0) AS Int64)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -3032,7 +3032,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=600, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CASE WHEN Int32(2) = Int32(0) THEN raise_error(Utf8("Remainder by zero")) ELSE Int32(2) END = Int32(0)
+          Filter: ?table?.#2 % spark_divisor_ansi_remainder(Int32(2)) = Int32(0)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -3048,7 +3048,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=600, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CAST(CASE WHEN Int32(2) = Int32(0) THEN CAST(raise_error(Utf8("Remainder by zero")) AS Int32) ELSE Int32(2) END AS Int64) = CAST(Int32(0) AS Int64)
+          Filter: ?table?.#2 % CAST(spark_divisor_ansi_remainder(Int32(2)) AS Int64) = CAST(Int32(0) AS Int64)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -3519,7 +3519,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=40000, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CASE WHEN Int32(2) = Int32(0) THEN raise_error(Utf8("Remainder by zero")) ELSE Int32(2) END = Int32(0)
+          Filter: ?table?.#2 % spark_divisor_ansi_remainder(Int32(2)) = Int32(0)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -3535,7 +3535,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=40000, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CAST(CASE WHEN Int32(2) = Int32(0) THEN CAST(raise_error(Utf8("Remainder by zero")) AS Int32) ELSE Int32(2) END AS Int64) = CAST(Int32(0) AS Int64)
+          Filter: ?table?.#2 % CAST(spark_divisor_ansi_remainder(Int32(2)) AS Int64) = CAST(Int32(0) AS Int64)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -4007,7 +4007,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=82000, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CASE WHEN Int32(2) = Int32(0) THEN raise_error(Utf8("Remainder by zero")) ELSE Int32(2) END = Int32(0)
+          Filter: ?table?.#2 % spark_divisor_ansi_remainder(Int32(2)) = Int32(0)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
@@ -4023,7 +4023,7 @@ data:
         Projection: #0 AS #1
           Range: start=0, end=82000, step=1, num_partitions=8
         Projection: ?table?.#2 AS #4
-          Filter: ?table?.#2 % CAST(CASE WHEN Int32(2) = Int32(0) THEN CAST(raise_error(Utf8("Remainder by zero")) AS Int32) ELSE Int32(2) END AS Int64) = CAST(Int32(0) AS Int64)
+          Filter: ?table?.#2 % CAST(spark_divisor_ansi_remainder(Int32(2)) AS Int64) = CAST(Int32(0) AS Int64)
             Projection: ?table?.id AS #2, ?table?.payload AS #3
               TableScan: ?table?
 
