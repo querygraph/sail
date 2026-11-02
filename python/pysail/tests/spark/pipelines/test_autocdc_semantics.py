@@ -509,6 +509,16 @@ def test_a_stream_joined_with_itself_feeds_a_flow_across_runs(stateful):
     assert run(transform) == [(1, 1), (2, 1)]
 
 
+def test_a_stream_join_does_not_reread_earlier_batches(stateful, tmp_path):
+    send, run = stateful
+    transform = lambda frame: frame.join(frame.select("id", sf.col("seq").alias("other")), "id")  # noqa: E731
+    send("a", (1, "a", 1, T0))
+    assert run(transform) == [(1, 1)]
+    (tmp_path / "stateful" / "a.json").unlink()
+    send("b", (2, "b", 1, T0))
+    assert run(transform) == [(1, 1), (2, 1)]
+
+
 def test_a_windowed_aggregate_feeds_a_flow_once_its_window_closes(stateful):
     send, run = stateful
 
