@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch, TimestampMicrosecondArray};
 use datafusion::arrow::compute::cast;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use datafusion::common::ScalarValue;
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::{Column, ScalarValue};
 use datafusion::datasource::{MemTable, TableProvider, provider_as_source};
 use datafusion::functions::core::expr_fn::get_field;
 use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder, cast as cast_expr};
@@ -32,8 +33,8 @@ use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
 use crate::pipelines::append::{
     SOURCE_ALIAS, TableSource, Windowed, check_stateless, data_files, delta_error, event_micros,
-    is_delta, max_event, partition_plan, partition_values, qualified, spec_schema, table_source,
-    view_flow, windowed_aggregate,
+    is_delta, max_event, partition_plan, partition_values, qualified, reads_a_stream, spec_schema,
+    table_source, view_flow, windowed_aggregate,
 };
 use crate::pipelines::graph::{Flow, GraphDefinition, Name};
 use crate::pipelines::streaming::intent::{BatchIntent, Progress};
@@ -899,14 +900,45 @@ fn windowed_query(
 }
 
 /// The rows of windows that end after `after` and by `through`, watermarks in
-/// microseconds.
+/// microseconds. The filter sits on the aggregate itself, whose window is the
+/// grouping key with a `start` and `end`, so a query may drop the window after.
 fn windows_between(plan: LogicalPlan, after: i64, through: i64) -> SparkResult<LogicalPlan> {
-    let end = get_field(col("window"), "end");
-    let end = cast_expr(end, DataType::Timestamp(TimeUnit::Microsecond, None));
     let bound = |micros| lit(ScalarValue::TimestampMicrosecond(Some(micros), None));
-    Ok(LogicalPlanBuilder::from(plan)
-        .filter(end.clone().gt(bound(after)).and(end.lt_eq(bound(through))))?
-        .build()?)
+    let mut found = false;
+    let plan = plan
+        .transform_up(|node| {
+            let LogicalPlan::Aggregate(aggregate) = &node else {
+                return Ok(Transformed::no(node));
+            };
+            if found || !reads_a_stream(&node)? {
+                return Ok(Transformed::no(node));
+            }
+            let schema = node.schema().clone();
+            let window = (0..aggregate.group_expr.len()).find(|index| {
+                matches!(schema.field(*index).data_type(), DataType::Struct(fields)
+                    if fields.iter().any(|field| field.name() == "start")
+                        && fields.iter().any(|field| field.name() == "end"))
+            });
+            let Some(window) = window else {
+                return Ok(Transformed::no(node));
+            };
+            found = true;
+            let (qualifier, field) = schema.qualified_field(window);
+            let end = get_field(col(Column::new(qualifier.cloned(), field.name())), "end");
+            let end = cast_expr(end, DataType::Timestamp(TimeUnit::Microsecond, None));
+            Ok(Transformed::yes(
+                LogicalPlanBuilder::from(node)
+                    .filter(end.clone().gt(bound(after)).and(end.lt_eq(bound(through))))?
+                    .build()?,
+            ))
+        })?
+        .data;
+    if !found {
+        return Err(SparkError::internal(
+            "a watermarked aggregate has no window",
+        ));
+    }
+    Ok(plan)
 }
 
 fn missing_state(flow: &Flow) -> SparkError {

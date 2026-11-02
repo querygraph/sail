@@ -1061,6 +1061,8 @@ pub(super) struct Windowed {
     pub event_time: String,
     pub delay_micros: i64,
     pub window_micros: i64,
+    /// The slide of a sliding window, `None` for a tumbling one.
+    pub slide_micros: Option<i64>,
 }
 
 fn duration_micros(text: &str) -> Option<i64> {
@@ -1093,8 +1095,15 @@ fn string_literal(expression: &spec::Expr) -> Option<&str> {
     }
 }
 
-/// The `window(eventTime, '5 seconds')` duration among the grouping keys.
-fn tumbling_window(grouping: &[spec::Expr], event_time: &str) -> SparkResult<i64> {
+/// The `window(eventTime, '5 seconds')` duration among the grouping keys,
+/// and the slide of `window(eventTime, '10 seconds', '5 seconds')`.
+fn event_window(grouping: &[spec::Expr], event_time: &str) -> SparkResult<(i64, Option<i64>)> {
+    let duration = |expr: &spec::Expr| {
+        string_literal(expr)
+            .and_then(duration_micros)
+            .filter(|micros| *micros > 0)
+            .ok_or_else(|| SparkError::unsupported("this streaming window duration"))
+    };
     for expression in grouping {
         let spec::Expr::UnresolvedFunction(function) = expression else {
             continue;
@@ -1106,10 +1115,16 @@ fn tumbling_window(grouping: &[spec::Expr], event_time: &str) -> SparkResult<i64
         {
             continue;
         }
-        let [spec::Expr::UnresolvedAttribute { name, .. }, duration] =
-            function.arguments.as_slice()
-        else {
-            return Err(SparkError::unsupported("a sliding streaming window"));
+        let (name, size, slide) = match function.arguments.as_slice() {
+            [spec::Expr::UnresolvedAttribute { name, .. }, size] => (name, size, None),
+            [spec::Expr::UnresolvedAttribute { name, .. }, size, slide] => {
+                (name, size, Some(slide))
+            }
+            _ => {
+                return Err(SparkError::unsupported(
+                    "a streaming window with a start time",
+                ));
+            }
         };
         let column: Vec<String> = name.clone().into();
         if !column
@@ -1120,10 +1135,17 @@ fn tumbling_window(grouping: &[spec::Expr], event_time: &str) -> SparkResult<i64
                 "a streaming window over a column other than the watermark",
             ));
         }
-        return string_literal(duration)
-            .and_then(duration_micros)
-            .filter(|micros| *micros > 0)
-            .ok_or_else(|| SparkError::unsupported("this streaming window duration"));
+        let size = duration(size)?;
+        let slide = slide
+            .map(duration)
+            .transpose()?
+            .filter(|slide| *slide != size);
+        if slide.is_some_and(|slide| slide > size) {
+            return Err(SparkError::unsupported(
+                "a streaming window that slides past its length",
+            ));
+        }
+        return Ok((size, slide));
     }
     Err(SparkError::unsupported(
         "a watermarked aggregate without a tumbling window",
@@ -1173,11 +1195,14 @@ pub(super) fn windowed_aggregate(
                             watermark.delay_threshold
                         ))
                     })?;
+                let (window_micros, slide_micros) =
+                    event_window(&aggregate.grouping, &watermark.event_time)?;
                 return Ok(Some(Windowed {
                     source,
                     event_time: watermark.event_time.clone(),
                     delay_micros,
-                    window_micros: tumbling_window(&aggregate.grouping, &watermark.event_time)?,
+                    window_micros,
+                    slide_micros,
                 }));
             }
             spec::QueryNode::Project {
@@ -1440,6 +1465,12 @@ async fn run_batch(
     }
     state.sources = sources;
     let windowed = windowed_aggregate(&scope, &run.flow.query)?;
+    if windowed
+        .as_ref()
+        .is_some_and(|windowed| windowed.slide_micros.is_some())
+    {
+        return Err(SparkError::unsupported("a sliding streaming window"));
+    }
     let outputs = {
         let bound = BatchScope {
             graph: &scope,

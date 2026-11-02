@@ -561,6 +561,22 @@ def test_a_row_behind_the_watermark_changes_only_an_open_window(stateful):
     assert run(transform) == [(1, 1), (3, 4)]
 
 
+def test_a_sliding_window_emits_each_window_once_it_closes(stateful):
+    send, run = stateful
+
+    def transform(frame):
+        grouped = frame.withWatermark("ts", "1 hour").groupBy(sf.window("ts", "2 minutes", "1 minute"))
+        minute = ((sf.col("window.start").cast("long") - 1704067200) / 60).cast("int")
+        return grouped.agg(sf.max("seq").alias("seq")).select(minute.alias("id"), "seq")
+
+    send("a", (1, "a", 1, "2024-01-01T00:00:30Z"), (1, "a", 3, "2024-01-01T00:01:30Z"))
+    assert run(transform) == []
+    send("b", (2, "b", 9, "2024-01-01T02:00:30Z"))
+    assert run(transform) == [(-1, 1), (0, 3), (1, 3)]
+    send("c", (1, "c", 7, "2024-01-01T00:00:45Z"))
+    assert run(transform) == [(-1, 1), (0, 3), (1, 3)]
+
+
 def test_an_aggregate_without_a_watermark_is_refused(stateful):
     send, run = stateful
     send("a", (1, "a", 1, T0))
