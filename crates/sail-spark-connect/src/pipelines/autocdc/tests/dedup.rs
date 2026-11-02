@@ -320,9 +320,14 @@ async fn a_key_column_named_like_the_winning_row_column_fails() -> SparkResult<(
             Arc::new(StringArray::from(vec!["loser", "winner"])),
         ),
     ])?;
-    let message = format!("{:?}", deduplicate(plan, &[0], col("seq")));
-    assert!(message.contains("AMBIGUOUS_REFERENCE"), "{message}");
-    assert!(message.contains("42704"), "{message}");
+    let name = format!("`{WINNING_ROW_COLUMN}`");
+    let names = format!("[{name}, {name}]");
+    check_error(
+        deduplicate(plan, &[0], col("seq")),
+        "AMBIGUOUS_REFERENCE",
+        "42704",
+        &[("name", name.as_str()), ("referenceNames", names.as_str())],
+    );
     Ok(())
 }
 

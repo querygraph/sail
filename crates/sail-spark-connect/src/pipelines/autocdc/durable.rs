@@ -73,6 +73,9 @@ pub(super) struct DurableRun<'a, S> {
     pub control: Arc<Control<S>>,
     pub owner: &'a str,
     pub lease_ms: i64,
+    /// How long to wait for an owner that died to lose its lease. A run that
+    /// starts after a crash waits rather than fails.
+    pub lease_wait_ms: i64,
     /// Rebuild the target from the source's origin before reading it.
     pub reset: bool,
     pub stage_hook: Option<StageHook<'a>>,
@@ -864,6 +867,7 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             write,
             &flow_schema(self.run.source, write)?,
             false,
+            Some(intent.generation),
         )
         .await?;
         // A table's location is unique to it, so the new one has its own.
@@ -997,6 +1001,35 @@ async fn lacks_commit_timestamps(ctx: &SessionContext, name: &Name) -> SparkResu
             .any(|(key, value)| key == IN_COMMIT_TIMESTAMPS_PROPERTY && value == "true"))
 }
 
+/// Wait for another owner's lease to end. Only a dead or concurrent run holds
+/// one, and this is the one place a run may still be waiting for it.
+async fn await_lease<S: Store>(durable: &DurableRun<'_, S>, destination: &Name) -> SparkResult<()> {
+    let target = TargetKey(destination.join("."));
+    let control = &durable.control;
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(u64::try_from(durable.lease_wait_ms).unwrap_or(0));
+    loop {
+        if control
+            .guard(&target)
+            .await
+            .map_err(control_error)?
+            .is_none()
+        {
+            return Ok(());
+        }
+        match control
+            .acquire(&target, durable.owner, durable.lease_ms)
+            .await
+        {
+            Err(Outcome::Conflict { .. }) if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            Err(outcome) => return Err(control_error(outcome)),
+            Ok(_) => return Ok(()),
+        }
+    }
+}
+
 /// Hand the target back when the source stops a run, so that the next run,
 /// perhaps the full refresh that error asks for, need not wait out the lease.
 /// A release failure leaves the lease to expire; the source's error is the
@@ -1039,6 +1072,7 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
         || guard
             .as_ref()
             .is_some_and(|guard| guard.state == TargetState::Resetting);
+    let generation = guard.as_ref().map_or(0, |guard| guard.generation);
     // An enrolled table already has them, and DDL cannot carry a fence.
     if guard.is_none() && lacks_commit_timestamps(ctx, run.write.destination).await? {
         enable_commit_timestamps(ctx, config.clone(), run.write.destination).await?;
@@ -1049,8 +1083,10 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
         run.write,
         &flow_schema(run.source, run.write)?,
         resetting,
+        Some(generation),
     )
     .await?;
+    await_lease(durable, run.write.destination).await?;
     let mut enrolled = enroll(ctx, config.clone(), durable, auxiliary_name.clone()).await?;
     durable.install(ctx);
     let mut outcome = DurableOutcome::default();

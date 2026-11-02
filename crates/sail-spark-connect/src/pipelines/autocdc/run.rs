@@ -198,6 +198,7 @@ pub(super) async fn run_flow(
         run.write,
         &flow_schema(run.source, run.write)?,
         false,
+        None,
     )
     .await?;
     let mut record = RunRecord::load(run.checkpoint)?.unwrap_or_default();

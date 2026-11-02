@@ -46,6 +46,7 @@ use crate::spark::connect::{OutputType, pipeline_command as pc};
 
 /// A lease long enough to outlive one microbatch; each batch renews it.
 const LEASE_MS: i64 = 60_000;
+const LEASE_WAIT_MARGIN_MS: i64 = 2_000;
 /// Overrides where a remote warehouse keeps its local AutoCDC state.
 const STATE_DIR_ENV: &str = "SAIL_AUTOCDC_STATE_DIR";
 const STATE_MARKER: &str = "_autocdc_state_owner";
@@ -632,6 +633,7 @@ impl CdcRun {
                 control: self.control.clone(),
                 owner: &self.owner,
                 lease_ms: LEASE_MS,
+                lease_wait_ms: LEASE_MS + LEASE_WAIT_MARGIN_MS,
                 reset,
                 stage_hook: None,
             },

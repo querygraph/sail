@@ -75,6 +75,23 @@ pub(super) fn table_dir(
             if named && path.join("_delta_log").exists() {
                 return Some(path);
             }
+            // An enrolled auxiliary table lives beside its target, one
+            // directory for each generation.
+            if leaf.starts_with("__spark_autocdc_aux_state_")
+                && path.to_string_lossy().ends_with(".autocdc-aux")
+            {
+                let latest = std::fs::read_dir(&path)
+                    .ok()?
+                    .flatten()
+                    .filter_map(|entry| {
+                        let generation: u64 = entry.file_name().to_str()?.parse().ok()?;
+                        Some((generation, entry.path()))
+                    })
+                    .max_by_key(|(generation, _)| *generation);
+                if let Some((_, table)) = latest {
+                    return Some(table);
+                }
+            }
             if let Some(found) = find(&path, leaf) {
                 return Some(found);
             }

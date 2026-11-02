@@ -139,7 +139,7 @@ def test_a_target_without_the_metadata_column_gains_it(space, pipeline_factory, 
     space.sql(f"CREATE TABLE {TARGET} (id INT NOT NULL, name STRING, seq BIGINT NOT NULL) {USING}")
     broker.send({"id": 1, "name": "alice", "seq": 1})
     run(space, pipeline_factory, broker.url, BASE)
-    assert "__spark_autocdc_metadata" in space.table(TARGET).columns
+    assert space.table(TARGET).columns == ["id", "name", "seq", "__spark_autocdc_metadata"]
     assert rows(space, "id", "name", "seq", *META) == [(1, "alice", 1, None, 1)]
 
 
@@ -801,3 +801,13 @@ def test_a_single_part_source_inherits_the_graph_defaults(space, pipeline_factor
     finally:
         for table in ["target", "bronze", "__spark_autocdc_aux_state_target"]:
             space.sql(f"DROP TABLE IF EXISTS {catalog}.{database}.{table}")
+
+
+def test_a_key_with_a_dot_needs_quoting_as_a_column(space, pipeline_factory, broker):  # noqa: F811
+    broker.send({"a.b": 1, "c": "x", "seq": 1})
+    run(space, pipeline_factory, broker.url, "`a.b` INT, c STRING, seq BIGINT", keys="`a.b`")
+    assert [tuple(row) for row in space.table(TARGET).select("`a.b`", "c").collect()] == [(1, "x")]
+    with pytest.raises(FAILURE, match="UNRESOLVED_COLUMN.WITH_SUGGESTION") as failure:
+        space.table(TARGET).select("a.b").collect()
+    assert "42703" in str(failure.value)
+    assert "`a`.`b`" in str(failure.value)

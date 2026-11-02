@@ -62,6 +62,7 @@ pub(super) async fn ensure_auxiliary_table(
     write: &Scd1Write<'_>,
     flow_schema: &spec::Fields,
     resetting: bool,
+    generation: Option<u64>,
 ) -> SparkResult<Name> {
     let manager = ctx.extension::<CatalogManager>()?;
     let destination = manager
@@ -69,7 +70,10 @@ pub(super) async fn ensure_auxiliary_table(
         .await
         .map_err(PlanError::from)?;
     let TableKind::Table {
-        format, properties, ..
+        format,
+        properties,
+        location,
+        ..
     } = &destination.kind
     else {
         return Err(SparkError::internal(format!(
@@ -169,7 +173,20 @@ pub(super) async fn ensure_auxiliary_table(
                 columns,
                 comment: None,
                 constraints: vec![],
-                location: None,
+                // Beside the target, so a catalog that forgot both finds this
+                // table's state again rather than a new table. Each generation
+                // has its own path: a reset must start from nothing, and
+                // deleting in place could leave half a table after a crash.
+                // A plain target recovers from its checkpoint and needs none.
+                location: location
+                    .as_ref()
+                    .zip(generation)
+                    .map(|(location, generation)| {
+                        format!(
+                            "{}.autocdc-aux/{generation}",
+                            location.trim_end_matches('/')
+                        )
+                    }),
                 file_format: write.destination_format.map(|format| {
                     spec::TableFileFormat::General {
                         format: format.to_string(),

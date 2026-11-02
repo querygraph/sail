@@ -204,6 +204,43 @@ async fn nothing_else_is_admitted() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_selection_keeps_each_columns_type_and_nullability() -> TestResult {
+    let (ctx, config) = context()?;
+    let source = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+        Field::new("seq", DataType::Int64, true),
+    ]));
+    for selection in [
+        ColumnSelection::Include(vec![key("id")?, key("name")?]),
+        ColumnSelection::Exclude(vec![key("seq")?]),
+    ] {
+        let args = ChangeArgs::new(
+            vec![key("id")?],
+            attribute("seq"),
+            ScdType::Type1,
+            None,
+            Some(selection),
+        )?;
+        let schema =
+            flow_output_schema(&ctx, config.clone(), &args, Case::Insensitive, &source).await?;
+        let shape: Vec<(&str, bool)> = schema
+            .fields()
+            .iter()
+            .map(|field| (field.name().as_str(), field.is_nullable()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![("id", false), ("name", true), (METADATA_COLUMN, false)]
+        );
+        assert_eq!(schema.field(0).data_type(), &DataType::Int64);
+        assert_eq!(schema.field(1).data_type(), &DataType::Utf8);
+    }
+    finish(&ctx).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn the_output_schema_is_the_selection_then_the_typed_metadata_column() -> TestResult {
     let (ctx, config) = context()?;
     let source = Arc::new(Schema::new(vec![
