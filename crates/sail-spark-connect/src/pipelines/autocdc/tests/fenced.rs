@@ -170,10 +170,19 @@ async fn enrolled_with(marked: bool) -> Result<Enrolled, Box<dyn std::error::Err
     );
     let clock = Arc::new(ManualClock::default());
     let control = Arc::new(Control::new(UnfencedMemoryStore::new(), clock.clone()));
+    // Enrolled under the tables' own identities, which the fence compares
+    // with the live table before refusing a write.
+    let identity = async |dir: &Path| -> Result<SinkIdentity, Box<dyn std::error::Error>> {
+        let url = url::Url::parse(&table_url(dir)?)?;
+        let (id, _) = sail_delta_lake::fenced::table_state(&ctx.task_ctx(), &url)
+            .await?
+            .ok_or("the table has no commit")?;
+        Ok(SinkIdentity(id))
+    };
     let (target, sink, auxiliary) = (
         TargetKey("t".into()),
-        SinkIdentity("delta:target".into()),
-        SinkIdentity("delta:auxiliary".into()),
+        identity(&sink_dir).await?,
+        identity(&auxiliary_dir).await?,
     );
     let flow = FlowKey("flow".into());
     control

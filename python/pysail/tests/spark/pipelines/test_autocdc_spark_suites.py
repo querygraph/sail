@@ -10,6 +10,7 @@ Delta target, so there it uses its row-level test catalog.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import os
 import re
 import time
@@ -858,7 +859,10 @@ def test_another_session_cannot_write_an_enrolled_target(space, pipeline_factory
 
     broker.send({"id": 1, "name": "a", "seq": 1})
     start()
-    [table] = [d for d in (tmp_path / "warehouse").iterdir() if d.name.startswith("target-") and (d / "_delta_log").is_dir()]
+    from urllib.parse import urlparse
+
+    warehouse = Path(urlparse(space.conf.get("spark.sql.warehouse.dir")).path)
+    [table] = [d for d in warehouse.iterdir() if d.name.split("-")[0] == "target" and (d / "_delta_log").is_dir()]
     from pysail.testing.spark.session import spark_session_factory
 
     with spark_session_factory(remote) as sessions:

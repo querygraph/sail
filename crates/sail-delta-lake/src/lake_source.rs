@@ -168,18 +168,24 @@ async fn reject_enrolled_delta_alter(
     let refused =
         || plan_err!("table {table_url} is enrolled and refuses a change without a fence");
     // The table itself names its authority, in any session on any server.
-    if let Some(url) = &parsed
-        && crate::fenced::enrolled_authority(ctx, url).await?.is_some()
-    {
+    let Some(url) = &parsed else {
+        return Ok(());
+    };
+    if crate::fenced::enrolled_authority(ctx, url).await?.is_some() {
         return refused();
     }
+    // A table with no commit is nobody's; one with a log is matched by its
+    // identity, so a table created again at an enrolled location passes.
+    let Some((table_id, _)) = crate::fenced::table_state_in(ctx, url).await? else {
+        return Ok(());
+    };
     if let Ok(registry) = ctx.extension::<FencedCommitRegistry>()
-        && registry.is_enrolled(&table_url).await?
+        && registry.is_enrolled(&table_url, Some(&table_id)).await?
     {
         return refused();
     }
     if let Ok(commits) = ctx.extension::<FencedCommits>()
-        && commits.0.is_enrolled(&table_url).await?
+        && commits.0.is_enrolled(&table_url, Some(&table_id)).await?
     {
         return refused();
     }

@@ -82,12 +82,25 @@ where
         self.ambient.clone()
     }
 
-    async fn is_enrolled(&self, table_url: &str) -> Result<bool> {
+    async fn is_enrolled(&self, table_url: &str, table_id: Option<&str>) -> Result<bool> {
         if self.birth.as_deref() == Some(table_url) {
             return Ok(false);
         }
-        let target = self.control.enrolled_target(table_url).await;
-        Ok(target.map_err(external)?.is_some())
+        let Some(target) = self
+            .control
+            .enrolled_target(table_url)
+            .await
+            .map_err(external)?
+        else {
+            return Ok(false);
+        };
+        let Some(id) = table_id else {
+            return Ok(true);
+        };
+        // The guard names the table it enrolled; another table at the same
+        // location, after a drop and create, is not it.
+        let guard = self.control.guard(&target).await.map_err(external)?;
+        Ok(guard.is_some_and(|guard| guard.sink.0 == id || guard.auxiliary.0 == id))
     }
 
     async fn ratify(&self, fence: &FencedWrite, effect: &FencedEffect) -> Result<Ratification> {

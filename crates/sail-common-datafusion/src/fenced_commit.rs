@@ -36,8 +36,10 @@ pub enum Ratification {
 
 #[async_trait]
 pub trait FencedCommitAuthority: Debug + Send + Sync {
-    /// Whether an authority owns the table at `table_url`.
-    async fn is_enrolled(&self, table_url: &str) -> Result<bool>;
+    /// Whether an authority owns the table at `table_url`. With `table_id`,
+    /// the live table's identity, only that table counts: a table dropped and
+    /// created again at the same location is another table, not enrolled.
+    async fn is_enrolled(&self, table_url: &str, table_id: Option<&str>) -> Result<bool>;
 
     async fn ratify(&self, fence: &FencedWrite, effect: &FencedEffect) -> Result<Ratification>;
 
@@ -88,10 +90,11 @@ impl FencedCommitRegistry {
             .unwrap_or_default()
     }
 
-    /// Whether any registered authority has `table_url` enrolled.
-    pub async fn is_enrolled(&self, table_url: &str) -> Result<bool> {
+    /// Whether any registered authority has the table at `table_url`, with
+    /// identity `table_id` when known, enrolled.
+    pub async fn is_enrolled(&self, table_url: &str, table_id: Option<&str>) -> Result<bool> {
         for authority in self.authorities() {
-            if authority.is_enrolled(table_url).await? {
+            if authority.is_enrolled(table_url, table_id).await? {
                 return Ok(true);
             }
         }
