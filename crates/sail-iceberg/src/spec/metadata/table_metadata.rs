@@ -274,6 +274,30 @@ impl TableMetadata {
     pub fn from_json(data: &[u8]) -> Result<Self, serde_json::Error> {
         log::trace!("Attempting to parse table metadata JSON");
 
+        // Format versions 2 and 3 need no normalization, so their metadata
+        // deserializes straight from the bytes, without the intermediate
+        // `Value` tree that the v1 compatibility pass and the trace logging
+        // below read. A v1 document, or one the direct path rejects, takes
+        // that path as before, so its result and its error are unchanged.
+        if !log::log_enabled!(log::Level::Trace)
+            && let Ok(
+                TableMetadataEnum::V1(metadata)
+                | TableMetadataEnum::V2(metadata)
+                | TableMetadataEnum::V3(metadata),
+            ) = serde_json::from_slice::<TableMetadataEnum>(data)
+            && metadata.format_version != FormatVersion::V1
+        {
+            let mut metadata = metadata;
+            if metadata.current_schema().is_none() {
+                return Err(invalid_metadata(format!(
+                    "Cannot find schema with current-schema-id={} from schemas",
+                    metadata.current_schema_id
+                )));
+            }
+            metadata.normalize_versioned_sequence_numbers();
+            return Ok(metadata);
+        }
+
         match serde_json::from_slice::<serde_json::Value>(data) {
             Ok(mut json_value) => {
                 normalize_v1_compatibility_fields(&mut json_value)?;
