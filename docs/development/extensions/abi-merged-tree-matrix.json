@@ -35,7 +35,8 @@
           "mode": "process-cluster",
           "passed": 68,
           "skipped": 2,
-          "exit_code": 0
+          "exit_code": 0,
+          "executed_as": "in-process actor cluster"
         }
       ],
       "receipt": "compatibility/receipt.json",
@@ -71,7 +72,8 @@
           "mode": "process-cluster",
           "passed": 68,
           "skipped": 2,
-          "exit_code": 0
+          "exit_code": 0,
+          "executed_as": "in-process actor cluster"
         }
       ],
       "receipt": "compatibility/receipt.json",
@@ -107,7 +109,8 @@
           "mode": "process-cluster",
           "passed": 68,
           "skipped": 2,
-          "exit_code": 0
+          "exit_code": 0,
+          "executed_as": "in-process actor cluster"
         }
       ],
       "receipt": "compatibility/receipt.json",
@@ -136,5 +139,6 @@
     "path": "examples/extensions/scripts/tests",
     "passed": 20
   },
-  "evidence": "evidence/extension-merged-tree-abi-evidence.tar.gz"
+  "evidence": "evidence/extension-merged-tree-abi-evidence.tar.gz",
+  "process_cluster_note": "This tree has no separate-process worker launcher; the process-cluster rows ran the runner's process-cluster environment on the in-process actor cluster and are not separate-process evidence."
 }

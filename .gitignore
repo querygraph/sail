@@ -60,6 +60,9 @@ Chart.lock
 *.tar
 *.gz
 *.tgz
+# The extension review's evidence bundles are part of the record it links.
+!docs/development/extensions/evidence/*.tar.gz
+!docs/development/extensions/pecan-nutmeg-benchmark/proof/evidence.tar.gz
 
 # Python build artifacts
 __pycache__/

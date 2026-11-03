@@ -231,7 +231,7 @@ row: the Morrobay harness was occupied and its cache has to be rebuilt
 ([linux-environment.md](linux-environment.md)), and the gate machine had no
 usable Linux runtime.
 
-| Host case | Source | Local | Actor cluster | Process cluster |
+| Host case | Source | Local | Actor cluster | Process-cluster environment (in-process on this tree) |
 | --- | --- | --- | --- | --- |
 | lifecycle-complete-a5 | `97556263a` | 67 passed, 3 skip | 68 passed, 2 skip | 68 passed, 2 skip |
 | wheel-qualification-a1b | `6a4d90f02` | 67 passed, 3 skip | 68 passed, 2 skip | 68 passed, 2 skip |
@@ -239,7 +239,13 @@ usable Linux runtime.
 
 Nine runs, **609 integration passes and 21 expected skips**; the skips are the
 ones the merged tree's qualification already explains in
-[design-review.md](design-review.md). The three executables are the gate builds
+[design-review.md](design-review.md). The merged tree does not carry the
+branch's separate-process worker launcher (`worker_manager/process.rs`;
+`SAIL_EXPERIMENTAL_PROCESS_WORKERS` is not read by any crate on this tree), so
+the third column is the runner's process-cluster environment executed by the
+same in-process actor cluster as the second; its server logs show in-process
+workers starting. It is kept because the runner always runs all three modes; it
+is not separate-process evidence, unlike the earlier rounds above. The three executables are the gate builds
 of the lifecycle-complete tip before the performance units, the examples re-pin
 tip and the merged tip. Each has a distinct source revision and binary hash;
 all were built with Rust 1.98.1 under `--locked` with `CARGO_INCREMENTAL=0`,
@@ -260,8 +266,11 @@ lease and one retain/release pair for the valid case. Wheels and binary are
 unchanged across the run, and the 20 harness unit tests under
 `examples/extensions/scripts/tests` pass.
 
-Receipts, per-run logs, the host manifest, the environment envelope and both
-runner versions are in the
+The four bundles this directory links were tracked on the extensions branch but
+fell under the root's `*.gz` ignore rule during the merge; they are tracked
+again, byte-identical to the branch, with this round's bundle. Receipts,
+per-run logs, the host manifest, the environment envelope and both runner
+versions are in the
 [merged-tree evidence bundle](evidence/extension-merged-tree-abi-evidence.tar.gz)
 ([checksum](evidence/extension-merged-tree-abi-evidence.tar.gz.sha256)); the
 [machine-readable rows](abi-merged-tree-matrix.json) carry case labels, source
