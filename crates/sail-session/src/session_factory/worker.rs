@@ -9,27 +9,39 @@ use sail_common::runtime::RuntimeHandle;
 use sail_common_datafusion::session::repartition::RepartitionBufferConfig;
 use sail_delta_lake::session_extension::DeltaTableCache;
 
-use crate::runtime::RuntimeEnvFactory;
+use crate::runtime::{MemoryResourceDomain, RuntimeEnvFactory};
 use crate::session_factory::SessionFactory;
 
 pub struct WorkerSessionFactory {
+    resource_domain: Option<MemoryResourceDomain>,
     runtime_env: RuntimeEnvFactory,
     config: Arc<AppConfig>,
 }
 
 impl WorkerSessionFactory {
     pub fn new(config: Arc<AppConfig>, runtime: RuntimeHandle) -> Self {
+        // Host-funded native memory for extensions is experimental and off by default.
+        let resource_domain = (std::env::var("SAIL_EXPERIMENTAL_EXTENSIONS").as_deref() == Ok("1"))
+            .then(|| MemoryResourceDomain::new(&config.runtime.memory_pool));
         let runtime_env = RuntimeEnvFactory::new(Arc::clone(&config), runtime);
         Self {
+            resource_domain,
             runtime_env,
             config,
         }
+    }
+    pub fn with_resource_domain(mut self, domain: Option<MemoryResourceDomain>) -> Self {
+        self.resource_domain = domain;
+        self
     }
 }
 
 impl SessionFactory<()> for WorkerSessionFactory {
     fn create(&mut self, _info: ()) -> Result<SessionContext> {
-        let runtime = self.runtime_env.create(Ok)?;
+        if std::env::var("SAIL_EXPERIMENTAL_EXTENSIONS").as_deref() == Ok("1") {
+            crate::extensions::load_worker_extensions()?;
+        }
+        let runtime = self.runtime_env.create(self.resource_domain.as_ref(), Ok)?;
         // We still add default features for the worker session
         // since we need built-in functions to be available for the codec
         // when decoding the execution plan.

@@ -9,11 +9,13 @@ use datafusion::prelude::SessionContext;
 use futures::FutureExt;
 use sail_cache::remote_checkpoint::RemoteCheckpointRegistry;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
+use sail_common_datafusion::native_resource::NativeResourceTracker;
 use sail_common_datafusion::session::job::JobRunner;
 use sail_common_datafusion::session::lifecycle::{SessionOperations, SessionOperationsService};
 use sail_execution::DriverId;
 use tokio::sync::watch;
 
+use crate::extensions::graph_utils::GraphRuns;
 use crate::session_manager::session::SessionOwner;
 
 /// The immutable result of a cleanup attempt.
@@ -24,6 +26,8 @@ pub(crate) enum CleanupPhase {
     NotStarted,
     StoppingRunner,
     RemovingCheckpoints,
+    CleaningExtensionState,
+    ReleasingNativeMemory,
 }
 
 impl fmt::Display for CleanupPhase {
@@ -32,6 +36,8 @@ impl fmt::Display for CleanupPhase {
             CleanupPhase::NotStarted => "starting cleanup",
             CleanupPhase::StoppingRunner => "stopping the job runner",
             CleanupPhase::RemovingCheckpoints => "removing checkpoints",
+            CleanupPhase::CleaningExtensionState => "cleaning extension state",
+            CleanupPhase::ReleasingNativeMemory => "waiting for native memory to be released",
         })
     }
 }
@@ -139,6 +145,12 @@ impl SessionCleanup {
             .as_ref()
             .map(|context| context.runtime_env())
             .unwrap_or_default();
+        let graph_runs = context
+            .as_ref()
+            .and_then(|context| context.extension::<GraphRuns>().ok());
+        let native_resources = context
+            .as_ref()
+            .and_then(|context| context.extension::<NativeResourceTracker>().ok());
         stop_and_clean_checkpoints(
             operations.as_ref().map(|x| x.operations()),
             service.runner(),
@@ -146,7 +158,32 @@ impl SessionCleanup {
             runtime.as_ref(),
             |phase| self.set_phase(phase),
         )
-        .await
+        .await?;
+        // Extension state lives outside the job runner and the checkpoints. It is
+        // cleaned only after both have stopped, since a native region can still be
+        // producing until then; and the memory native producers hold is waited for,
+        // not reclaimed: a cleanup that reports success has nothing left in flight.
+        if let Some(graph_runs) = graph_runs {
+            self.set_phase(CleanupPhase::CleaningExtensionState);
+            graph_runs.cleanup().await?;
+        }
+        if let Some(native_resources) = native_resources {
+            self.set_phase(CleanupPhase::ReleasingNativeMemory);
+            // The packages' admission leases are owned by the session's own extensions
+            // (a bound package holds its lease in a capsule), so the count cannot reach
+            // zero while a session context is alive. Everything that needed the context
+            // has finished above; release every handle to it before waiting.
+            drop(context);
+            drop(operations);
+            drop(checkpoints);
+            let retained = self
+                .lock_resources()
+                .as_mut()
+                .and_then(|resources| resources.context.take());
+            drop(retained);
+            native_resources.wait_for_release().await;
+        }
+        Ok(())
     }
 
     fn publish(&self, outcome: CleanupOutcome) -> bool {

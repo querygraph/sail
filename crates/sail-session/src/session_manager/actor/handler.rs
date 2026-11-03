@@ -93,6 +93,7 @@ impl SessionManagerActor {
         let runner = match self.job_runner_factory.create(
             ctx.children_mut(),
             SessionJobRunnerInfo {
+                resource_domain: self.options.resource_domain.clone(),
                 session_id: session_id.clone(),
                 driver_id,
                 driver_server_port: self.driver_gateway.as_ref().map(|x| x.port()),
@@ -122,6 +123,7 @@ impl SessionManagerActor {
             return ActorAction::Continue;
         }
         let info = ServerSessionInfo {
+            resource_domain: self.options.resource_domain.clone(),
             session_id: session_id.clone(),
             user_id: user_id.clone(),
             session_manager: ctx.handle().clone(),

@@ -181,6 +181,13 @@ pub async fn create_session_manager(
                 .raw()
                 .map_err(|e| SessionError::internal(e.to_string()))?,
         );
+    let options = if std::env::var("SAIL_EXPERIMENTAL_EXTENSIONS").as_deref() == Ok("1") {
+        options.with_resource_domain(crate::runtime::MemoryResourceDomain::new(
+            &config.runtime.memory_pool,
+        ))
+    } else {
+        options
+    };
     let components = SessionManagerComponents {
         session_factory,
         job_runner_factory,

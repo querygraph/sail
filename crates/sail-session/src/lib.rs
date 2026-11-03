@@ -1,5 +1,6 @@
 pub mod catalog;
 pub mod error;
+mod extensions;
 pub mod formats;
 pub mod optimizer;
 pub mod planner;

@@ -25,11 +25,12 @@ use crate::catalog::{SharedMemoryCatalogs, create_catalog_manager};
 use crate::formats::create_data_source_registry;
 use crate::optimizer::{default_analyzer_rules, default_optimizer_rules};
 use crate::planner::new_query_planner;
-use crate::runtime::RuntimeEnvFactory;
+use crate::runtime::{MemoryResourceDomain, RuntimeEnvFactory};
 use crate::session_factory::SessionFactory;
 use crate::session_manager::SessionManagerActor;
 
 pub struct ServerSessionInfo {
+    pub resource_domain: Option<MemoryResourceDomain>,
     pub session_id: String,
     pub user_id: String,
     pub session_manager: ActorHandle<SessionManagerActor>,
@@ -142,15 +143,17 @@ impl ServerSessionFactory {
             &self.config.parquet,
         );
         self.apply_optimizer_config(&mut config)?;
-        let config = self.mutator.mutate_config(config, info)?;
-        Ok(config)
+        self.mutator.mutate_config(config, info)
     }
 
     fn create_session_state(&mut self, info: &mut ServerSessionInfo) -> Result<SessionState> {
         let config = self.create_session_config(info)?;
         let runtime = self
             .runtime_env
-            .create(|builder| self.mutator.mutate_runtime_env(builder, info))?;
+            .create(info.resource_domain.as_ref(), |builder| {
+                self.mutator.mutate_runtime_env(builder, info)
+            })?;
+        let config = crate::extensions::register_extensions(config, &self.config.mode, &runtime)?;
         // We do not add default features to the session state,
         // since we manage data sources and functions ourselves.
         let builder = SessionStateBuilder::new()

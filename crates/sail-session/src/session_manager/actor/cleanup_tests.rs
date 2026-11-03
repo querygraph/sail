@@ -348,3 +348,77 @@ async fn unconfirmed_writers_keep_the_checkpoints_of_a_session_that_used_storage
     assert!(checkpoints.resolve_relation(&runtime, "relation").is_ok());
     Ok(())
 }
+
+#[tokio::test]
+async fn native_memory_in_flight_holds_the_outcome_until_it_is_released() -> TestResult {
+    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
+    use datafusion::prelude::SessionConfig;
+    use sail_common_datafusion::native_resource::NativeResourceTracker;
+    use sail_common_datafusion::session::job::JobService;
+
+    use crate::session_manager::session::SessionOwner;
+
+    let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(64));
+    let tracker = Arc::new(NativeResourceTracker::default());
+    // A native producer that is still holding host memory when the session is deleted.
+    let lease = tracker.reserve(&pool, "staged-graph", 64)?;
+    let context =
+        SessionContext::new_with_config(SessionConfig::new().with_extension(tracker.clone()));
+    let owner = SessionOwner {
+        service: Arc::new(JobService::new(Box::new(TestRunner::new(None, None)))),
+        driver_id: None,
+    };
+    let cleanup = SessionCleanup::new("native".into(), 1, owner, Some(context));
+    let driver = cleanup.driver().run();
+    tokio::pin!(driver);
+    // The runner stops at once; the record then waits for the lease, reporting nothing yet.
+    assert!(futures::poll!(driver.as_mut()).is_pending());
+    assert!(cleanup.outcome().is_none());
+    assert_eq!(cleanup.phase(), CleanupPhase::ReleasingNativeMemory);
+    assert_eq!(pool.reserved(), 64);
+    drop(lease);
+    driver.await;
+    cleanup.wait().await?;
+    assert_eq!(pool.reserved(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_lease_owned_by_the_session_s_own_extensions_does_not_block_its_cleanup() -> TestResult {
+    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
+    use datafusion::prelude::SessionConfig;
+    use sail_common_datafusion::extension::SessionExtension;
+    use sail_common_datafusion::native_resource::NativeResourceTracker;
+    use sail_common_datafusion::session::job::JobService;
+    use sail_native_resource_ffi::MemoryLease;
+
+    use crate::session_manager::session::SessionOwner;
+
+    /// A bound package keeps its admission lease for as long as it is registered.
+    struct BoundPackage(#[expect(dead_code)] MemoryLease);
+    impl SessionExtension for BoundPackage {
+        fn name() -> &'static str {
+            "BoundPackage"
+        }
+    }
+
+    let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(64));
+    let tracker = Arc::new(NativeResourceTracker::default());
+    let lease = tracker.reserve(&pool, "bound-package", 64)?;
+    let context = SessionContext::new_with_config(
+        SessionConfig::new()
+            .with_extension(tracker.clone())
+            .with_extension(Arc::new(BoundPackage(lease))),
+    );
+    let owner = SessionOwner {
+        service: Arc::new(JobService::new(Box::new(TestRunner::new(None, None)))),
+        driver_id: None,
+    };
+    let cleanup = SessionCleanup::new("package".into(), 1, owner, Some(context));
+    // The record itself holds the only remaining context; the cleanup must let go of it
+    // before waiting, or it would wait for a lease that only its own release can end.
+    cleanup.driver().run().await;
+    cleanup.wait().await?;
+    assert_eq!(pool.reserved(), 0);
+    Ok(())
+}

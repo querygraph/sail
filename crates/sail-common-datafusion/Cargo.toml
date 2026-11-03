@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 sail-common = { path = "../sail-common" }
+sail-native-resource-ffi = { path = "../sail-native-resource-ffi" }
 sail-object-store = { path = "../sail-object-store" }
 
 arrow = { workspace = true }
