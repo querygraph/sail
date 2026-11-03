@@ -11,6 +11,7 @@ workspace = true
 grust-columns = { path = "../../vendor/grust-columns" }
 grust-topology = { path = "../../vendor/grust-topology" }
 sail-function = { path = "../sail-function" }
+stacker = { workspace = true }
 sail-cache = { path = "../sail-cache" }
 sail-catalog = { path = "../sail-catalog" }
 sail-common = { path = "../sail-common" }

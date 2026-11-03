@@ -740,3 +740,24 @@ fn query_navigation_reports_the_first_expression_read_before_its_input() {
         ])))
     );
 }
+
+/// A Connect relation extension is planned by a native handler, which is analysis a query
+/// function must not perform. It is refused whether it stands alone or wraps a stream, until
+/// a later unit binds it as a source.
+#[test]
+fn a_relation_extension_is_not_admitted_into_a_flow() -> TestResult {
+    let sources = [source(&["c", "d", "clicks"])];
+    for inputs in [vec![], vec![read("clicks", true)]] {
+        let extension = spec::QueryPlan::new(spec::QueryNode::Extension {
+            payload_type_url: "type.googleapis.com/example.Graph".into(),
+            payload: vec![],
+            inputs,
+            is_envelope: true,
+        });
+        assert_eq!(
+            validate(extension, &sources, &[]),
+            Err(BindingError::RelationExtension)
+        );
+    }
+    Ok(())
+}

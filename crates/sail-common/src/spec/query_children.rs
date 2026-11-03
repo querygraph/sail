@@ -37,6 +37,10 @@ impl QueryPlan {
             | N::Range(_)
             | N::Empty { .. } => Ok(()),
             N::Values(rows) => rows.iter().try_for_each(|row| visit_exprs(row, visitor)),
+            // A Connect relation extension: its payload is opaque, its inputs are plans.
+            N::Extension { inputs, .. } => inputs
+                .iter()
+                .try_for_each(|input| visitor(QueryChild::Query(input))),
             N::CommonInlineUserDefinedTableFunction(function) => {
                 visit_exprs(&function.arguments, visitor)
             }

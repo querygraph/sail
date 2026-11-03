@@ -73,6 +73,13 @@ impl CommandPlan {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum QueryNode {
+    /// Experimental, local-mode Spark Connect relation extension.
+    Extension {
+        payload_type_url: String,
+        payload: Vec<u8>,
+        inputs: Vec<QueryPlan>,
+        is_envelope: bool,
+    },
     Read {
         #[serde(flatten)]
         read_type: ReadType,

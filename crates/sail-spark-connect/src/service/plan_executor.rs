@@ -602,9 +602,10 @@ pub(crate) async fn handle_execute_remove_cached_remote_relation_command(
 pub(crate) async fn handle_interrupt_all(ctx: &SessionContext) -> SparkResult<Vec<String>> {
     let spark = ctx.extension::<SparkSession>()?;
     let mut results = vec![];
-    for executor in spark.remove_all_executors()? {
-        executor.pause_if_running().await?;
-        results.push(executor.metadata.operation_id.clone());
+    for executor in spark.all_executors()? {
+        if executor.interrupt().await? {
+            results.push(executor.metadata.operation_id.clone());
+        }
     }
     Ok(results)
 }
@@ -615,9 +616,10 @@ pub(crate) async fn handle_interrupt_tag(
 ) -> SparkResult<Vec<String>> {
     let spark = ctx.extension::<SparkSession>()?;
     let mut results = vec![];
-    for executor in spark.remove_executors_by_tag(tag.as_str())? {
-        executor.pause_if_running().await?;
-        results.push(executor.metadata.operation_id.clone());
+    for executor in spark.executors_by_tag(tag.as_str())? {
+        if executor.interrupt().await? {
+            results.push(executor.metadata.operation_id.clone());
+        }
     }
     Ok(results)
 }
@@ -627,10 +629,13 @@ pub(crate) async fn handle_interrupt_operation_id(
     operation_id: String,
 ) -> SparkResult<Vec<String>> {
     let spark = ctx.extension::<SparkSession>()?;
-    match spark.remove_executor(operation_id.as_str())? {
+    match spark.get_executor(operation_id.as_str())? {
         Some(executor) => {
-            executor.pause_if_running().await?;
-            Ok(vec![executor.metadata.operation_id.clone()])
+            if executor.interrupt().await? {
+                Ok(vec![executor.metadata.operation_id.clone()])
+            } else {
+                Ok(vec![])
+            }
         }
         None => Ok(vec![]),
     }

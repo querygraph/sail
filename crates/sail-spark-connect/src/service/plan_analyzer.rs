@@ -278,6 +278,9 @@ fn is_streaming_query_node(
             }
             *is_streaming && (named_reads || !matches!(read_type, spec::ReadType::NamedTable(_)))
         }
+        spec::QueryNode::Extension { inputs, .. } => inputs
+            .iter()
+            .any(|input| is_streaming_query_node(&input.node, cte_scope, named_reads)),
         // leaf nodes with no query plan inputs
         spec::QueryNode::LocalRelation { .. }
         | spec::QueryNode::CachedLocalRelation { .. }

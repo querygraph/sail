@@ -152,7 +152,12 @@ impl SparkConnectService for SparkConnectServer {
         request: Request<ExecutePlanRequest>,
     ) -> Result<Response<Self::ExecutePlanStream>, Status> {
         let request = request.into_inner();
-        debug!("{request:?}");
+        // Extension payloads can carry session-owned capabilities. Log routing
+        // identifiers, never opaque plan bytes or client argument values.
+        debug!(
+            "ExecutePlan session_id={} operation_id={:?}",
+            request.session_id, request.operation_id
+        );
         let pipeline_request = PipelineRequest::of(request.user_context.as_ref())?;
         let session_id = request.session_id;
         let user_id = request.user_context.map(|u| u.user_id).unwrap_or_default();
@@ -191,7 +196,7 @@ impl SparkConnectService for SparkConnectServer {
         use crate::spark::connect::analyze_plan_response;
 
         let request = request.into_inner();
-        debug!("{request:?}");
+        debug!("AnalyzePlan session_id={}", request.session_id);
         let pipeline_request = PipelineRequest::of(request.user_context.as_ref())?;
         let session_id = request.session_id.clone();
         let user_id = request.user_context.map(|u| u.user_id).unwrap_or_default();

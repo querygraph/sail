@@ -8879,6 +8879,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "stacker",
  "syn 3.0.9",
  "tempfile",
  "thiserror",

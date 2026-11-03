@@ -133,6 +133,9 @@ enum ExecutorState {
         buffer: Arc<Mutex<ExecutorBuffer>>,
     },
     Pausing,
+    // Retain only the terminal identity so a reattaching client receives the
+    // interruption, without retaining the plan, native buffers, or task context.
+    Interrupted,
     Failed(SparkError),
     /// The session has been closed. The executor can never run again.
     Closed,
@@ -521,6 +524,12 @@ impl Executor {
                 *state = x;
                 return Err(SparkError::internal("task has been closed"));
             }
+            ExecutorState::Interrupted => {
+                *state = ExecutorState::Interrupted;
+                return Err(SparkError::OperationInterrupted(
+                    self.metadata.operation_id.clone(),
+                ));
+            }
         };
         let (tx, rx) = mpsc::channel(1);
         let (notifier, listener) = oneshot::channel();
@@ -575,7 +584,9 @@ impl Executor {
             ExecutorTaskResult::Failed(e) => ExecutorState::Failed(e),
         };
         let mut state = self.state.lock()?;
-        if !matches!(*state, ExecutorState::Closed) {
+        // An interrupt or a close may have ended the operation while the paused task
+        // was being joined. Never restore that task's context afterwards.
+        if matches!(*state, ExecutorState::Pausing) {
             *state = next;
         }
         Ok(())
@@ -599,6 +610,7 @@ impl Executor {
             | ExecutorState::Completed { .. }
             | ExecutorState::Pausing
             | ExecutorState::Failed(_)
+            | ExecutorState::Interrupted
             | ExecutorState::Closed => {}
         }
         Ok(())
@@ -613,6 +625,27 @@ impl Executor {
         Ok(())
     }
 
+    /// Interrupt the operation permanently. Unlike a pause, nothing of the task is kept:
+    /// the context, its plan and any native buffers are dropped before this returns, so a
+    /// reattaching client finds only the terminal identity and receives the interruption.
+    /// Returns whether this call ended the operation; a closed executor is left closed.
+    pub(crate) async fn interrupt(&self) -> SparkResult<bool> {
+        let previous = {
+            let mut state = self.state.lock()?;
+            if matches!(*state, ExecutorState::Closed | ExecutorState::Interrupted) {
+                return Ok(false);
+            }
+            mem::replace(state.deref_mut(), ExecutorState::Interrupted)
+        };
+        if let ExecutorState::Running { task, .. } = previous {
+            let _ = task.notifier.send(ExecutorSignal::Close);
+            // Drop the returned task context before acknowledging. Native
+            // blocking producers observe their stream cancellation next.
+            drop(task.handle.await?);
+        }
+        Ok(true)
+    }
+
     pub(crate) fn release(&self, response_id: String) -> SparkResult<()> {
         let state = self.state.lock()?;
         let buffer = match state.deref() {
@@ -622,7 +655,8 @@ impl Executor {
             ExecutorState::Idle
             | ExecutorState::Failed(_)
             | ExecutorState::Pausing
-            | ExecutorState::Closed => {
+            | ExecutorState::Closed
+            | ExecutorState::Interrupted => {
                 return Ok(());
             }
         };
@@ -630,6 +664,9 @@ impl Executor {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 pub(crate) fn to_arrow_batch(batch: &RecordBatch) -> SparkResult<ArrowBatch> {
     let mut output = ArrowBatch::default();

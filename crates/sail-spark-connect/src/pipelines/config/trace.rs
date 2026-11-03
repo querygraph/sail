@@ -157,7 +157,8 @@ impl<F: Fn(&str) -> bool> Trace<'_, F> {
             | N::TableAlias { .. }
             | N::NamedWindows { .. }
             | N::LateralView { .. }
-            | N::LateralJoin { .. } => {}
+            | N::LateralJoin { .. }
+            | N::Extension { .. } => {}
         }
         query.visit_children(&mut |child| match child {
             spec::QueryChild::Expression(expr) => self.expression(expr, ctes),

@@ -352,31 +352,19 @@ impl SparkSession {
             .map(|(_, executor)| executor))
     }
 
-    pub(crate) fn remove_all_executors(&self) -> SparkResult<Vec<Arc<Executor>>> {
-        let mut state = self.state.lock()?;
-        let mut out = Vec::new();
-        for (_, executor) in state.executors.drain() {
-            out.push(executor);
-        }
-        Ok(out)
+    pub(crate) fn all_executors(&self) -> SparkResult<Vec<Arc<Executor>>> {
+        let state = self.state.lock()?;
+        Ok(state.executors.values().cloned().collect())
     }
 
-    pub(crate) fn remove_executors_by_tag(&self, tag: &str) -> SparkResult<Vec<Arc<Executor>>> {
-        let mut state = self.state.lock()?;
-        let tag = tag.to_string();
-        let mut ids = Vec::new();
-        let mut removed = Vec::new();
-        for (key, executor) in &state.executors {
-            if executor.metadata.tags.contains(&tag) {
-                ids.push(key.clone());
-            }
-        }
-        for key in ids.iter() {
-            if let Some(executor) = state.executors.remove(key) {
-                removed.push(executor);
-            }
-        }
-        Ok(removed)
+    pub(crate) fn executors_by_tag(&self, tag: &str) -> SparkResult<Vec<Arc<Executor>>> {
+        let state = self.state.lock()?;
+        Ok(state
+            .executors
+            .values()
+            .filter(|executor| executor.metadata.tags.iter().any(|value| value == tag))
+            .cloned()
+            .collect())
     }
 
     pub(crate) fn start_streaming_query(

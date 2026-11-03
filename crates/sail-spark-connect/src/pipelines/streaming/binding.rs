@@ -87,6 +87,9 @@ pub enum BindingError {
     PivotInference,
     /// `Tail` resolves through a count query (`limit.rs`).
     Tail,
+    /// A Connect relation extension is planned by a native handler, which is
+    /// analysis; it is not admitted into a flow until a unit binds it as a source.
+    RelationExtension,
     /// The `Stat*` nodes execute helper plans during resolution (`stat.rs`).
     StatHelper(&'static str),
     /// A read kind outside the initial subset.
@@ -138,6 +141,7 @@ impl fmt::Display for BindingError {
             }
             Self::PivotInference => write!(f, "pivot without explicit values is not admitted"),
             Self::Tail => write!(f, "tail is not admitted"),
+            Self::RelationExtension => write!(f, "relation extension is not admitted"),
             Self::StatHelper(kind) => write!(f, "{kind} is not admitted"),
             Self::UnsupportedRead(kind) => write!(f, "{kind} read is not admitted"),
             Self::Unqualifiable(message) => write!(f, "{message}"),
@@ -449,6 +453,7 @@ impl Walker<'_> {
                 }
             }
             N::Tail { .. } => return Err(BindingError::Tail),
+            N::Extension { .. } => return Err(BindingError::RelationExtension),
             N::Pivot(pivot) if pivot.values.is_empty() => return Err(BindingError::PivotInference),
             N::StatSummary { .. } => return Err(BindingError::StatHelper("summary")),
             N::StatDescribe { .. } => return Err(BindingError::StatHelper("describe")),

@@ -18,6 +18,7 @@ mod alias;
 mod column_op;
 mod cte;
 mod dedup;
+mod extension;
 mod filter;
 mod join;
 mod lateral;
@@ -74,6 +75,15 @@ impl PlanResolver<'_> {
 
         let plan_id = plan.plan_id;
         let plan = match plan.node {
+            QueryNode::Extension {
+                payload_type_url,
+                payload,
+                inputs,
+                is_envelope,
+            } => {
+                self.resolve_query_extension(payload_type_url, payload, inputs, is_envelope, state)
+                    .await?
+            }
             QueryNode::Read {
                 read_type,
                 is_streaming,
