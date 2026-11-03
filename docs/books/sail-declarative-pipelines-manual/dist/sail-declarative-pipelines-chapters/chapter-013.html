@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov and Sail Contributors" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="The manual for Sail Declarative Pipelines, Sail’s implementation of Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines tool, with batch, streaming tables, AutoCDC and Apache Iggy." />
+  <title>AutoCDC targets in Unity Catalog and Iceberg</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-014.html" accesskey="n" rel="next">Operations</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-012.html" accesskey="p" rel="previous">Apache Iggy as a source</a>
+</span>
+</div>
+</nav>
+<h1 data-number="12"
+id="autocdc-targets-in-unity-catalog-and-iceberg"><span
+class="header-section-number">12</span> AutoCDC targets in Unity Catalog
+and Iceberg</h1>
+<p>AutoCDC writes Delta tables by path and in Sail’s own catalogs under
+a fence, as the AutoCDC chapter describes. Two other targets take a
+plain path, in which the catalog or the table format orders the commits
+and Sail keeps its progress in the checkpoint, as Spark does.</p>
+<h2 data-number="12.1" id="delta-tables-managed-by-unity-catalog"><span
+class="header-section-number">12.1</span> Delta tables managed by Unity
+Catalog</h2>
+<p>With a Unity Catalog configured as a Sail catalog, a streaming table
+named in that catalog is a managed Delta table whose commits Unity
+ratifies.</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>dp.create_streaming_table(<span class="st">&quot;unity.default.customers&quot;</span>, <span class="bu">format</span><span class="op">=</span><span class="st">&quot;delta&quot;</span>)</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>dp.create_auto_cdc_flow(</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    target<span class="op">=</span><span class="st">&quot;unity.default.customers&quot;</span>,</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    source<span class="op">=</span><span class="st">&quot;changes&quot;</span>,</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    keys<span class="op">=</span>[<span class="st">&quot;id&quot;</span>],</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    sequence_by<span class="op">=</span><span class="st">&quot;seq&quot;</span>,</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    apply_as_deletes<span class="op">=</span>sf.expr(<span class="st">&quot;is_delete&quot;</span>),</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    except_column_list<span class="op">=</span>[<span class="st">&quot;is_delete&quot;</span>],</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<p>What differs from a fenced Delta target:</p>
+<ul>
+<li>Unity orders the commits, so there is no lease and no control store
+for the target. The checkpoint is the progress.</li>
+<li>A full refresh drops the table and creates it again, because Unity
+does not replace a table in place; the new table has a new id in
+Unity.</li>
+<li><code>DROP TABLE ... PURGE</code> is not accepted by Unity; Sail
+drops without it.</li>
+<li>Two pipelines running one flow into one table at once each keep
+their own progress. Nothing stops the second; the data converges because
+rows win by sequence, but remembered deletes may interleave.</li>
+</ul>
+<p>The auxiliary table lives in the same schema as the target, as
+<code>__spark_autocdc_aux_state_&lt;table&gt;</code>.</p>
+<p>The catalogs chapter describes how a Unity Catalog is attached to a
+Sail server. Sail’s own test suite runs against Unity Catalog built from
+source; <code>PYSAIL_INTEGRATION_SUITE=unity</code> selects the suite
+and <code>PYSAIL_UNITY_CATALOG_URL</code> points it at a running
+server.</p>
+<h2 data-number="12.2" id="iceberg"><span
+class="header-section-number">12.2</span> Iceberg</h2>
+<p>A streaming table with <code>format="iceberg"</code> is an Iceberg
+table.</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>dp.create_streaming_table(<span class="st">&quot;events_current&quot;</span>, <span class="bu">format</span><span class="op">=</span><span class="st">&quot;iceberg&quot;</span>)</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>dp.create_auto_cdc_flow(target<span class="op">=</span><span class="st">&quot;events_current&quot;</span>, source<span class="op">=</span><span class="st">&quot;changes&quot;</span>, keys<span class="op">=</span>[<span class="st">&quot;id&quot;</span>], sequence_by<span class="op">=</span><span class="st">&quot;seq&quot;</span>)</span></code></pre></div>
+<ul>
+<li>Iceberg orders the commits; the checkpoint is the progress, and a
+batch replayed after a crash is safe because rows win by sequence.</li>
+<li>A new source column arrives by
+<code>ALTER TABLE ... ADD COLUMNS</code>, which Sail issues before the
+batch. Nested fields are added inside their struct or array
+element.</li>
+<li>A full refresh drops and recreates the table, so a changed key or
+type takes effect then.</li>
+<li>The table carries no fence. An ordinary write from another session
+is not refused.</li>
+</ul>
+<p>Sail completes three nested-type changes that Spark’s Iceberg
+connector refuses: a full refresh that changes keys and types, a
+selective full refresh, and a new field inside an array of structs. On
+Spark those runs fail with
+<code>Cannot update '&lt;column&gt;', not a primitive type</code>.</p>
+</body>
+</html>

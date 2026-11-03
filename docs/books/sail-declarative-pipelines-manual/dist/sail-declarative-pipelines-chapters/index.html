@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov and Sail Contributors" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="The manual for Sail Declarative Pipelines, Sail’s implementation of Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines tool, with batch, streaming tables, AutoCDC and Apache Iggy." />
+  <title>Sail Declarative Pipelines</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+</span>
+<span class="navlink">
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-001.html" accesskey="n" rel="next">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+</span>
+</div>
+</nav>
+<header id="title-block-header">
+<h1 class="title">Sail Declarative Pipelines</h1>
+<p class="subtitle">Spark Declarative Pipelines on Sail, the manual</p>
+<p class="author">Alexy Khrabrov and Sail Contributors</p>
+<p class="date">2026-11-03</p>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="chapter-002.html#introduction" id="toc-introduction"><span
+class="toc-section-number">1</span> Introduction</a>
+<ul>
+<li><a href="chapter-002.html#what-a-pipeline-is"
+id="toc-what-a-pipeline-is"><span class="toc-section-number">1.1</span>
+What a pipeline is</a></li>
+<li><a href="chapter-002.html#what-this-manual-covers"
+id="toc-what-this-manual-covers"><span
+class="toc-section-number">1.2</span> What this manual covers</a></li>
+<li><a href="chapter-002.html#versions" id="toc-versions"><span
+class="toc-section-number">1.3</span> Versions</a></li>
+</ul></li>
+<li><a href="chapter-003.html#getting-started"
+id="toc-getting-started"><span class="toc-section-number">2</span>
+Getting started</a>
+<ul>
+<li><a href="chapter-003.html#build-sail" id="toc-build-sail"><span
+class="toc-section-number">2.1</span> Build Sail</a></li>
+<li><a href="chapter-003.html#install-the-client"
+id="toc-install-the-client"><span class="toc-section-number">2.2</span>
+Install the client</a></li>
+<li><a href="chapter-003.html#start-a-server"
+id="toc-start-a-server"><span class="toc-section-number">2.3</span>
+Start a server</a></li>
+<li><a href="chapter-003.html#create-a-project"
+id="toc-create-a-project"><span class="toc-section-number">2.4</span>
+Create a project</a></li>
+<li><a href="chapter-003.html#run-it" id="toc-run-it"><span
+class="toc-section-number">2.5</span> Run it</a></li>
+<li><a href="chapter-003.html#look-at-the-result"
+id="toc-look-at-the-result"><span class="toc-section-number">2.6</span>
+Look at the result</a></li>
+<li><a href="chapter-003.html#where-the-server-is"
+id="toc-where-the-server-is"><span class="toc-section-number">2.7</span>
+Where the server is</a></li>
+<li><a href="chapter-003.html#next" id="toc-next"><span
+class="toc-section-number">2.8</span> Next</a></li>
+</ul></li>
+<li><a href="chapter-004.html#projects-and-specs"
+id="toc-projects-and-specs"><span class="toc-section-number">3</span>
+Projects and specs</a>
+<ul>
+<li><a href="chapter-004.html#the-spec-file"
+id="toc-the-spec-file"><span class="toc-section-number">3.1</span> The
+spec file</a></li>
+<li><a href="chapter-004.html#source-files" id="toc-source-files"><span
+class="toc-section-number">3.2</span> Source files</a></li>
+<li><a href="chapter-004.html#where-the-server-is-1"
+id="toc-where-the-server-is-1"><span
+class="toc-section-number">3.3</span> Where the server is</a></li>
+<li><a href="chapter-004.html#layout-of-the-storage-root"
+id="toc-layout-of-the-storage-root"><span
+class="toc-section-number">3.4</span> Layout of the storage
+root</a></li>
+<li><a href="chapter-004.html#names" id="toc-names"><span
+class="toc-section-number">3.5</span> Names</a></li>
+</ul></li>
+<li><a href="chapter-005.html#python-datasets"
+id="toc-python-datasets"><span class="toc-section-number">4</span>
+Python datasets</a>
+<ul>
+<li><a href="chapter-005.html#decorators" id="toc-decorators"><span
+class="toc-section-number">4.1</span> Decorators</a></li>
+<li><a href="chapter-005.html#streaming-tables-and-append-flows"
+id="toc-streaming-tables-and-append-flows"><span
+class="toc-section-number">4.2</span> Streaming tables and append
+flows</a></li>
+<li><a href="chapter-005.html#reading-other-datasets"
+id="toc-reading-other-datasets"><span
+class="toc-section-number">4.3</span> Reading other datasets</a></li>
+<li><a href="chapter-005.html#sinks" id="toc-sinks"><span
+class="toc-section-number">4.4</span> Sinks</a></li>
+<li><a href="chapter-005.html#what-a-query-function-may-do"
+id="toc-what-a-query-function-may-do"><span
+class="toc-section-number">4.5</span> What a query function may
+do</a></li>
+<li><a href="chapter-005.html#per-flow-settings"
+id="toc-per-flow-settings"><span class="toc-section-number">4.6</span>
+Per-flow settings</a></li>
+<li><a href="chapter-005.html#mixing-with-sql"
+id="toc-mixing-with-sql"><span class="toc-section-number">4.7</span>
+Mixing with SQL</a></li>
+</ul></li>
+<li><a href="chapter-006.html#sql-pipeline-files"
+id="toc-sql-pipeline-files"><span class="toc-section-number">5</span>
+SQL pipeline files</a>
+<ul>
+<li><a href="chapter-006.html#datasets" id="toc-datasets"><span
+class="toc-section-number">5.1</span> Datasets</a></li>
+<li><a href="chapter-006.html#reading-a-stream"
+id="toc-reading-a-stream"><span class="toc-section-number">5.2</span>
+Reading a stream</a></li>
+<li><a href="chapter-006.html#flows" id="toc-flows"><span
+class="toc-section-number">5.3</span> Flows</a></li>
+<li><a href="chapter-006.html#directives" id="toc-directives"><span
+class="toc-section-number">5.4</span> Directives</a></li>
+<li><a href="chapter-006.html#order-and-references"
+id="toc-order-and-references"><span
+class="toc-section-number">5.5</span> Order and references</a></li>
+<li><a href="chapter-006.html#a-file-registers-all-or-nothing"
+id="toc-a-file-registers-all-or-nothing"><span
+class="toc-section-number">5.6</span> A file registers all or
+nothing</a></li>
+<li><a href="chapter-006.html#comments-and-separators"
+id="toc-comments-and-separators"><span
+class="toc-section-number">5.7</span> Comments and separators</a></li>
+</ul></li>
+<li><a href="chapter-007.html#running" id="toc-running"><span
+class="toc-section-number">6</span> Running</a>
+<ul>
+<li><a href="chapter-007.html#what-a-run-does"
+id="toc-what-a-run-does"><span class="toc-section-number">6.1</span>
+What a run does</a></li>
+<li><a href="chapter-007.html#events" id="toc-events"><span
+class="toc-section-number">6.2</span> Events</a></li>
+<li><a href="chapter-007.html#refresh-options"
+id="toc-refresh-options"><span class="toc-section-number">6.3</span>
+Refresh options</a></li>
+<li><a href="chapter-007.html#retries" id="toc-retries"><span
+class="toc-section-number">6.4</span> Retries</a></li>
+<li><a href="chapter-007.html#failures-and-the-rest-of-the-graph"
+id="toc-failures-and-the-rest-of-the-graph"><span
+class="toc-section-number">6.5</span> Failures and the rest of the
+graph</a></li>
+<li><a href="chapter-007.html#interrupting-a-run"
+id="toc-interrupting-a-run"><span class="toc-section-number">6.6</span>
+Interrupting a run</a></li>
+<li><a href="chapter-007.html#running-the-same-graph-twice"
+id="toc-running-the-same-graph-twice"><span
+class="toc-section-number">6.7</span> Running the same graph
+twice</a></li>
+</ul></li>
+<li><a href="chapter-008.html#sources-and-formats"
+id="toc-sources-and-formats"><span class="toc-section-number">7</span>
+Sources and formats</a>
+<ul>
+<li><a href="chapter-008.html#tables" id="toc-tables"><span
+class="toc-section-number">7.1</span> Tables</a></li>
+<li><a href="chapter-008.html#files" id="toc-files"><span
+class="toc-section-number">7.2</span> Files</a></li>
+<li><a href="chapter-008.html#delta-tables" id="toc-delta-tables"><span
+class="toc-section-number">7.3</span> Delta tables</a></li>
+<li><a href="chapter-008.html#orc" id="toc-orc"><span
+class="toc-section-number">7.4</span> ORC</a></li>
+<li><a href="chapter-008.html#parquet-csv-and-json-as-targets"
+id="toc-parquet-csv-and-json-as-targets"><span
+class="toc-section-number">7.5</span> Parquet, CSV and JSON as
+targets</a></li>
+</ul></li>
+<li><a href="chapter-009.html#catalogs" id="toc-catalogs"><span
+class="toc-section-number">8</span> Catalogs</a>
+<ul>
+<li><a href="chapter-009.html#the-memory-catalog"
+id="toc-the-memory-catalog"><span class="toc-section-number">8.1</span>
+The memory catalog</a></li>
+<li><a href="chapter-009.html#configuration"
+id="toc-configuration"><span class="toc-section-number">8.2</span>
+Configuration</a></li>
+<li><a href="chapter-009.html#naming-datasets"
+id="toc-naming-datasets"><span class="toc-section-number">8.3</span>
+Naming datasets</a></li>
+<li><a href="chapter-009.html#hive-metastore"
+id="toc-hive-metastore"><span class="toc-section-number">8.4</span> Hive
+metastore</a></li>
+<li><a href="chapter-009.html#seeing-another-sessions-writes"
+id="toc-seeing-another-sessions-writes"><span
+class="toc-section-number">8.5</span> Seeing another session’s
+writes</a></li>
+<li><a href="chapter-009.html#views-and-comments"
+id="toc-views-and-comments"><span class="toc-section-number">8.6</span>
+Views and comments</a></li>
+</ul></li>
+<li><a href="chapter-010.html#streaming-tables"
+id="toc-streaming-tables"><span class="toc-section-number">9</span>
+Streaming tables</a>
+<ul>
+<li><a href="chapter-010.html#sources" id="toc-sources"><span
+class="toc-section-number">9.1</span> Sources</a></li>
+<li><a href="chapter-010.html#what-a-run-reads"
+id="toc-what-a-run-reads"><span class="toc-section-number">9.2</span>
+What a run reads</a></li>
+<li><a href="chapter-010.html#checkpoints" id="toc-checkpoints"><span
+class="toc-section-number">9.3</span> Checkpoints</a></li>
+<li><a href="chapter-010.html#what-the-query-may-do"
+id="toc-what-the-query-may-do"><span
+class="toc-section-number">9.4</span> What the query may do</a></li>
+<li><a href="chapter-010.html#windowed-aggregates"
+id="toc-windowed-aggregates"><span class="toc-section-number">9.5</span>
+Windowed aggregates</a></li>
+<li><a href="chapter-010.html#several-flows-into-one-table"
+id="toc-several-flows-into-one-table"><span
+class="toc-section-number">9.6</span> Several flows into one
+table</a></li>
+<li><a href="chapter-010.html#schema-changes"
+id="toc-schema-changes"><span class="toc-section-number">9.7</span>
+Schema changes</a></li>
+</ul></li>
+<li><a href="chapter-011.html#autocdc" id="toc-autocdc"><span
+class="toc-section-number">10</span> AutoCDC</a>
+<ul>
+<li><a href="chapter-011.html#defining-a-flow"
+id="toc-defining-a-flow"><span class="toc-section-number">10.1</span>
+Defining a flow</a></li>
+<li><a href="chapter-011.html#what-the-target-holds"
+id="toc-what-the-target-holds"><span
+class="toc-section-number">10.2</span> What the target holds</a></li>
+<li><a href="chapter-011.html#runs" id="toc-runs"><span
+class="toc-section-number">10.3</span> Runs</a></li>
+<li><a href="chapter-011.html#queries-between-the-source-and-the-target"
+id="toc-queries-between-the-source-and-the-target"><span
+class="toc-section-number">10.4</span> Queries between the source and
+the target</a></li>
+<li><a href="chapter-011.html#targets" id="toc-targets"><span
+class="toc-section-number">10.5</span> Targets</a></li>
+<li><a href="chapter-011.html#what-an-operator-sees"
+id="toc-what-an-operator-sees"><span
+class="toc-section-number">10.6</span> What an operator sees</a></li>
+<li><a href="chapter-011.html#limits-in-this-release"
+id="toc-limits-in-this-release"><span
+class="toc-section-number">10.7</span> Limits in this release</a></li>
+</ul></li>
+<li><a href="chapter-012.html#apache-iggy-as-a-source"
+id="toc-apache-iggy-as-a-source"><span
+class="toc-section-number">11</span> Apache Iggy as a source</a>
+<ul>
+<li><a href="chapter-012.html#reading-a-topic"
+id="toc-reading-a-topic"><span class="toc-section-number">11.1</span>
+Reading a topic</a></li>
+<li><a href="chapter-012.html#positions" id="toc-positions"><span
+class="toc-section-number">11.2</span> Positions</a></li>
+<li><a href="chapter-012.html#topics-that-change"
+id="toc-topics-that-change"><span class="toc-section-number">11.3</span>
+Topics that change</a></li>
+<li><a href="chapter-012.html#what-is-refused"
+id="toc-what-is-refused"><span class="toc-section-number">11.4</span>
+What is refused</a></li>
+<li><a href="chapter-012.html#running-a-broker-for-tests"
+id="toc-running-a-broker-for-tests"><span
+class="toc-section-number">11.5</span> Running a broker for
+tests</a></li>
+</ul></li>
+<li><a
+href="chapter-013.html#autocdc-targets-in-unity-catalog-and-iceberg"
+id="toc-autocdc-targets-in-unity-catalog-and-iceberg"><span
+class="toc-section-number">12</span> AutoCDC targets in Unity Catalog
+and Iceberg</a>
+<ul>
+<li><a href="chapter-013.html#delta-tables-managed-by-unity-catalog"
+id="toc-delta-tables-managed-by-unity-catalog"><span
+class="toc-section-number">12.1</span> Delta tables managed by Unity
+Catalog</a></li>
+<li><a href="chapter-013.html#iceberg" id="toc-iceberg"><span
+class="toc-section-number">12.2</span> Iceberg</a></li>
+</ul></li>
+<li><a href="chapter-014.html#operations" id="toc-operations"><span
+class="toc-section-number">13</span> Operations</a>
+<ul>
+<li><a href="chapter-014.html#starting-a-server"
+id="toc-starting-a-server"><span class="toc-section-number">13.1</span>
+Starting a server</a></li>
+<li><a href="chapter-014.html#cluster-mode" id="toc-cluster-mode"><span
+class="toc-section-number">13.2</span> Cluster mode</a></li>
+<li><a href="chapter-014.html#sessions" id="toc-sessions"><span
+class="toc-section-number">13.3</span> Sessions</a></li>
+<li><a href="chapter-014.html#shutdown" id="toc-shutdown"><span
+class="toc-section-number">13.4</span> Shutdown</a></li>
+<li><a href="chapter-014.html#logs" id="toc-logs"><span
+class="toc-section-number">13.5</span> Logs</a></li>
+<li><a href="chapter-014.html#storage" id="toc-storage"><span
+class="toc-section-number">13.6</span> Storage</a></li>
+</ul></li>
+<li><a href="chapter-015.html#differences-from-spark"
+id="toc-differences-from-spark"><span
+class="toc-section-number">14</span> Differences from Spark</a>
+<ul>
+<li><a href="chapter-015.html#runs-that-are-stopped"
+id="toc-runs-that-are-stopped"><span
+class="toc-section-number">14.1</span> Runs that are stopped</a></li>
+<li><a href="chapter-015.html#registration" id="toc-registration"><span
+class="toc-section-number">14.2</span> Registration</a></li>
+<li><a href="chapter-015.html#datasets-1" id="toc-datasets-1"><span
+class="toc-section-number">14.3</span> Datasets</a></li>
+<li><a href="chapter-015.html#errors" id="toc-errors"><span
+class="toc-section-number">14.4</span> Errors</a></li>
+<li><a href="chapter-015.html#orc-1" id="toc-orc-1"><span
+class="toc-section-number">14.5</span> ORC</a></li>
+<li><a href="chapter-015.html#autocdc-targets"
+id="toc-autocdc-targets"><span class="toc-section-number">14.6</span>
+AutoCDC targets</a></li>
+<li><a href="chapter-015.html#sources-1" id="toc-sources-1"><span
+class="toc-section-number">14.7</span> Sources</a></li>
+<li><a href="chapter-015.html#what-is-the-same"
+id="toc-what-is-the-same"><span class="toc-section-number">14.8</span>
+What is the same</a></li>
+</ul></li>
+<li><a href="chapter-016.html#the-demo" id="toc-the-demo"><span
+class="toc-section-number">15</span> The demo</a>
+<ul>
+<li><a href="chapter-016.html#running-it" id="toc-running-it"><span
+class="toc-section-number">15.1</span> Running it</a></li>
+<li><a href="chapter-016.html#the-projects" id="toc-the-projects"><span
+class="toc-section-number">15.2</span> The projects</a></li>
+<li><a href="chapter-016.html#the-steps" id="toc-the-steps"><span
+class="toc-section-number">15.3</span> The steps</a></li>
+<li><a href="chapter-016.html#what-it-found"
+id="toc-what-it-found"><span class="toc-section-number">15.4</span> What
+it found</a></li>
+</ul></li>
+<li><a href="chapter-017.html#appendix-configuration"
+id="toc-appendix-configuration"><span
+class="toc-section-number">16</span> Appendix: configuration</a>
+<ul>
+<li><a href="chapter-017.html#pipeline-settings"
+id="toc-pipeline-settings"><span class="toc-section-number">16.1</span>
+Pipeline settings</a></li>
+<li><a href="chapter-017.html#table-properties"
+id="toc-table-properties"><span class="toc-section-number">16.2</span>
+Table properties</a></li>
+<li><a href="chapter-017.html#spec-fields" id="toc-spec-fields"><span
+class="toc-section-number">16.3</span> Spec fields</a></li>
+<li><a href="chapter-017.html#tool-options" id="toc-tool-options"><span
+class="toc-section-number">16.4</span> Tool options</a></li>
+<li><a href="chapter-017.html#server-settings"
+id="toc-server-settings"><span class="toc-section-number">16.5</span>
+Server settings</a></li>
+<li><a href="chapter-017.html#source-options"
+id="toc-source-options"><span class="toc-section-number">16.6</span>
+Source options</a></li>
+</ul></li>
+<li><a href="chapter-018.html#appendix-error-conditions"
+id="toc-appendix-error-conditions"><span
+class="toc-section-number">17</span> Appendix: error conditions</a>
+<ul>
+<li><a href="chapter-018.html#registration-1"
+id="toc-registration-1"><span class="toc-section-number">17.1</span>
+Registration</a></li>
+<li><a href="chapter-018.html#analysis" id="toc-analysis"><span
+class="toc-section-number">17.2</span> Analysis</a></li>
+<li><a href="chapter-018.html#execution" id="toc-execution"><span
+class="toc-section-number">17.3</span> Execution</a></li>
+</ul></li>
+</ul>
+</nav>
+
+</body>
+</html>

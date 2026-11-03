@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov and Sail Contributors" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="The manual for Sail Declarative Pipelines, Sail’s implementation of Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines tool, with batch, streaming tables, AutoCDC and Apache Iggy." />
+  <title>Appendix: configuration</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-018.html" accesskey="n" rel="next">Appendix: error conditions</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-016.html" accesskey="p" rel="previous">The demo</a>
+</span>
+</div>
+</nav>
+<h1 data-number="16" id="appendix-configuration"><span
+class="header-section-number">16</span> Appendix: configuration</h1>
+<h2 data-number="16.1" id="pipeline-settings"><span
+class="header-section-number">16.1</span> Pipeline settings</h2>
+<p>These are Spark SQL settings. They can be given for the whole project
+in the spec’s <code>configuration</code>, for one dataset with
+<code>spark_conf</code> in Python, or for the flows after a
+<code>SET</code> in a SQL file.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Key</th>
+<th>Meaning</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>spark.remote</code></td>
+<td>Where the server is, for the <code>spark-pipelines</code> tool.</td>
+<td><code>sc://localhost:15002</code></td>
+</tr>
+<tr>
+<td><code>spark.sql.pipelines.maxFlowRetryAttempts</code></td>
+<td>How many times a failed flow is retried.</td>
+<td><code>2</code></td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="16.2" id="table-properties"><span
+class="header-section-number">16.2</span> Table properties</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Property</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pipelines.reset.allowed</code></td>
+<td><code>false</code> exempts a table from full refreshes: a full
+refresh of it is downgraded to an ordinary refresh.</td>
+</tr>
+<tr>
+<td><code>pipelines.autocdc.keyColumnNames</code>,
+<code>pipelines.autocdc.scdType</code></td>
+<td>Recorded on an AutoCDC target by its flow; see the AutoCDC
+chapter.</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="16.3" id="spec-fields"><span
+class="header-section-number">16.3</span> Spec fields</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>The pipeline’s name. Required.</td>
+</tr>
+<tr>
+<td><code>storage</code></td>
+<td>The storage root, an absolute URI with a scheme. Required.</td>
+</tr>
+<tr>
+<td><code>catalog</code>, <code>database</code>
+(<code>schema</code>)</td>
+<td>Where unqualified names belong.</td>
+</tr>
+<tr>
+<td><code>configuration</code></td>
+<td>Spark SQL settings, as strings.</td>
+</tr>
+<tr>
+<td><code>libraries[].glob.include</code></td>
+<td>Source file patterns, relative to the spec.</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="16.4" id="tool-options"><span
+class="header-section-number">16.4</span> Tool options</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Command and option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>run --spec PATH</code></td>
+<td>The spec file; otherwise <code>spark-pipeline.yaml</code> or
+<code>.yml</code> in the current directory.</td>
+</tr>
+<tr>
+<td><code>run --refresh a,b</code></td>
+<td>Refresh only these datasets.</td>
+</tr>
+<tr>
+<td><code>run --full-refresh a,b</code></td>
+<td>Reset and recompute these datasets.</td>
+</tr>
+<tr>
+<td><code>run --full-refresh-all</code></td>
+<td>Reset and recompute everything.</td>
+</tr>
+<tr>
+<td><code>dry-run [--spec PATH]</code></td>
+<td>Analyze only.</td>
+</tr>
+<tr>
+<td><code>init --name NAME</code></td>
+<td>Create a sample project.</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="16.5" id="server-settings"><span
+class="header-section-number">16.5</span> Server settings</h2>
+<p>Environment variables of the form
+<code>SAIL_&lt;SECTION&gt;__&lt;KEY&gt;</code>.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Meaning</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SAIL_CATALOG__LIST</code></td>
+<td>The catalogs.</td>
+<td>one memory catalog named <code>sail</code></td>
+</tr>
+<tr>
+<td><code>SAIL_CATALOG__DEFAULT_CATALOG</code></td>
+<td>The catalog sessions start in.</td>
+<td>the first in the list</td>
+</tr>
+<tr>
+<td><code>SAIL_CATALOG__DEFAULT_DATABASE</code></td>
+<td>The database sessions start in.</td>
+<td><code>["default"]</code></td>
+</tr>
+<tr>
+<td><code>SAIL_CATALOG__SHARED_MEMORY</code></td>
+<td>Share memory catalogs across sessions.</td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>SAIL_MODE</code></td>
+<td><code>local</code>, <code>local-cluster</code> or
+<code>kubernetes-cluster</code>.</td>
+<td><code>local</code></td>
+</tr>
+<tr>
+<td><code>SAIL_EXECUTION__DEFAULT_PARALLELISM</code></td>
+<td>Partitions per query.</td>
+<td>the number of cores</td>
+</tr>
+<tr>
+<td><code>SAIL_RUNTIME__STACK_SIZE</code></td>
+<td>Runtime thread stack size in bytes.</td>
+<td>the runtime’s default</td>
+</tr>
+<tr>
+<td><code>SAIL_EXECUTION__FILE_LISTING_CACHE__TYPE</code></td>
+<td>An optional file-listing cache.</td>
+<td><code>none</code></td>
+</tr>
+<tr>
+<td><code>SAIL_EXECUTION__FILE_LISTING_CACHE__TTL</code></td>
+<td>Its entries’ lifetime in seconds.</td>
+<td><code>1800</code></td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="16.6" id="source-options"><span
+class="header-section-number">16.6</span> Source options</h2>
+<p>Delta source options (<code>ignoreDeletes</code>,
+<code>ignoreChanges</code>, <code>skipChangeCommits</code>,
+<code>startingVersion</code>, <code>startingTimestamp</code>,
+<code>readChangeFeed</code>, <code>excludeRegex</code>,
+<code>maxFilesPerTrigger</code>, <code>maxBytesPerTrigger</code>,
+<code>withEventTimeOrder</code>) are in the chapter on sources. Iggy
+source options (<code>url</code>, <code>stream</code>,
+<code>topic</code>, <code>timeout_ms</code>) are in the Iggy chapter.
+ORC write options (<code>compression</code>, <code>orc.compress</code>)
+are in the chapter on sources.</p>
+</body>
+</html>

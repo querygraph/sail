@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov and Sail Contributors" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="The manual for Sail Declarative Pipelines, Sail’s implementation of Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines tool, with batch, streaming tables, AutoCDC and Apache Iggy." />
+  <title>The demo</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-017.html" accesskey="n" rel="next">Appendix: configuration</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-015.html" accesskey="p" rel="previous">Differences from Spark</a>
+</span>
+</div>
+</nav>
+<h1 data-number="15" id="the-demo"><span
+class="header-section-number">15</span> The demo</h1>
+<p>The Sail repository carries a demo at
+<code>examples/declarative-pipelines/</code>. It runs real pipeline
+projects through the unchanged <code>spark-pipelines</code> tool against
+a Sail server, then checks every result through a Spark Connect session
+of its own and prints PASS or FAIL for each check. Its exit status is 0
+only when every check passed. It is the proof that the features in this
+manual work together, on one machine, after a checkout and a build.</p>
+<h2 data-number="15.1" id="running-it"><span
+class="header-section-number">15.1</span> Running it</h2>
+<p>From the repository root, after
+<code>cargo build --release -p sail-cli</code> and a Python environment
+with <code>pyspark[connect]==4.2.1</code> and <code>pyyaml</code>:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="va">PYTHON</span><span class="op">=</span>.venv/bin/python <span class="ex">examples/declarative-pipelines/run.sh</span></span></code></pre></div>
+<p>With an Apache Iggy broker, the Iggy checks run too:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="va">IGGY_SERVER_BINARY</span><span class="op">=</span>/path/to/iggy-server <span class="va">PYTHON</span><span class="op">=</span>.venv/bin/python <span class="ex">examples/declarative-pipelines/run.sh</span></span></code></pre></div>
+<p>Without a broker those checks are reported as SKIP, never as PASS.
+The run takes a few minutes. It works in a new temporary directory,
+deleted when every check passes; <code>--keep</code> or
+<code>--workdir DIR</code> keeps it, with the server and tool logs.</p>
+<p><code>run.sh</code> starts the server with
+<code>SAIL_CATALOG__SHARED_MEMORY=true</code>, so the tool’s session and
+the checking session see one catalog. It also unblocks
+<code>SIGINT</code> before starting, so the server can be stopped at the
+end; a server started from a shell that blocks the signal cannot be.</p>
+<h2 data-number="15.2" id="the-projects"><span
+class="header-section-number">15.2</span> The projects</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Project</th>
+<th>File</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>retail</code></td>
+<td><code>orders.sql</code></td>
+<td>A streaming table over a table, a materialized view, a temporary
+view, a persisted view, comments.</td>
+</tr>
+<tr>
+<td></td>
+<td><code>sources.py</code></td>
+<td>An ORC materialized view, JSON-file and Delta streaming sources, two
+append flows into one streaming table.</td>
+</tr>
+<tr>
+<td></td>
+<td><code>cdc.py</code></td>
+<td>AutoCDC from a JSON change feed into a Delta table, with deletes and
+sequencing.</td>
+</tr>
+<tr>
+<td><code>broken</code></td>
+<td><code>broken.sql</code></td>
+<td>A graph with an unresolved column.</td>
+</tr>
+<tr>
+<td><code>iggy</code></td>
+<td><code>iggy.py</code></td>
+<td>A streaming table and an AutoCDC target reading one Iggy topic.</td>
+</tr>
+</tbody>
+</table>
+<p>The driver, <code>demo.py</code>, writes each project’s spec with the
+server’s address and fills in the <code>{{...}}</code> placeholders in
+the Python files with paths in its work directory. The project files are
+otherwise ordinary SDP sources.</p>
+<h2 data-number="15.3" id="the-steps"><span
+class="header-section-number">15.3</span> The steps</h2>
+<ol type="1">
+<li><strong>Setup.</strong> Two source tables
+(<code>demo.orders_raw</code>, <code>demo.customers_raw</code>), a
+directory of JSON click files, a directory of JSON change files, and a
+Delta table.</li>
+<li><strong>Dry run.</strong> The graph is analyzed and no dataset is
+created.</li>
+<li><strong>First run.</strong> Every dataset is created and checked:
+the streaming table read its source; the materialized view aggregates
+it; the temporary view feeds a count but is not published; the persisted
+view is queryable; comments are published; the ORC view is stored as
+<code>.orc</code> files; the JSON and Delta sources were read; the two
+append flows filled one table; AutoCDC applied the change feed, with the
+later sequence winning.</li>
+<li><strong>Second run.</strong> A new order, a new click file, a new
+Delta commit and new changes arrive. Each streaming table appended only
+what was new; the materialized view was recomputed; AutoCDC applied a
+delete and an insert and ignored an out-of-order update.</li>
+<li><strong>Third run.</strong> With no new data, every streaming table
+and the AutoCDC target are unchanged.</li>
+<li><strong>Selective refresh.</strong>
+<code>run --refresh daily_revenue</code> recomputes that view from the
+current <code>orders</code> and leaves <code>orders</code> alone; a
+normal run then picks up the waiting order.</li>
+<li><strong>Full refresh.</strong> After the source table is
+overwritten, <code>run --full-refresh-all</code> rebuilds every
+streaming table from its sources and replays the change feed to the same
+AutoCDC state.</li>
+<li><strong>Broken graph.</strong> The run fails with
+<code>UNRESOLVED_COLUMN</code>, and the valid dataset in the same graph
+is not created either.</li>
+<li><strong>Iggy.</strong> Three runs over one topic: the first reads
+it; the second reads only the new messages, applying a delete and an
+insert and ignoring a stale update; the third reads nothing.</li>
+<li><strong>Shutdown.</strong> The server stops cleanly on
+<code>SIGINT</code>.</li>
+</ol>
+<p>At the milestone the demo reports 48 checks passed, 0 failed, 0
+skipped with a broker.</p>
+<h2 data-number="15.4" id="what-it-found"><span
+class="header-section-number">15.4</span> What it found</h2>
+<p>The demo’s first run failed every AutoCDC step: Sail’s default
+warehouse is the relative path <code>spark-warehouse</code>, and the
+AutoCDC commit path could not turn a relative location into a URL. No
+test had seen it, because every test fixture sets an absolute warehouse.
+The fix resolves the location the way Delta’s own table source does. It
+is a good example of what the demo is for: it runs the configuration a
+user would, not the one the tests do.</p>
+</body>
+</html>

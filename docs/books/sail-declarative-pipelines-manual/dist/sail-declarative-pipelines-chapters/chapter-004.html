@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov and Sail Contributors" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="The manual for Sail Declarative Pipelines, Sail’s implementation of Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines tool, with batch, streaming tables, AutoCDC and Apache Iggy." />
+  <title>Projects and specs</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-005.html" accesskey="n" rel="next">Python datasets</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-003.html" accesskey="p" rel="previous">Getting started</a>
+</span>
+</div>
+</nav>
+<h1 data-number="3" id="projects-and-specs"><span
+class="header-section-number">3</span> Projects and specs</h1>
+<p>A pipeline project is a directory with a spec file and the source
+files it names. The <code>spark-pipelines</code> tool reads the spec,
+registers every dataset and flow it finds in the sources, and starts a
+run on the server.</p>
+<h2 data-number="3.1" id="the-spec-file"><span
+class="header-section-number">3.1</span> The spec file</h2>
+<p>The spec is a YAML file. Named <code>spark-pipeline.yaml</code> (or
+<code>.yml</code>) in the current directory, the tool finds it on its
+own; under any other name, pass it with <code>--spec</code>:</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">name</span><span class="kw">:</span><span class="at"> retail</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="fu">catalog</span><span class="kw">:</span><span class="at"> sail</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="fu">database</span><span class="kw">:</span><span class="at"> demo</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="fu">storage</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;file:///data/pipelines/retail&quot;</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="fu">configuration</span><span class="kw">:</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">&quot;spark.remote&quot;</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;sc://localhost:15002&quot;</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="fu">libraries</span><span class="kw">:</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">- </span><span class="fu">glob</span><span class="kw">:</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">include</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;transformations/**&quot;</span></span></code></pre></div>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>The pipeline’s name, used in messages.</td>
+</tr>
+<tr>
+<td><code>storage</code></td>
+<td>yes</td>
+<td>Where the pipeline keeps its state: checkpoints and the files of
+memory sinks. An absolute URI with a scheme (<code>file://</code>,
+<code>s3://</code>, …).</td>
+</tr>
+<tr>
+<td><code>catalog</code></td>
+<td>no</td>
+<td>The catalog that unqualified dataset names belong to. Defaults to
+the session’s current catalog.</td>
+</tr>
+<tr>
+<td><code>database</code> (or <code>schema</code>)</td>
+<td>no</td>
+<td>The database that unqualified dataset names belong to. Defaults to
+the session’s current database.</td>
+</tr>
+<tr>
+<td><code>configuration</code></td>
+<td>no</td>
+<td>Spark SQL settings applied to the session, as strings.
+<code>spark.remote</code> here tells the tool where the server is.</td>
+</tr>
+<tr>
+<td><code>libraries</code></td>
+<td>no</td>
+<td>Where the sources are. Each entry is a <code>glob</code> with an
+<code>include</code> pattern, relative to the spec file.</td>
+</tr>
+</tbody>
+</table>
+<p>A field outside this list is an error
+(<code>PIPELINE_SPEC_UNEXPECTED_FIELD</code>). <code>name</code> and
+<code>storage</code> are required.</p>
+<p>The storage root must be absolute and carry a scheme. A bare path
+such as <code>/data/pipelines</code> is refused at the start of the
+run:</p>
+<pre class="text"><code>[PIPELINE_STORAGE_ROOT_INVALID] Pipeline storage root must be an absolute path
+with a URI scheme (e.g., file://, s3a://, hdfs://). Got: `/data/pipelines`.</code></pre>
+<h2 data-number="3.2" id="source-files"><span
+class="header-section-number">3.2</span> Source files</h2>
+<p>The <code>include</code> patterns select the source files. Two kinds
+are read:</p>
+<ul>
+<li><strong>Python files</strong> (<code>*.py</code>) are executed with
+<code>pyspark.pipelines</code> imported as <code>dp</code> and a
+<code>spark</code> session available. The decorators and functions they
+call register datasets and flows. The chapter on Python datasets
+describes them.</li>
+<li><strong>SQL files</strong> (<code>*.sql</code>) are parsed and
+registered statement by statement. The chapter on SQL pipeline files
+describes what they may contain.</li>
+</ul>
+<p>A project may mix both. A dataset defined in SQL can be read from
+Python and the other way round, because registration happens before any
+query runs and names are resolved against the whole graph.</p>
+<h2 data-number="3.3" id="where-the-server-is-1"><span
+class="header-section-number">3.3</span> Where the server is</h2>
+<p>The tool connects through Spark Connect. It finds the server in one
+of two ways:</p>
+<ul>
+<li><code>spark.remote</code> in the spec’s <code>configuration</code>,
+as above;</li>
+<li>the <code>SPARK_REMOTE</code> environment variable, for example
+<code>SPARK_REMOTE=sc://localhost:15002</code>.</li>
+</ul>
+<p>The spec wins when both are set.</p>
+<h2 data-number="3.4" id="layout-of-the-storage-root"><span
+class="header-section-number">3.4</span> Layout of the storage root</h2>
+<p>Under the storage root the pipeline writes:</p>
+<pre class="text"><code>&lt;storage&gt;/_checkpoints/&lt;catalog&gt;/&lt;database&gt;/&lt;table&gt;/&lt;flow&gt;/&lt;n&gt;/state.json
+&lt;storage&gt;/_checkpoints/&lt;catalog&gt;/&lt;database&gt;/&lt;table&gt;/&lt;flow&gt;/&lt;n&gt;/state/&lt;batch&gt;/...
+&lt;storage&gt;/_memory_sinks/&lt;flow&gt;/...</code></pre>
+<ul>
+<li><code>_checkpoints</code> holds one directory per flow that reads
+streaming sources. Each full refresh opens a new numbered version
+<code>&lt;n&gt;</code>; ordinary runs continue the latest one.
+<code>state.json</code> records the files, Delta versions and offsets
+already read, the batch in progress if any, and for a windowed aggregate
+the watermark. The <code>state/&lt;batch&gt;</code> directories hold the
+rows of windows still open.</li>
+<li><code>_memory_sinks</code> holds the rows written to a
+<code>memory</code> sink, which the session reads back through a
+temporary view named after the flow.</li>
+</ul>
+<p>Nothing else is written there. The datasets themselves live in the
+catalog’s warehouse.</p>
+<h2 data-number="3.5" id="names"><span
+class="header-section-number">3.5</span> Names</h2>
+<p>A dataset’s name may have one, two or three parts:
+<code>orders</code>, <code>demo.orders</code>,
+<code>sail.demo.orders</code>. One- and two-part names are completed
+with the spec’s <code>catalog</code> and <code>database</code>. Names
+are case-insensitive: <code>Orders</code> and <code>orders</code> are
+the same dataset, and the catalog stores the lowercase form.</p>
+<p>A flow has a one-part name. A dataset defined with a query gets a
+flow of the same name; an append flow is named after its function, or by
+<code>name=</code>.</p>
+<p>Two datasets with the same name in one project is an error
+(<code>PIPELINE_DUPLICATE_IDENTIFIERS.OUTPUT</code>), as are two flows
+with the same name
+(<code>PIPELINE_DUPLICATE_IDENTIFIERS.FLOW</code>).</p>
+</body>
+</html>

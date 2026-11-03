@@ -5,7 +5,7 @@
   <meta name="generator" content="pandoc" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
   <meta name="author" content="Alexy Khrabrov ∈ LakeSail Team" />
-  <meta name="dcterms.date" content="2026-11-02" />
+  <meta name="dcterms.date" content="2026-11-03" />
   <meta name="description" content="How Sail implements Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines CLI, with batch, streaming, Apache Iggy and AutoCDC, and how it was verified against Spark." />
   <title>Summary</title>
   <style>
@@ -142,12 +142,14 @@ changed</td>
 <td>13 passed</td>
 </tr>
 <tr>
-<td>Whole Spark Python tree (CDC gate, <code>44b2f5f73</code>)</td>
-<td>12133 passed, 0 errors</td>
+<td>Whole Spark Python tree (CDC gate on the milestone commit
+<code>7d6bc1917</code>)</td>
+<td>12134 passed, 99 skipped, 795 xfailed, 0 errors</td>
 </tr>
 <tr>
-<td>Local-cluster / Iceberg / Hive / Unity (CDC gate)</td>
-<td>95 / 86 / 88 / 230 passed</td>
+<td>Local-cluster / Iceberg / Hive / Unity (CDC gate on
+<code>7d6bc1917</code>)</td>
+<td>96 / 87 / 89 / 230 passed</td>
 </tr>
 <tr>
 <td>Crash seeds</td>

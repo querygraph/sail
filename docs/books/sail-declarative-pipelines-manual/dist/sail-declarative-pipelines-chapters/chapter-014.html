@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov and Sail Contributors" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="The manual for Sail Declarative Pipelines, Sail’s implementation of Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines tool, with batch, streaming tables, AutoCDC and Apache Iggy." />
+  <title>Operations</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-015.html" accesskey="n" rel="next">Differences from Spark</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-013.html" accesskey="p" rel="previous">AutoCDC targets in Unity Catalog and Iceberg</a>
+</span>
+</div>
+</nav>
+<h1 data-number="13" id="operations"><span
+class="header-section-number">13</span> Operations</h1>
+<p>This chapter covers running the server that pipelines run on: its
+settings, execution modes, sessions, and shutdown.</p>
+<h2 data-number="13.1" id="starting-a-server"><span
+class="header-section-number">13.1</span> Starting a server</h2>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">sail</span> spark server <span class="at">--port</span> 15002</span></code></pre></div>
+<p>Settings are environment variables of the form
+<code>SAIL_&lt;SECTION&gt;__&lt;KEY&gt;</code>, or the matching keys in
+Sail’s configuration file. The ones a pipeline deployment meets:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SAIL_CATALOG__LIST</code>,
+<code>SAIL_CATALOG__DEFAULT_CATALOG</code>,
+<code>SAIL_CATALOG__DEFAULT_DATABASE</code>,
+<code>SAIL_CATALOG__SHARED_MEMORY</code></td>
+<td>The catalogs; see the catalogs chapter.</td>
+</tr>
+<tr>
+<td><code>SAIL_MODE</code></td>
+<td><code>local</code> (the default): queries run in the server process.
+<code>local-cluster</code>: the server starts worker processes on the
+same machine and runs queries across them.
+<code>kubernetes-cluster</code>: workers are Kubernetes pods.</td>
+</tr>
+<tr>
+<td><code>SAIL_EXECUTION__DEFAULT_PARALLELISM</code></td>
+<td>How many partitions a query runs with.</td>
+</tr>
+<tr>
+<td><code>SAIL_RUNTIME__STACK_SIZE</code></td>
+<td>The stack size of the runtime’s threads, in bytes. Deep plans, such
+as a wide AutoCDC merge, need <code>16777216</code>.</td>
+</tr>
+<tr>
+<td><code>SAIL_IGGY_SERVER_BINARY</code></td>
+<td>Only for Sail’s own test suite: where to find an Iggy broker to
+start.</td>
+</tr>
+</tbody>
+</table>
+<p>The warehouse, where the memory catalog keeps table data, is
+<code>spark-warehouse</code> under the server’s working directory, or
+the <code>spark.sql.warehouse.dir</code> of the session.</p>
+<h2 data-number="13.2" id="cluster-mode"><span
+class="header-section-number">13.2</span> Cluster mode</h2>
+<p>In <code>local-cluster</code> and <code>kubernetes-cluster</code>
+modes a pipeline runs the same way: the server is the driver, analysis
+and the catalog stay on it, and the queries of each flow run on the
+workers. Every behavior in this manual was run in
+<code>local-cluster</code> mode as well as <code>local</code>.</p>
+<p>Two things differ for the operator:</p>
+<ul>
+<li>A streaming table’s checkpoint is written by the driver; the workers
+never touch it.</li>
+<li>When a session that used checkpoints is released, the driver asks
+the workers to stop. If it cannot confirm that every worker writing on
+the session’s behalf has stopped, it does not delete the session’s
+checkpoint files, and the release reports that failure. The files are
+left for the next run, and the server exits 1 at shutdown. Never
+deleting what a live writer may still be using is the rule; the message
+says which prefix was kept.</li>
+</ul>
+<p>A worker that is told to stop finishes within 5 seconds, and a driver
+waits at most 30 seconds for its workers. These bounds are backstops; a
+stop that hits them is logged.</p>
+<h2 data-number="13.3" id="sessions"><span
+class="header-section-number">13.3</span> Sessions</h2>
+<p>Each <code>spark-pipelines</code> invocation, and each
+<code>SparkSession.builder.remote(...)</code> in Python, is a Spark
+Connect session. Sessions are independent: a graph registered in one is
+not visible from another, and a run belongs to the session that started
+it.</p>
+<p>Closing a session (<code>spark.stop()</code>, or the tool exiting)
+stops its run, as the chapter on running describes, and cleans up what
+the session owned: its checkpoint writers, its memory sinks’ files, its
+streams. A later request on a released session is refused:</p>
+<pre class="text"><code>[INVALID_HANDLE.SESSION_CLOSED] The handle &lt;id&gt; is invalid. Session was closed. SQLSTATE: HY000</code></pre>
+<p>Releasing a session twice, or releasing one the server never saw,
+succeeds.</p>
+<h2 data-number="13.4" id="shutdown"><span
+class="header-section-number">13.4</span> Shutdown</h2>
+<p><code>SIGINT</code> (Ctrl-C) stops the server. It closes every
+session, waits for their cleanups, and stops the drivers and workers.
+The exit status is 0 when every cleanup succeeded. A cleanup that
+failed, for example because a checkpoint prefix could not be confirmed
+deletable, makes the exit status 1, with the failure in the log; nothing
+is deleted on a guess.</p>
+<p>A job failure that was already reported to its query is not a
+shutdown failure: it is logged, not repeated. A commit whose outcome is
+unknown is reported, since only the operator can decide what to do with
+it.</p>
+<p>A server started from a shell that blocks <code>SIGINT</code>
+inherits the block and cannot be stopped with it; send
+<code>SIGTERM</code>, or start it from a shell that does not block the
+signal.</p>
+<h2 data-number="13.5" id="logs"><span
+class="header-section-number">13.5</span> Logs</h2>
+<p>The server logs to standard error. A pipeline run logs its flows’
+events at <code>INFO</code>, and the events are also sent to the tool,
+which prints them. Session creation and removal are logged by the
+session manager; a canceled job in cluster mode is logged by the driver
+with its job id.</p>
+<h2 data-number="13.6" id="storage"><span
+class="header-section-number">13.6</span> Storage</h2>
+<p>The pipeline’s storage root (<code>storage</code> in the spec) and
+the warehouse may be local directories or object stores
+(<code>s3://</code> and the others Sail’s object store support covers).
+Checkpoint writes are single atomic puts, which is what makes a crash
+mid-run recoverable on both. Remote warehouses are tested against an
+S3-compatible store; AutoCDC’s own state directory is described in its
+chapter.</p>
+</body>
+</html>

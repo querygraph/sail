@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov and Sail Contributors" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="The manual for Sail Declarative Pipelines, Sail’s implementation of Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines tool, with batch, streaming tables, AutoCDC and Apache Iggy." />
+  <title>Python datasets</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-006.html" accesskey="n" rel="next">SQL pipeline files</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-004.html" accesskey="p" rel="previous">Projects and specs</a>
+</span>
+</div>
+</nav>
+<h1 data-number="4" id="python-datasets"><span
+class="header-section-number">4</span> Python datasets</h1>
+<p>A Python source file defines datasets with the decorators and
+functions of <code>pyspark.pipelines</code>, imported as
+<code>dp</code>. The file runs once, at registration, with a
+<code>spark</code> session in scope. Each decorated function is a
+<strong>query function</strong>: it returns a DataFrame, and the
+DataFrame’s plan is what the dataset is filled from. The function body
+runs at registration; the query runs later, during the run.</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> pyspark <span class="im">import</span> pipelines <span class="im">as</span> dp</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> pyspark.sql <span class="im">import</span> functions <span class="im">as</span> F</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="at">@dp.materialized_view</span>(comment<span class="op">=</span><span class="st">&quot;Customers, written as ORC&quot;</span>, <span class="bu">format</span><span class="op">=</span><span class="st">&quot;orc&quot;</span>)</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> customers_orc():</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> spark.read.table(<span class="st">&quot;demo.customers_raw&quot;</span>)</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="at">@dp.table</span>(comment<span class="op">=</span><span class="st">&quot;Click events from JSON files landing in a directory&quot;</span>)</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> clicks():</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> spark.readStream.<span class="bu">format</span>(<span class="st">&quot;json&quot;</span>).schema(<span class="st">&quot;user INT, page STRING&quot;</span>).load(<span class="st">&quot;/data/clicks&quot;</span>)</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a><span class="at">@dp.temporary_view</span></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> large_orders():</span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> spark.read.table(<span class="st">&quot;orders&quot;</span>).where(<span class="st">&quot;amount &gt;= 100&quot;</span>)</span></code></pre></div>
+<h2 data-number="4.1" id="decorators"><span
+class="header-section-number">4.1</span> Decorators</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Decorator</th>
+<th>Defines</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>@dp.materialized_view</code></td>
+<td>A materialized view, recomputed by every run. Its query reads batch
+sources.</td>
+</tr>
+<tr>
+<td><code>@dp.table</code></td>
+<td>A streaming table when the query reads a stream
+(<code>spark.readStream</code>), otherwise a materialized view.</td>
+</tr>
+<tr>
+<td><code>@dp.temporary_view</code></td>
+<td>A private view other datasets read; never published.</td>
+</tr>
+<tr>
+<td><code>@dp.append_flow(target=...)</code></td>
+<td>A flow that appends its query’s rows to a streaming table or a
+sink.</td>
+</tr>
+</tbody>
+</table>
+<p>Each decorator can be used bare (<code>@dp.table</code>) or with
+options (<code>@dp.table(name="st", ...)</code>). Without
+<code>name=</code>, the function’s name is the dataset’s name.</p>
+<p><code>@dp.materialized_view</code>, <code>@dp.table</code> and
+<code>dp.create_streaming_table</code> accept:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>The dataset’s name, one to three parts.</td>
+</tr>
+<tr>
+<td><code>comment</code></td>
+<td>Published as the table’s comment.</td>
+</tr>
+<tr>
+<td><code>spark_conf</code></td>
+<td>Spark SQL settings for this dataset’s flow, as a dict of
+strings.</td>
+</tr>
+<tr>
+<td><code>table_properties</code></td>
+<td>Properties stored on the table.</td>
+</tr>
+<tr>
+<td><code>partition_cols</code></td>
+<td>Columns to partition the table by.</td>
+</tr>
+<tr>
+<td><code>cluster_by</code></td>
+<td>Clustering columns, recorded on the table. Not together with
+<code>partition_cols</code>.</td>
+</tr>
+<tr>
+<td><code>schema</code></td>
+<td>A declared schema, as a DDL string
+(<code>"id INT, name STRING"</code>) or a <code>StructType</code>. The
+query must match it.</td>
+</tr>
+<tr>
+<td><code>format</code></td>
+<td>The table’s format: <code>parquet</code> (the default),
+<code>delta</code>, <code>orc</code>, and the other formats Sail
+writes.</td>
+</tr>
+</tbody>
+</table>
+<p><code>@dp.temporary_view</code> accepts <code>name</code>,
+<code>comment</code> and <code>spark_conf</code>.
+<code>@dp.append_flow</code> accepts <code>target</code>,
+<code>name</code> and <code>spark_conf</code>.</p>
+<h2 data-number="4.2" id="streaming-tables-and-append-flows"><span
+class="header-section-number">4.2</span> Streaming tables and append
+flows</h2>
+<p>A streaming table with one query is a <code>@dp.table</code> whose
+function reads a stream:</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="at">@dp.table</span>(<span class="bu">format</span><span class="op">=</span><span class="st">&quot;delta&quot;</span>)</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> delta_events():</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> spark.readStream.<span class="bu">format</span>(<span class="st">&quot;delta&quot;</span>).load(<span class="st">&quot;/data/events&quot;</span>)</span></code></pre></div>
+<p>A streaming table filled by several flows is created without a query
+and then targeted:</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>dp.create_streaming_table(<span class="st">&quot;all_activity&quot;</span>, comment<span class="op">=</span><span class="st">&quot;Orders and clicks, one row per event&quot;</span>)</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="at">@dp.append_flow</span>(target<span class="op">=</span><span class="st">&quot;all_activity&quot;</span>)</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> activity_from_orders():</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> spark.readStream.table(<span class="st">&quot;orders&quot;</span>).select(</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>        F.col(<span class="st">&quot;customer_id&quot;</span>).alias(<span class="st">&quot;user&quot;</span>), F.lit(<span class="st">&quot;order&quot;</span>).alias(<span class="st">&quot;kind&quot;</span>)</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a><span class="at">@dp.append_flow</span>(target<span class="op">=</span><span class="st">&quot;all_activity&quot;</span>)</span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> activity_from_clicks():</span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> spark.readStream.table(<span class="st">&quot;clicks&quot;</span>).select(<span class="st">&quot;user&quot;</span>, F.lit(<span class="st">&quot;click&quot;</span>).alias(<span class="st">&quot;kind&quot;</span>))</span></code></pre></div>
+<p>Each flow matches the target’s columns by name. A flow is named after
+its function, or by <code>name=</code>; two flows may not share a
+name.</p>
+<p>The <code>once</code> option of <code>append_flow</code> is not
+supported, in Sail as in Spark 4.2.1
+(<code>DEFINE_FLOW_ONCE_OPTION_NOT_SUPPORTED</code>).</p>
+<h2 data-number="4.3" id="reading-other-datasets"><span
+class="header-section-number">4.3</span> Reading other datasets</h2>
+<p>Inside a query function, other datasets of the pipeline are read by
+name, like tables:</p>
+<ul>
+<li><code>spark.read.table("orders")</code> reads a dataset as a batch
+source.</li>
+<li><code>spark.readStream.table("orders")</code> reads it
+incrementally, which makes the reading dataset a streaming table.</li>
+<li><code>spark.readStream.format("json").schema(...).load(path)</code>
+reads files arriving in a directory;
+<code>format("delta").load(path)</code> reads a Delta table
+incrementally; <code>format("iggy")</code> reads an Apache Iggy topic.
+The chapters on sources and on Iggy have the options.</li>
+</ul>
+<p>Names resolve against the pipeline first, then the catalog. A name
+the pipeline does not define is a catalog table.</p>
+<h2 data-number="4.4" id="sinks"><span
+class="header-section-number">4.4</span> Sinks</h2>
+<p>A sink is an external destination for streaming flows:</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>dp.create_sink(<span class="st">&quot;events_out&quot;</span>, <span class="bu">format</span><span class="op">=</span><span class="st">&quot;parquet&quot;</span>, options<span class="op">=</span>{<span class="st">&quot;path&quot;</span>: <span class="st">&quot;/data/out/events&quot;</span>})</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="at">@dp.append_flow</span>(target<span class="op">=</span><span class="st">&quot;events_out&quot;</span>)</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> to_events_out():</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> spark.readStream.table(<span class="st">&quot;all_activity&quot;</span>)</span></code></pre></div>
+<p><code>format</code> and <code>options</code> are the sink’s format
+and its options; a file format needs a <code>path</code>. Two sinks need
+no path: <code>memory</code>, whose rows the session can read back
+through a temporary view named after the flow, and <code>console</code>,
+whose rows are read and discarded.</p>
+<h2 data-number="4.5" id="what-a-query-function-may-do"><span
+class="header-section-number">4.5</span> What a query function may
+do</h2>
+<p>A query function describes a query; it must not run one. Inside it,
+<code>spark.sql()</code> is allowed, and any DataFrame method that
+builds a plan. A method that needs the server to analyze or execute the
+plan, such as <code>.schema</code>, <code>.columns</code>,
+<code>.collect()</code>, <code>.count()</code> or <code>.show()</code>,
+is refused:</p>
+<pre class="text"><code>[ATTEMPT_ANALYSIS_IN_PIPELINE_QUERY_FUNCTION] ...</code></pre>
+<p>Likewise <code>schema=</code> must be a DDL string or a
+<code>StructType</code> built in Python, not a schema obtained by
+analyzing another DataFrame.</p>
+<h2 data-number="4.6" id="per-flow-settings"><span
+class="header-section-number">4.6</span> Per-flow settings</h2>
+<p><code>spark_conf</code> applies to that dataset’s flow. A flow that
+reads a temporary view inherits the view’s <code>spark_conf</code> too;
+if the two give one key different values, the run fails with
+<code>DUPLICATE_FLOW_SQL_CONF</code>. Tables contribute nothing to what
+reads them. The setting most often used this way is the retry count:</p>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="at">@dp.table</span>(spark_conf<span class="op">=</span>{<span class="st">&quot;spark.sql.pipelines.maxFlowRetryAttempts&quot;</span>: <span class="st">&quot;0&quot;</span>})</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> st():</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> spark.readStream.table(<span class="st">&quot;src&quot;</span>)</span></code></pre></div>
+<h2 data-number="4.7" id="mixing-with-sql"><span
+class="header-section-number">4.7</span> Mixing with SQL</h2>
+<p>A dataset defined in a SQL file is read from Python by its name, and
+the other way round. Registration happens for every file before the run,
+so order between files does not matter.</p>
+</body>
+</html>

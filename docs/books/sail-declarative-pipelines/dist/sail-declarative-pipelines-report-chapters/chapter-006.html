@@ -5,7 +5,7 @@
   <meta name="generator" content="pandoc" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
   <meta name="author" content="Alexy Khrabrov ∈ LakeSail Team" />
-  <meta name="dcterms.date" content="2026-11-02" />
+  <meta name="dcterms.date" content="2026-11-03" />
   <meta name="description" content="How Sail implements Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines CLI, with batch, streaming, Apache Iggy and AutoCDC, and how it was verified against Spark." />
   <title>Verification methodology</title>
   <style>
@@ -142,8 +142,8 @@ never collected because duckdb and jedi were missing, and other tests
 failed for harness reasons. <code>run-full.py</code> pins the optional
 test dependencies as in <code>pyproject.toml</code>. Under it, upstream
 <code>0ba425c03</code> has 0 failures and 12 JVM fixture errors. The CDC
-lane’s gate on <code>44b2f5f73</code> ran the whole tree: 12133 passed,
-0 errors.</p>
+lane’s gate on the milestone commit <code>7d6bc1917</code> ran the whole
+tree: 12134 passed, 99 skipped, 795 xfailed, 0 errors.</p>
 <h2 data-number="5.5" id="spark-oracle-runs"><span
 class="header-section-number">5.5</span> Spark oracle runs</h2>
 <p><strong>Batch.</strong> Batch test files are identical on
@@ -241,22 +241,22 @@ class="header-section-number">5.7</span> Results on the root</h2>
 </tr>
 <tr>
 <td>Whole Spark Python tree</td>
-<td><code>44b2f5f73</code></td>
-<td>12133 passed, 0 errors</td>
+<td><code>7d6bc1917</code></td>
+<td>12134 passed, 0 errors</td>
 </tr>
 <tr>
 <td>Local-cluster</td>
-<td><code>44b2f5f73</code></td>
-<td>95 passed</td>
+<td><code>7d6bc1917</code></td>
+<td>96 passed</td>
 </tr>
 <tr>
 <td>Iceberg / Hive / Unity</td>
-<td><code>44b2f5f73</code></td>
-<td>86 / 88 / 230 passed</td>
+<td><code>7d6bc1917</code></td>
+<td>87 / 89 / 230 passed</td>
 </tr>
 <tr>
 <td>Crash seeds</td>
-<td><code>44b2f5f73</code></td>
+<td><code>7d6bc1917</code></td>
 <td>every recovery exact</td>
 </tr>
 </tbody>

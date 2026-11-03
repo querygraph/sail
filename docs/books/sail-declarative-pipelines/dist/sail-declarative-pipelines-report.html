@@ -5,7 +5,7 @@
   <meta name="generator" content="pandoc 3.12.1" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
   <meta name="author" content="Alexy Khrabrov ∈ LakeSail Team" />
-  <meta name="dcterms.date" content="2026-11-02" />
+  <meta name="dcterms.date" content="2026-11-03" />
   <meta name="description" content="How Sail implements Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines CLI, with batch, streaming, Apache Iggy and AutoCDC, and how it was verified against Spark." />
   <title>Sail Declarative Pipelines</title>
   <style>
@@ -112,7 +112,7 @@ img { max-width: 100%; height: auto; }
 <p class="subtitle">Spark 4.2.1 Declarative Pipelines on Sail: Technical
 Report, Milestone 1</p>
 <p class="author">Alexy Khrabrov ∈ LakeSail Team</p>
-<p class="date">2026-11-02</p>
+<p class="date">2026-11-03</p>
 </header>
 <nav id="TOC" role="doc-toc">
 <ul>
@@ -282,12 +282,14 @@ changed</td>
 <td>13 passed</td>
 </tr>
 <tr>
-<td>Whole Spark Python tree (CDC gate, <code>44b2f5f73</code>)</td>
-<td>12133 passed, 0 errors</td>
+<td>Whole Spark Python tree (CDC gate on the milestone commit
+<code>7d6bc1917</code>)</td>
+<td>12134 passed, 99 skipped, 795 xfailed, 0 errors</td>
 </tr>
 <tr>
-<td>Local-cluster / Iceberg / Hive / Unity (CDC gate)</td>
-<td>95 / 86 / 88 / 230 passed</td>
+<td>Local-cluster / Iceberg / Hive / Unity (CDC gate on
+<code>7d6bc1917</code>)</td>
+<td>96 / 87 / 89 / 230 passed</td>
 </tr>
 <tr>
 <td>Crash seeds</td>
@@ -1285,11 +1287,13 @@ initialization) for tests. The gate’s <code>crash.py</code> seeds kill
 the process (SIGKILL) at such points; on the CDC gate every recovery was
 exact. Only process death is qualified. Power loss and restore are an
 accepted limit (user decision 19).</p>
-<p><strong>Status of <code>run.rs</code>.</strong> An earlier triggered
-SCD1 run with a local JSON record and no fencing remains in
-<code>autocdc/run.rs</code> for its semantic tests. Its record states
-that boundary in every file. <code>durable.rs</code> is the run that
-execution admits.</p>
+<p><strong>Two runs.</strong> <code>durable.rs</code> runs a fenced
+Delta target under the control store.
+<code>run.rs::run_plain_flow</code> runs a target whose catalog or
+format already orders its commits (Iceberg, catalog-managed Delta such
+as Unity). There the checkpoint is the progress, as in Spark, and a
+replayed batch’s merge is safe because rows win by sequence. A plain
+reset drops and recreates the target and its auxiliary table.</p>
 <h2 data-number="4.10" id="session-lifecycle-shutdown-and-effect-ownership"><span class="header-section-number">4.10</span> Session lifecycle, shutdown
 and effect ownership</h2>
 <p>A pipeline run writes checkpoints and tables under prefixes that
@@ -1598,8 +1602,8 @@ never collected because duckdb and jedi were missing, and other tests
 failed for harness reasons. <code>run-full.py</code> pins the optional
 test dependencies as in <code>pyproject.toml</code>. Under it, upstream
 <code>0ba425c03</code> has 0 failures and 12 JVM fixture errors. The CDC
-lane’s gate on <code>44b2f5f73</code> ran the whole tree: 12133 passed,
-0 errors.</p>
+lane’s gate on the milestone commit <code>7d6bc1917</code> ran the whole
+tree: 12134 passed, 99 skipped, 795 xfailed, 0 errors.</p>
 <h2 data-number="5.5" id="spark-oracle-runs"><span class="header-section-number">5.5</span> Spark oracle runs</h2>
 <p><strong>Batch.</strong> Batch test files are identical on
 <code>df2457e50</code> and on the root. Every non-AutoCDC pipelines
@@ -1694,22 +1698,22 @@ round.</p>
 </tr>
 <tr>
 <td>Whole Spark Python tree</td>
-<td><code>44b2f5f73</code></td>
-<td>12133 passed, 0 errors</td>
+<td><code>7d6bc1917</code></td>
+<td>12134 passed, 0 errors</td>
 </tr>
 <tr>
 <td>Local-cluster</td>
-<td><code>44b2f5f73</code></td>
-<td>95 passed</td>
+<td><code>7d6bc1917</code></td>
+<td>96 passed</td>
 </tr>
 <tr>
 <td>Iceberg / Hive / Unity</td>
-<td><code>44b2f5f73</code></td>
-<td>86 / 88 / 230 passed</td>
+<td><code>7d6bc1917</code></td>
+<td>87 / 89 / 230 passed</td>
 </tr>
 <tr>
 <td>Crash seeds</td>
-<td><code>44b2f5f73</code></td>
+<td><code>7d6bc1917</code></td>
 <td>every recovery exact</td>
 </tr>
 </tbody>

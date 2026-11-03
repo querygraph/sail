@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov and Sail Contributors" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="The manual for Sail Declarative Pipelines, Sail’s implementation of Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines tool, with batch, streaming tables, AutoCDC and Apache Iggy." />
+  <title>Differences from Spark</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-016.html" accesskey="n" rel="next">The demo</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-014.html" accesskey="p" rel="previous">Operations</a>
+</span>
+</div>
+</nav>
+<h1 data-number="14" id="differences-from-spark"><span
+class="header-section-number">14</span> Differences from Spark</h1>
+<p>Sail Declarative Pipelines follows Spark 4.2.1. Every behavior in
+this manual was measured on Spark first, and where Sail differs it is on
+purpose. This chapter lists the differences a user can see.</p>
+<h2 data-number="14.1" id="runs-that-are-stopped"><span
+class="header-section-number">14.1</span> Runs that are stopped</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Spark</th>
+<th>Sail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Interrupting a run cancels the operation; the flows that already
+started run to their end.</td>
+<td>The flows in progress are stopped.</td>
+</tr>
+<tr>
+<td>Releasing a session during a run lets its flows finish.</td>
+<td>The flows are stopped.</td>
+</tr>
+</tbody>
+</table>
+<p>Sail stops the flows because otherwise nothing could stop a run, and
+a server cannot shut down with flows still writing. A stopped flow
+leaves its checkpoint at its last completed batch; the next run
+continues from there.</p>
+<h2 data-number="14.2" id="registration"><span
+class="header-section-number">14.2</span> Registration</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Spark</th>
+<th>Sail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A SQL file whose statement fails keeps the definitions registered
+before it.</td>
+<td>A failed SQL file registers nothing.</td>
+</tr>
+<tr>
+<td>A <code>CREATE MATERIALIZED VIEW</code> or
+<code>CREATE STREAMING TABLE</code> run directly as a query writes the
+<code>INSERT</code> before rejecting the statement.</td>
+<td>The statement is rejected before anything is written.</td>
+</tr>
+<tr>
+<td>Table names with dots or hyphens, <code>`a.b`</code> or
+<code>`my-table`</code>, are refused by the session catalog.</td>
+<td>They are accepted, as everywhere in Sail.</td>
+</tr>
+</tbody>
+</table>
+<p>In each case Spark’s client aborts the run too; the difference is
+what is left behind on the server.</p>
+<h2 data-number="14.3" id="datasets-1"><span
+class="header-section-number">14.3</span> Datasets</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Spark</th>
+<th>Sail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A column added to a streaming table is placed where a Scala
+<code>Map</code> puts it, which varies past four columns.</td>
+<td>Added columns follow the target table’s order.</td>
+</tr>
+<tr>
+<td>A <code>writeStream</code> to the <code>memory</code> sink outside a
+pipeline is supported.</td>
+<td>It is not. Inside a pipeline, a <code>memory</code> sink works.</td>
+</tr>
+<tr>
+<td>Flow failure events are emitted in the order of a Scala
+<code>Map</code>, which is unspecified.</td>
+<td>They are emitted sorted by name, the downstream group before the
+direct one.</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="14.4" id="errors"><span
+class="header-section-number">14.4</span> Errors</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Spark</th>
+<th>Sail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DATA_SOURCE_NOT_FOUND</code> for a missing format reaches the
+client wrapped in <code>TableMaterializationException</code> inside an
+<code>UnknownException</code>.</td>
+<td>The same message, as the error itself.</td>
+</tr>
+<tr>
+<td>The merge error for incompatible column types ends with its
+<code>SQLSTATE</code>.</td>
+<td>The same text; the <code>SQLSTATE</code> suffix is rendered as Spark
+renders it.</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="14.5" id="orc-1"><span
+class="header-section-number">14.5</span> ORC</h2>
+<p>Timestamps are written as ORC <code>TIMESTAMP_INSTANT</code>. Spark’s
+stored type depends on the time zone of the JVM that writes, which a
+Sail worker has no equivalent of. One visible consequence: an instant
+within the one-second window before 1970-01-01 that ORC cannot represent
+fails the write on Sail, where Spark writes it and reads back a wrong
+value.</p>
+<h2 data-number="14.6" id="autocdc-targets"><span
+class="header-section-number">14.6</span> AutoCDC targets</h2>
+<p>Spark 4.2.1 refuses a Delta table as an AutoCDC target
+(<code>AUTOCDC_TARGET_DOES_NOT_SUPPORT_MERGE</code>), because its Delta
+library exposes no row-level operations. Sail accepts Delta targets;
+this is a deliberate extension, and the usual way to run AutoCDC on
+Sail.</p>
+<p>Spark with Iceberg 1.13 refuses three AutoCDC cases that change
+nested types. Sail completes them.</p>
+<h2 data-number="14.7" id="sources-1"><span
+class="header-section-number">14.7</span> Sources</h2>
+<p>Apache Iggy is a source on Sail only; Spark has no Iggy source.</p>
+<h2 data-number="14.8" id="what-is-the-same"><span
+class="header-section-number">14.8</span> What is the same</h2>
+<p>Everything else this manual describes: the registration protocol, the
+validation order and conditions, flow configuration fusion, refresh
+selection, retries, the events, the checkpoint rules of streaming
+tables, the Delta source’s options and conditions, the SCD1 semantics of
+AutoCDC, and the watermark rules of windowed aggregates. The frozen test
+suite ported from Spark, 300 selected public tests and 67 upstream
+tests, runs on every change, and the pipelines test files are rerun on
+Spark itself: at milestone 1, only the differences above fail there.</p>
+</body>
+</html>
