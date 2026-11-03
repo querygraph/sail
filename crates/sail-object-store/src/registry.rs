@@ -16,6 +16,7 @@ use sail_common::runtime::RuntimeHandle;
 use url::Url;
 
 use crate::hugging_face::HuggingFaceObjectStore;
+use crate::layers::cache::maybe_wrap_from_env as maybe_wrap_cache_from_env;
 use crate::layers::lazy::LazyObjectStore;
 use crate::layers::logging::LoggingObjectStore;
 use crate::layers::runtime::RuntimeAwareObjectStore;
@@ -200,7 +201,14 @@ fn get_dynamic_object_store(url: &Url) -> object_store::Result<Arc<dyn ObjectSto
             store
         }
     };
-    Ok(Arc::new(LoggingObjectStore::new(store)))
+    // The read-through cache is opt-in (`SAIL_OBJECT_STORE_CACHE`) and sits
+    // here, beneath the runtime and owned-write layers that wrap a registered
+    // store, so every write those layers perform passes through it and
+    // invalidates what it holds; with the variable unset the store is
+    // returned as before.
+    Ok(maybe_wrap_cache_from_env(Arc::new(
+        LoggingObjectStore::new(store),
+    )))
 }
 
 fn is_aliyun_oss_url(url: &Url) -> bool {

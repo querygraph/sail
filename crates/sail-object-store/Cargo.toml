@@ -38,6 +38,17 @@ hf-hub = { workspace = true }
 fastrace = { workspace = true }
 fastrace-futures = { workspace = true }
 
+bytes = { workspace = true }
+foyer-common = { workspace = true }
+foyer-memory = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[bench]]
+name = "object_store_cache"
+harness = false
+
 [features]
 hdfs = ["dep:hdfs-native-object-store"]
 default = ["hdfs"]

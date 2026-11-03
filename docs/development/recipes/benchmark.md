@@ -73,7 +73,7 @@ SAIL_BENCH_FILTER=metadata_parse cargo bench -p sail-iceberg --bench metadata_up
 
 For before-and-after comparisons, build both revisions with the same Rust toolchain, target CPU flags, benchmark profile, container resource limits, and machine load. Report medians rather than a single run, retain the raw output, and include the exact commit IDs so another contributor can reproduce the result.
 
-The object-store cache bench (`sail-object-store --bench object_store_cache`) arrives with the read-through cache layer itself.
+The object-store cache bench is `cargo bench -p sail-object-store --bench object_store_cache`; it builds the read-through cache over an in-memory store and measures raw and cached heads, ranges, multi-range reads, concurrent reads and a full stream.
 
 ### Recording numbers
 

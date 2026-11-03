@@ -169,3 +169,20 @@ What each unit did, read against its own cases:
 | `delete_partition/per_file_empty_1000` | 439,769 | 369,075 | — |
 | `delete_partition/per_file_path_miss_1000` | 458,712 | 390,542 | — |
 | `delete_partition/per_file_mixed_100` | 813,000 | 110,842 | — |
+
+## Run of 2026-11-03, the object-store cache (B6)
+
+The cache bench built at the B6 tip (`59738fe29` on root `4c8ccb97e`), one pass against the branch tip's own numbers from the first run. The pass was taken while another process held the machine (load average 130 at the start), so the medians are an upper bound. A repeat nine minutes later at load 25 agrees within 2% on every case but the 16 MiB full stream, which came down from 409 µs to 379 µs; that case is the one most exposed to the load, and the lower figure is the better estimate. The cache has no root counterpart: the root reads the inner store directly, which is what the `raw_*` cases measure on both tips.
+
+| Case | this offer min / median / max (ns) | branch min / median / max (ns) |
+| :--- | ---: | ---: |
+| `raw_head` | 164 / 166 / 218 | 164 / 164 / 209 |
+| `cached_head` | 299 / 303 / 309 | 300 / 300 / 310 |
+| `raw_range_4k` | 202 / 205 / 248 | 201 / 203 / 230 |
+| `cached_range_4k` | 544 / 551 / 565 | 544 / 548 / 556 |
+| `cached_range_unaligned_2m` | 48,430 / 49,248 / 51,918 | 42,345 / 46,356 / 48,713 |
+| `cached_get_ranges_32x4k` | 7,963 / 8,087 / 8,819 | 7,968 / 7,979 / 8,013 |
+| `cached_concurrent_16x4k` | 9,249 / 9,343 / 9,460 | 9,179 / 9,192 / 9,202 |
+| `cached_full_stream_16m` | 372,784 / 409,154 / 463,763 | 344,956 / 347,984 / 362,969 |
+
+What the numbers say: a cached 4 KiB range costs 2.7× a raw one on an in-memory inner store (551 ns against 205 ns), which is the price of the page split, the key lookup and the copy when the inner store is as fast as memory; the cache earns its place only when the inner store is a network away, which the bench does not model. The unaligned 2 MiB read, the 32-range read and the 16-way concurrent read match the branch within 7%, so the layer behaves on the rewritten host as it did on the branch.
