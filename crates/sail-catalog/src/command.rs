@@ -108,6 +108,13 @@ pub enum CatalogCommand {
         if_exists: bool,
         options: AlterTableOptions,
     },
+    /// `ALTER TABLE <format>.`<path>``: a lakehouse table named by its
+    /// location, with no catalog entry to keep in step.
+    AlterPathTable {
+        format: String,
+        location: String,
+        options: AlterTableOptions,
+    },
     ListColumns {
         table: Vec<String>,
     },
@@ -239,6 +246,7 @@ impl CatalogCommand {
             CatalogCommand::ListViews { .. } => "ListViews",
             CatalogCommand::DropTable { .. } => "DropTable",
             CatalogCommand::AlterTable { .. } => "AlterTable",
+            CatalogCommand::AlterPathTable { .. } => "AlterPathTable",
             CatalogCommand::RenameTable { .. } => "RenameTable",
             CatalogCommand::ListColumns { .. } => "ListColumns",
             CatalogCommand::FunctionExists { .. } => "FunctionExists",
@@ -312,6 +320,7 @@ impl CatalogCommand {
             | CatalogCommand::DropDatabase { .. }
             | CatalogCommand::DropTable { .. }
             | CatalogCommand::AlterTable { .. }
+            | CatalogCommand::AlterPathTable { .. }
             | CatalogCommand::RenameTable { .. }
             | CatalogCommand::DropFunction { .. }
             | CatalogCommand::DropTemporaryView { .. }
@@ -691,6 +700,28 @@ impl CatalogCommand {
                 }
 
                 manager.alter_table(&table, options).await?;
+                display.bools().to_record_batch(vec![true])?
+            }
+            CatalogCommand::AlterPathTable {
+                format,
+                location,
+                options,
+            } => {
+                let registry = ctx.extension::<DataSourceRegistry>().map_err(|e| {
+                    CatalogError::External(format!(
+                        "missing DataSourceRegistry for ALTER TABLE on format '{format}': {e}"
+                    ))
+                })?;
+                let lake_source = registry.get_lake_source(&format).map_err(|e| {
+                    CatalogError::External(format!(
+                        "unknown lake source '{format}' for ALTER TABLE by path: {e}"
+                    ))
+                })?;
+                let storage_operation = (&options).into();
+                lake_source
+                    .alter_table(ctx, &location, storage_operation, None)
+                    .await
+                    .map_err(|e| CatalogError::External(e.to_string()))?;
                 display.bools().to_record_batch(vec![true])?
             }
             CatalogCommand::ListColumns { table } => {

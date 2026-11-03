@@ -641,6 +641,19 @@ impl PlanResolver<'_> {
                 return Err(PlanError::todo("unsupported ALTER TABLE operation"));
             }
         };
+        // `<format>.`<path>`` names a lakehouse table by its location, as the
+        // row-level commands and SHOW TBLPROPERTIES accept it.
+        if let [format, path] = table.parts()
+            && is_lakehouse_format(format.as_ref())
+            && (std::path::Path::new(path.as_ref()).is_absolute()
+                || url::Url::parse(path.as_ref()).is_ok_and(|url| !url.cannot_be_a_base()))
+        {
+            return self.resolve_catalog_command(CatalogCommand::AlterPathTable {
+                format: format.as_ref().to_ascii_lowercase(),
+                location: path.as_ref().to_string(),
+                options,
+            });
+        }
         self.resolve_catalog_command(CatalogCommand::AlterTable {
             table: table.into(),
             if_exists,
