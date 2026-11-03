@@ -861,8 +861,9 @@ def test_another_session_cannot_write_an_enrolled_target(space, pipeline_factory
     start()
     from urllib.parse import urlparse
 
-    warehouse = Path(urlparse(space.conf.get("spark.sql.warehouse.dir")).path)
-    [table] = [d for d in warehouse.iterdir() if d.name.split("-")[0] == "target" and (d / "_delta_log").is_dir()]
+    [location] = [row.data_type for row in space.sql(f"DESCRIBE EXTENDED {TARGET}").collect() if row.col_name == "Location"]
+    table = Path(urlparse(location).path)
+    assert (table / "_delta_log").is_dir()
     from pysail.testing.spark.session import spark_session_factory
 
     with spark_session_factory(remote) as sessions:

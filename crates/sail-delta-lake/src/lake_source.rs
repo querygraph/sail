@@ -160,7 +160,14 @@ impl DataSource for DeltaLakeSource {
 async fn reject_enrolled_delta_alter(
     ctx: &datafusion::execution::TaskContext,
     path: &str,
+    lakehouse_table: Option<&LakehouseExecutionContext>,
 ) -> Result<()> {
+    // A table whose commits its catalog ratifies has a log that is read
+    // through the catalog, and is never enrolled in the fence: nothing here
+    // applies to it. Any other catalog table is a plain Delta table.
+    if lakehouse_table.is_some_and(|table| table.commit == CommitAuthority::DeltaRatifiedCommit) {
+        return Ok(());
+    }
     // A metastore writes `file:/path`, and enrollment holds the parsed form.
     let table_url = format!("{}/", path.trim_end_matches('/'));
     let parsed = Url::parse(&table_url).ok();
@@ -538,7 +545,7 @@ impl LakeSource for DeltaLakeSource {
         lakehouse_table: Option<LakehouseExecutionContext>,
     ) -> Result<sail_common_datafusion::lakesource::LakeSourceAlterTableResult> {
         reject_catalog_managed_delta_alter(lakehouse_table.as_ref(), &operation)?;
-        reject_enrolled_delta_alter(ctx, path).await?;
+        reject_enrolled_delta_alter(ctx, path, lakehouse_table.as_ref()).await?;
         let runtime_env = ctx.runtime_env();
         match operation {
             LakeSourceAlterTableOperation::AlterSnapshotReference { .. } => {
