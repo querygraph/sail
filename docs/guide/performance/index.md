@@ -53,6 +53,10 @@ The following environment variables control the cache:
 
 The data and metadata capacities apply to each Sail process. In cluster mode, every worker has an independent cache, so budget memory as `capacity × worker count`. Cache contents are not shared between workers and do not survive worker termination.
 
+### Where the Cache Sits
+
+The cache wraps the backend store itself, beneath the layers Sail adds when a store is registered: the runtime layer that moves I/O onto the I/O runtime, and the owned-write layers that carry Sail's own multipart uploads and table writes. Every write Sail performs therefore passes through the cache on its way down, which is what lets the cache invalidate the object before and after the write rather than discover it later. A write made by another process never passes through it, and is seen only when the metadata interval expires. The layer is added only when `SAIL_OBJECT_STORE_CACHE` is set; with it unset the registered store is exactly what it was before the cache existed.
+
 ### Consistency Model
 
 Writes performed through the same Sail object-store wrapper invalidate the affected object before and after ordinary writes, after multipart completion, and around copy or rename operations. The second invalidation closes a race in which a reader could otherwise repopulate an old value while a write is in flight.
@@ -68,3 +72,7 @@ Conditional requests, version-specific requests, and requests with backend-speci
 - Size the data cache for the reusable working set, leaving headroom for query execution, Arrow batches, and the operating system.
 - Use a nonzero metadata TTL for immutable data-lake files. Use `0` only when every read must observe an external in-place overwrite immediately, since it adds one metadata request per object read.
 - The cache is unlikely to help one-pass scans, frequently replaced workers, or workloads whose reusable working set is much larger than the configured capacity.
+
+## Rust Hot-Path Microbenchmarks
+
+The workspace carries focused benchmarks for the object-store cache, the SQL frontend and Iceberg metadata planning; the [benchmark recipe](https://github.com/lakehq/sail/blob/main/docs/development/recipes/benchmark.md) says how each is run and how a number is recorded, and [`docs/development/benches.md`](https://github.com/lakehq/sail/blob/main/docs/development/benches.md) holds the recorded numbers per commit and machine.

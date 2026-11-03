@@ -186,3 +186,13 @@ The cache bench built at the B6 tip (`59738fe29` on root `4c8ccb97e`), one pass 
 | `cached_full_stream_16m` | 372,784 / 409,154 / 463,763 | 344,956 / 347,984 / 362,969 |
 
 What the numbers say: a cached 4 KiB range costs 2.7× a raw one on an in-memory inner store (551 ns against 205 ns), which is the price of the page split, the key lookup and the copy when the inner store is as fast as memory; the cache earns its place only when the inner store is a network away, which the bench does not model. The unaligned 2 MiB read, the 32-range read and the 16-way concurrent read match the branch within 7%, so the layer behaves on the rewritten host as it did on the branch.
+
+## Index of runs
+
+| Date | Section | Tip measured | What it compares |
+| :-- | :-- | :-- | :-- |
+| 2026-11-03 | Run of 2026-11-03 | `5b9111fc7` (root), `ce5dada0f` (branch), `c2bb8fdd6` (B3) | the root against the hot-path branch, and the single-statement parse fast path |
+| 2026-11-03 | the Iceberg units | `ee5afb18f` on `9090d7fb0` | each of the six Iceberg units against its own case on the root |
+| 2026-11-03 | the object-store cache (B6) | `59738fe29` on `4c8ccb97e` | the re-homed cache against the branch's own numbers |
+
+A new run is a new section above this index, named by its date and what it measured, with the machine, the load and the commits stated; the index gains one row.
