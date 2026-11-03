@@ -977,7 +977,15 @@ impl FlowSource {
                     Leaf::Rate(rate) => rate.plan(&range)?,
                 });
             }
-            streams.insert(key.clone(), union(plans, &leaf.schema())?);
+            // Named by the leaf beneath the stream alias, so that two leaves
+            // of one schema are distinct plans: `open_rows` finds a leaf's
+            // rows in the query by plan equality, and a `TableScan` compares
+            // equal to another of the same name and schema whatever it reads.
+            let rows = LogicalPlanBuilder::from(union(plans, &leaf.schema())?)
+                .alias(format!("{SOURCE_ALIAS}:{key}"))?
+                .alias(SOURCE_ALIAS)?
+                .build()?;
+            streams.insert(key.clone(), rows);
         }
         Ok(streams)
     }

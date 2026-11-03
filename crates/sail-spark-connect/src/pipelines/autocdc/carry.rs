@@ -115,6 +115,36 @@ mod tests {
 
     use super::*;
 
+    /// Two leaves of one schema are the same plan to DataFusion, because a
+    /// `TableScan` compares by name and schema, not by what it reads; the
+    /// stream alias each leaf carries beneath the source alias is what tells
+    /// them apart when a leaf's rows are counted in a query.
+    #[test]
+    fn leaves_of_one_schema_are_told_apart_by_their_alias() -> SparkResult<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let scan = || -> SparkResult<LogicalPlan> {
+            let table = MemTable::try_new(schema.clone(), vec![vec![]])?;
+            Ok(
+                LogicalPlanBuilder::scan("scan", provider_as_source(Arc::new(table)), None)?
+                    .build()?,
+            )
+        };
+        let unnamed = LogicalPlanBuilder::from(scan()?).union(scan()?)?.build()?;
+        assert_eq!(occurrences(&unnamed, &scan()?)?, 2);
+        let named = |leaf: &str| -> SparkResult<LogicalPlan> {
+            Ok(LogicalPlanBuilder::from(scan()?)
+                .alias(format!("source:{leaf}"))?
+                .alias("source")?
+                .build()?)
+        };
+        let both = LogicalPlanBuilder::from(named("a")?)
+            .union(named("b")?)?
+            .build()?;
+        assert_eq!(occurrences(&both, &named("a")?)?, 1);
+        assert_eq!(occurrences(&both, &named("b")?)?, 1);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn a_filtered_renamed_stream_carries_its_columns_to_the_watermark() {
         let schema = Arc::new(Schema::new(vec![
