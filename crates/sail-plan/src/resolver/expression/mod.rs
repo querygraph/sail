@@ -14,6 +14,7 @@ mod ambiguous;
 mod attribute;
 mod cast;
 mod function;
+mod geometry;
 mod grouping;
 mod lambda;
 mod literal;
@@ -138,7 +139,7 @@ impl PlanResolver<'_> {
                 "[NOT_A_CONSTANT_STRING.NOT_CONSTANT] expression is not foldable",
             ));
         }
-        let resolved = match expr {
+        let mut resolved = match expr {
             Expr::Literal(literal) => self.resolve_expression_literal(literal, state),
             Expr::UnresolvedAttribute {
                 name,
@@ -376,6 +377,9 @@ impl PlanResolver<'_> {
         if state.config().require_foldable {
             Self::require_constant_expression(&resolved.expr)?;
         }
+        // Geometry survives CASE, coalesce and array_element only through an explicit
+        // field-typed identity cast; see `geometry.rs`.
+        resolved.expr = geometry::preserve_geometry(resolved.expr, schema)?;
         Ok(resolved)
     }
 
