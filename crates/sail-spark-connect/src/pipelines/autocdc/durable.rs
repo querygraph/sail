@@ -18,7 +18,7 @@ use sail_catalog::manager::CatalogManager;
 use sail_common::spec;
 use sail_common_datafusion::catalog::TableKind;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
-use sail_common_datafusion::fenced_commit::FencedCommits;
+use sail_common_datafusion::fenced_commit::{FencedCommitRegistry, FencedCommits};
 use sail_common_datafusion::task_resources::TaskResourceScope;
 use sail_delta_lake::fenced::{publish_ratified, table_state};
 use sail_plan::config::PlanConfig;
@@ -42,9 +42,9 @@ use super::run::{FlowRun, flow_schema};
 use super::state::StateKeys;
 use super::write::{
     AuxiliaryPlacement, IN_COMMIT_TIMESTAMPS_PROPERTY, PreparedBatch, drop_table,
-    enable_commit_timestamps, ensure_auxiliary_table, evolve_fenced, flow_output_schema,
-    merge_auxiliary, merge_destination, noop_fenced, prepare_microbatch, publish_prepared,
-    read_table, replace_delta_with_view,
+    ensure_auxiliary_table, evolve_fenced, flow_output_schema, mark_enrolled, merge_auxiliary,
+    merge_destination, noop_fenced, prepare_microbatch, publish_prepared, read_table,
+    replace_delta_with_view,
 };
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
@@ -295,7 +295,17 @@ async fn enroll<S: Store + 'static>(
         publish_prepared(ctx, &empty).await?;
         merge_destination(ctx, config.clone(), write, &empty, None).await?;
     }
-    birth_auxiliary(ctx, config, durable, &auxiliary_name, &auxiliary_url).await?;
+    birth_auxiliary(
+        ctx,
+        config.clone(),
+        durable,
+        &auxiliary_name,
+        &auxiliary_url,
+    )
+    .await?;
+    if guard.is_none() {
+        mark_enrolled(ctx, config, &auxiliary_name, &durable.control.authority().0).await?;
+    }
     let born = async |url: &Url| {
         table_state(&task, url)
             .await?
@@ -588,6 +598,14 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             .write()
             .config_mut()
             .set_extension(Arc::new(FencedCommits(Arc::new(commits))));
+        // Every session of this server then refuses an unfenced write to a
+        // table this authority enrolled.
+        if let Ok(registry) = ctx.extension::<FencedCommitRegistry>() {
+            registry.register(
+                &self.control.authority().0,
+                Arc::new(ControlCommits::new(self.control.clone(), None)),
+            );
+        }
     }
 
     fn reached(&self, stage: Stage, sequence: u64) -> SparkResult<()> {
@@ -891,7 +909,17 @@ impl<S: Store + 'static> DurableRun<'_, S> {
         // A target recreated outside the authority is adopted here, under the
         // begun reset, so the truncate below is fenced against the live log.
         let destination = match table_state(&task, &enrolled.destination.url).await? {
-            Some((id, head)) if SinkIdentity(id.clone()) != enrolled.destination.sink => {
+            Some((id, _)) if SinkIdentity(id.clone()) != enrolled.destination.sink => {
+                mark_enrolled(
+                    ctx,
+                    config.clone(),
+                    write.destination,
+                    &control.authority().0,
+                )
+                .await?;
+                let (_, head) = table_state(&task, &enrolled.destination.url)
+                    .await?
+                    .ok_or_else(|| SparkError::internal("recreated target has no commit"))?;
                 let sink = SinkIdentity(id);
                 control
                     .rebind_sink(
@@ -974,6 +1002,13 @@ impl<S: Store + 'static> DurableRun<'_, S> {
             self,
             &enrolled.auxiliary_name,
             &auxiliary_url,
+        )
+        .await?;
+        mark_enrolled(
+            ctx,
+            config.clone(),
+            &enrolled.auxiliary_name,
+            &control.authority().0,
         )
         .await?;
         control
@@ -1188,7 +1223,13 @@ pub(super) async fn run_durable_flow<S: Store + 'static>(
     let placement = auxiliary_placement(guard.as_ref());
     // An enrolled table already has them, and DDL cannot carry a fence.
     if guard.is_none() && lacks_commit_timestamps(ctx, run.write.destination).await? {
-        enable_commit_timestamps(ctx, config.clone(), run.write.destination).await?;
+        mark_enrolled(
+            ctx,
+            config.clone(),
+            run.write.destination,
+            &durable.control.authority().0,
+        )
+        .await?;
     }
     let auxiliary_name = ensure_auxiliary_table(
         ctx,

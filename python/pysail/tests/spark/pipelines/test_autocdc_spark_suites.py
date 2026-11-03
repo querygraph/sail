@@ -839,6 +839,36 @@ def test_state_written_by_another_query_asks_for_a_reset(space, pipeline_factory
     assert rows(space, "id", "seq") == [(1, 1), (2, 1)]
 
 
+@sail_only
+def test_another_session_cannot_write_an_enrolled_target(space, pipeline_factory, broker, remote, tmp_path):  # noqa: F811
+    """The target names the authority that fences it, so a session that never ran
+    the pipeline, with no authority of its own, is refused a write to it."""
+    schema = "id INT, name STRING, seq BIGINT"
+    _, registry, start = pipeline_factory()
+    with graph_element_registration_context(registry):
+
+        @dp.temporary_view
+        def changes():
+            return space.readStream.format("json").schema(schema).load(broker.url)
+
+        dp.create_streaming_table(TARGET, **FORMAT)
+        dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["id"], sequence_by="seq")
+
+    broker.send({"id": 1, "name": "a", "seq": 1})
+    start()
+    [table] = [d for d in (tmp_path / "warehouse").iterdir() if d.name.startswith("target-") and (d / "_delta_log").is_dir()]
+    from pysail.testing.spark.session import spark_session_factory
+
+    with spark_session_factory(remote) as sessions:
+        other = sessions.create()
+        frame = other.createDataFrame([(2, "b", 2)], schema)
+        with pytest.raises((PySparkException, SparkConnectGrpcException), match="enrolled with AutoCDC authority"):
+            frame.write.format("delta").mode("append").save(table.as_uri())
+        with pytest.raises((PySparkException, SparkConnectGrpcException), match="enrolled"):
+            other.sql(f"ALTER TABLE delta.`{table.as_uri()}` SET TBLPROPERTIES ('x' = 'y')")
+    assert rows(space, "id", "seq") == [(1, 1)]
+
+
 def test_a_dropped_auxiliary_table_forgets_its_tombstones(space, pipeline_factory, broker):  # noqa: F811
     schema = "id INT, name STRING, seq BIGINT, is_delete BOOLEAN"
 

@@ -40,7 +40,9 @@ use sail_common::spec::FencedWrite;
 use sail_common_datafusion::catalog::{CommitAuthority, LakehouseExecutionContext};
 use sail_common_datafusion::datasource::PhysicalSinkMode;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
-use sail_common_datafusion::fenced_commit::{FencedCommits, FencedEffect, Ratification};
+use sail_common_datafusion::fenced_commit::{
+    FencedCommitRegistry, FencedCommits, FencedEffect, Ratification,
+};
 use url::Url;
 
 use crate::catalog::coordinator::{DeltaCatalogCommitCoordinator, DeltaCatalogManagedTable};
@@ -80,6 +82,16 @@ async fn fenced_authority(
     match (&authority, fenced_write) {
         (None, Some(_)) => not_impl_err!("a fenced Delta commit needs a commit authority"),
         (Some(authority), None) if authority.0.is_enrolled(table_url.as_str()).await? => {
+            plan_err!("table {table_url} is enrolled and refuses a write without a fence")
+        }
+        // A session without an authority still refuses a table that another
+        // session on this server enrolled.
+        (None, None)
+            if match context.extension::<FencedCommitRegistry>() {
+                Ok(registry) => registry.is_enrolled(table_url.as_str()).await?,
+                Err(_) => false,
+            } =>
+        {
             plan_err!("table {table_url} is enrolled and refuses a write without a fence")
         }
         _ => Ok(authority),
@@ -899,6 +911,13 @@ impl ExecutionPlan for DeltaCommitExec {
             } else {
                 None
             };
+            if let Some(snapshot) = &reference {
+                crate::fenced::check_enrolled_authority(
+                    &table_url,
+                    snapshot.metadata().configuration(),
+                    fenced_write.as_ref(),
+                )?;
+            }
 
             if matches!(sink_mode, PhysicalSinkMode::OverwritePartitions)
                 && let Some(snapshot) = &reference

@@ -13,6 +13,7 @@ use sail_catalog_system::service::SystemTableService;
 use sail_common::actor::ActorHandle;
 use sail_common::config::{AppConfig, ExecutionMode};
 use sail_common::runtime::RuntimeHandle;
+use sail_common_datafusion::fenced_commit::FencedCommitRegistry;
 use sail_common_datafusion::session::activity::ActivityTracker;
 use sail_common_datafusion::session::job::JobService;
 use sail_common_datafusion::session::repartition::RepartitionBufferConfig;
@@ -62,6 +63,9 @@ pub struct ServerSessionFactory {
     runtime_env: RuntimeEnvFactory,
     catalog_cache_manager: Arc<CatalogCacheManager>,
     memory_catalogs: SharedMemoryCatalogs,
+    /// The commit authorities AutoCDC runs install, shared by every session
+    /// of this server, so no session writes an enrolled table unfenced.
+    fenced_commits: Arc<FencedCommitRegistry>,
 }
 
 impl ServerSessionFactory {
@@ -78,6 +82,7 @@ impl ServerSessionFactory {
             runtime_env,
             catalog_cache_manager: Arc::new(CatalogCacheManager::new()),
             memory_catalogs: SharedMemoryCatalogs::default(),
+            fenced_commits: Arc::new(FencedCommitRegistry::default()),
         }
     }
 }
@@ -129,7 +134,8 @@ impl ServerSessionFactory {
                 self.config.cluster.task_stream_buffer,
             )))
             .with_extension(Arc::new(self.create_system_table_service(info)?))
-            .with_extension(Arc::new(DeltaTableCache::default()));
+            .with_extension(Arc::new(DeltaTableCache::default()))
+            .with_extension(self.fenced_commits.clone());
         self.apply_execution_config(&mut config)?;
         super::apply_parquet_config(
             &mut config.options_mut().execution.parquet,

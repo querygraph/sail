@@ -27,7 +27,7 @@ use sail_common_datafusion::datasource::{
     SourceInfo, create_sort_order, find_path_in_options,
 };
 use sail_common_datafusion::extension::SessionExtensionAccessor;
-use sail_common_datafusion::fenced_commit::FencedCommits;
+use sail_common_datafusion::fenced_commit::{FencedCommitRegistry, FencedCommits};
 use sail_common_datafusion::lakesource::{
     LakeSource, LakeSourceAlterTableOperation, LakeSourceCreateTableColumn,
     LakeSourceCreateTableInfo, LakeSourceCreateTableResult, LakeSourceMetadata, RowLevelOperation,
@@ -161,14 +161,27 @@ async fn reject_enrolled_delta_alter(
     ctx: &datafusion::execution::TaskContext,
     path: &str,
 ) -> Result<()> {
-    let Ok(commits) = ctx.extension::<FencedCommits>() else {
-        return Ok(());
-    };
     // A metastore writes `file:/path`, and enrollment holds the parsed form.
     let table_url = format!("{}/", path.trim_end_matches('/'));
-    let table_url = Url::parse(&table_url).map_or(table_url, String::from);
-    if commits.0.is_enrolled(&table_url).await? {
-        return plan_err!("table {table_url} is enrolled and refuses a change without a fence");
+    let parsed = Url::parse(&table_url).ok();
+    let table_url = parsed.as_ref().map_or(table_url, Url::to_string);
+    let refused =
+        || plan_err!("table {table_url} is enrolled and refuses a change without a fence");
+    // The table itself names its authority, in any session on any server.
+    if let Some(url) = &parsed
+        && crate::fenced::enrolled_authority(ctx, url).await?.is_some()
+    {
+        return refused();
+    }
+    if let Ok(registry) = ctx.extension::<FencedCommitRegistry>()
+        && registry.is_enrolled(&table_url).await?
+    {
+        return refused();
+    }
+    if let Ok(commits) = ctx.extension::<FencedCommits>()
+        && commits.0.is_enrolled(&table_url).await?
+    {
+        return refused();
     }
     Ok(())
 }

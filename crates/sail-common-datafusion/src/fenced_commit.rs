@@ -57,3 +57,50 @@ impl SessionExtension for FencedCommits {
         "FencedCommits"
     }
 }
+
+/// The Delta table property an enrolled table carries: the incarnation of the
+/// authority that fences it. A writer in any session, on any server, refuses
+/// to commit over it without that authority's fence.
+pub const ENROLLED_AUTHORITY_PROPERTY: &str = "sail.autocdc.authority";
+
+/// The commit authorities installed on this server, one per control store,
+/// so a session that holds none still refuses an unfenced write to a table
+/// another session enrolled. Sessions share it through the session factory.
+#[derive(Debug, Default)]
+pub struct FencedCommitRegistry {
+    authorities:
+        std::sync::RwLock<std::collections::BTreeMap<String, Arc<dyn FencedCommitAuthority>>>,
+}
+
+impl FencedCommitRegistry {
+    /// Register the authority for `key`, replacing one registered before.
+    pub fn register(&self, key: &str, authority: Arc<dyn FencedCommitAuthority>) {
+        if let Ok(mut authorities) = self.authorities.write() {
+            authorities.insert(key.to_string(), authority);
+        }
+    }
+
+    /// Every registered authority.
+    pub fn authorities(&self) -> Vec<Arc<dyn FencedCommitAuthority>> {
+        self.authorities
+            .read()
+            .map(|authorities| authorities.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether any registered authority has `table_url` enrolled.
+    pub async fn is_enrolled(&self, table_url: &str) -> Result<bool> {
+        for authority in self.authorities() {
+            if authority.is_enrolled(table_url).await? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+impl SessionExtension for FencedCommitRegistry {
+    fn name() -> &'static str {
+        "FencedCommitRegistry"
+    }
+}

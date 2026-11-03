@@ -9,7 +9,9 @@ use std::time::Duration;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::identity::{EffectStep, FenceToken, FlowKey, IntentId, SinkIdentity, TargetKey, escape};
+use crate::identity::{
+    AuthorityIncarnation, EffectStep, FenceToken, FlowKey, IntentId, SinkIdentity, TargetKey, escape,
+};
 use crate::records::{
     Ack, AuthorityMillis, Completion, EffectPrepare, EffectReceipt, FlowCheckpoint, Intent,
     Operation, RatifiedCommit, SinkHead, TargetGuard,
@@ -291,6 +293,11 @@ pub struct Control<S> {
 impl<S: Store> Control<S> {
     pub fn new(store: S, clock: Arc<dyn Clock>) -> Self {
         Self { store, clock }
+    }
+
+    /// The authority this control speaks for, as its tables carry it.
+    pub fn authority(&self) -> AuthorityIncarnation {
+        self.store.authority()
     }
 
     pub async fn enroll(

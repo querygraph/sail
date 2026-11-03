@@ -302,13 +302,31 @@ async fn a_long_batch_renews_its_lease() -> TestResult {
     let lease_ms = 300;
     let slow = {
         let clock = clock.clone();
+        let control = control.clone();
         move |stage: Stage, sequence: u64| {
             if stage == Stage::Prepared && sequence == 1 {
                 // The clock passes the original deadline in steps shorter
-                // than the lease, as wall time would, while renewals run.
+                // than the lease, as wall time would; each step waits for a
+                // renewal to move the deadline past it, as it would in time.
                 for _ in 0..4 {
-                    clock.0.fetch_add(lease_ms / 3, Ordering::SeqCst);
-                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    let now = clock.0.fetch_add(lease_ms / 3, Ordering::SeqCst) + lease_ms / 3;
+                    let waited = std::time::Instant::now();
+                    loop {
+                        let deadline = tokio::task::block_in_place(|| {
+                            Handle::current().block_on(control.guard(&target_key()))
+                        })
+                        .ok()
+                        .flatten()
+                        .and_then(|guard| guard.lease_deadline)
+                        .unwrap_or_default();
+                        if deadline >= now + lease_ms {
+                            break;
+                        }
+                        if waited.elapsed() > std::time::Duration::from_secs(10) {
+                            return Err(SparkError::internal("the lease was not renewed"));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
                 }
             }
             Ok(())
@@ -355,9 +373,16 @@ async fn a_recreated_target_needs_a_full_refresh_which_adopts_it() -> TestResult
     let outcome = case.run_with(&source(), &control, "w1", None, true).await?;
     assert_eq!((outcome.batches, outcome.reset), (3, Some(1)));
     case.assert_exact().await?;
-    assert_heads_match_the_logs(&case, &control).await?;
     let guard = control.guard(&target_key()).await?.ok_or("no guard")?;
     assert_ne!(guard.sink, before.sink, "the guard names the new table");
+    // The dropped table's directory may remain beside the new one, so the
+    // guard's own location is the one whose log the head must match.
+    let dir = url::Url::parse(&guard.physical_key)?
+        .to_file_path()
+        .map_err(|()| "the target is not a local path")?;
+    let head = control.head(&guard.sink).await?.ok_or("no head")?;
+    assert_eq!(head.version, delta_version(&dir)?);
+    assert_eq!(guard.active_intent, None);
     finish(&case.ctx).await?;
     Ok(())
 }

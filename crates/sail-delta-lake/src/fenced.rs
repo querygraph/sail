@@ -2,6 +2,7 @@
 //! a commit: its identity and head, and publishing a ratified entry again
 //! after a crash between ratification and publication.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -10,6 +11,8 @@ use datafusion_common::{DataFusionError, Result, plan_err};
 use futures::StreamExt;
 use object_store::path::Path;
 use object_store::{Error as ObjectStoreError, ObjectStore, ObjectStoreExt, PutMode, PutOptions};
+use sail_common::spec::FencedWrite;
+use sail_common_datafusion::fenced_commit::ENROLLED_AUTHORITY_PROPERTY;
 use sha2::{Digest, Sha256};
 use url::Url;
 
@@ -19,6 +22,14 @@ use crate::table::{create_logstore_with_object_store, open_table_with_object_sto
 
 fn external<E: std::error::Error + Send + Sync + 'static>(error: E) -> DataFusionError {
     DataFusionError::External(Box::new(error))
+}
+
+fn object_store_of(context: &TaskContext, table_url: &Url) -> Result<Arc<dyn ObjectStore>> {
+    context
+        .runtime_env()
+        .object_store_registry
+        .get_store(table_url)
+        .map_err(external)
 }
 
 /// What ratification binds a staged entry by: its exact bytes.
@@ -36,7 +47,15 @@ pub async fn table_state(
     context: &Arc<TaskContext>,
     table_url: &Url,
 ) -> Result<Option<(String, i64)>> {
-    let store = get_object_store_from_context(context, table_url)?;
+    table_state_in(context.as_ref(), table_url).await
+}
+
+/// `table_state` for a context held by reference.
+pub async fn table_state_in(
+    context: &TaskContext,
+    table_url: &Url,
+) -> Result<Option<(String, i64)>> {
+    let store = object_store_of(context, table_url)?;
     let log = Path::from_url_path(table_url.path())
         .map_err(external)?
         .join("_delta_log");
@@ -65,6 +84,52 @@ pub async fn table_state(
         snapshot.metadata().id().to_string(),
         snapshot.version(),
     )))
+}
+
+/// The authority an enrolled table names in its metadata, if any.
+pub fn enrolled_authority_of(configuration: &HashMap<String, String>) -> Option<&str> {
+    configuration
+        .get(ENROLLED_AUTHORITY_PROPERTY)
+        .map(String::as_str)
+}
+
+/// A table that names an authority admits only that authority's fence. The
+/// property travels with the table, so this holds in every session and on
+/// every server, whether or not one holds the authority.
+pub fn check_enrolled_authority(
+    table_url: &Url,
+    configuration: &HashMap<String, String>,
+    fenced_write: Option<&FencedWrite>,
+) -> Result<()> {
+    let Some(authority) = enrolled_authority_of(configuration) else {
+        return Ok(());
+    };
+    match fenced_write {
+        Some(fence) if fence.authority == authority => Ok(()),
+        Some(fence) => plan_err!(
+            "table {table_url} is enrolled with AutoCDC authority {authority} and refuses a \
+             fence from authority {}",
+            fence.authority
+        ),
+        None => plan_err!(
+            "table {table_url} is enrolled with AutoCDC authority {authority} and refuses a \
+             write without its fence"
+        ),
+    }
+}
+
+/// The authority a table at `table_url` names, read from its log. `None` for
+/// a table with no commit or no such property.
+pub async fn enrolled_authority(context: &TaskContext, table_url: &Url) -> Result<Option<String>> {
+    if table_state_in(context, table_url).await?.is_none() {
+        return Ok(None);
+    }
+    let store = object_store_of(context, table_url)?;
+    let table = open_table_with_object_store(table_url.clone(), store, StorageConfig)
+        .await
+        .map_err(external)?;
+    let snapshot = table.snapshot().map_err(external)?;
+    Ok(enrolled_authority_of(snapshot.metadata().configuration()).map(str::to_string))
 }
 
 /// Publish a ratified staged entry, which must still be the bytes that were
