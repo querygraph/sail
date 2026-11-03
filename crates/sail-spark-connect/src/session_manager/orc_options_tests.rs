@@ -185,9 +185,17 @@ fn write_compression(
     Ok(sail_data_source::formats::orc::OrcWriteConfig::resolve(state, vec![])?.compression)
 }
 
+/// The codec a session writes with when nothing is set: the default of the
+/// Spark version the session resolves (`zstd` from 4.2, `snappy` before, and
+/// 3.5 when no PySpark is importable), not a codec this file assumes.
+fn default_write_compression() -> TestResult<sail_data_source::formats::orc::OrcWriteCompression> {
+    write_compression(&context()?.state())
+}
+
 #[test]
 fn write_defaults_follow_creation_set_unset_and_preserve_snapshots() -> TestResult {
     use sail_data_source::formats::orc::OrcWriteCompression as Codec;
+    let default = default_write_compression()?;
     let spark = spark_session()?;
     spark.set_config(vec![pair(COMPRESSION, "snappy").into()])?;
     let ctx = SessionContext::new_with_config(spark_session_config(SessionConfig::new(), spark)?);
@@ -197,7 +205,7 @@ fn write_defaults_follow_creation_set_unset_and_preserve_snapshots() -> TestResu
     let enabled = ctx.state();
     assert_eq!(write_compression(&enabled)?, Codec::Zlib);
     handle_config_unset(&ctx, vec![COMPRESSION.into()])?;
-    assert_eq!(write_compression(&ctx.state())?, Codec::Zstd);
+    assert_eq!(write_compression(&ctx.state())?, default);
     assert_eq!(write_compression(&old)?, Codec::Snappy);
     assert_eq!(write_compression(&enabled)?, Codec::Zlib);
     Ok(())
@@ -234,6 +242,7 @@ fn invalid_write_defaults_do_not_mutate_either_configuration() -> TestResult {
 #[test]
 fn partial_write_config_updates_refresh_without_replacing_original_error() -> TestResult {
     use sail_data_source::formats::orc::OrcWriteCompression as Codec;
+    let default = default_write_compression()?;
     for orc_first in [true, false] {
         let ctx = context()?;
         let write = pair(COMPRESSION, "snappy");
@@ -247,13 +256,10 @@ fn partial_write_config_updates_refresh_without_replacing_original_error() -> Te
             .err()
             .ok_or("expected configuration failure")?;
         assert!(error.to_string().contains("positive"));
+        // The entry before the failing one took effect; the one after it did not.
         assert_eq!(
             write_compression(&ctx.state())?,
-            if orc_first {
-                Codec::Snappy
-            } else {
-                Codec::Zstd
-            }
+            if orc_first { Codec::Snappy } else { default }
         );
     }
     Ok(())

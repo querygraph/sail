@@ -26,8 +26,8 @@ All figures are from `MILESTONE-1.md`.
 | Pipelines and ORC suite | 1262 passed, 23 skipped, 4 strict expected failures |
 | Hive metastore profile | 69 passed, 2 xfailed |
 | Second-catalog profile | 13 passed |
-| Whole Spark Python tree (CDC gate, `44b2f5f73`) | 12133 passed, 0 errors |
-| Local-cluster / Iceberg / Hive / Unity (CDC gate) | 95 / 86 / 88 / 230 passed |
+| Whole Spark Python tree (CDC gate on the milestone commit `7d6bc1917`) | 12134 passed, 99 skipped, 795 xfailed, 0 errors |
+| Local-cluster / Iceberg / Hive / Unity (CDC gate on `7d6bc1917`) | 96 / 87 / 89 / 230 passed |
 | Crash seeds | every recovery exact |
 | Spark 4.2.1 oracle, batch | 61 files; only the 4 documented batch differences fail on Spark |
 | Spark 4.2.1 oracle, AutoCDC | 41 passed; 43 passed and 4 Sail-only skipped |
@@ -395,7 +395,7 @@ A batch is sealed with its source range before its first effect. Its reconciled 
 
 **Crash recovery.** A successor resumes an unfinished batch from what the authority recorded and repeats only effects that have no receipt. A recovery run waits out a dead owner's lease rather than failing. The durable run exposes crash points (for example, after `BeginReset`, after truncating the target, during initialization) for tests. The gate's `crash.py` seeds kill the process (SIGKILL) at such points; on the CDC gate every recovery was exact. Only process death is qualified. Power loss and restore are an accepted limit (user decision 19).
 
-**Status of `run.rs`.** An earlier triggered SCD1 run with a local JSON record and no fencing remains in `autocdc/run.rs` for its semantic tests. Its record states that boundary in every file. `durable.rs` is the run that execution admits.
+**Two runs.** `durable.rs` runs a fenced Delta target under the control store. `run.rs::run_plain_flow` runs a target whose catalog or format already orders its commits (Iceberg, catalog-managed Delta such as Unity). There the checkpoint is the progress, as in Spark, and a replayed batch's merge is safe because rows win by sequence. A plain reset drops and recreates the target and its auxiliary table.
 
 ## Session lifecycle, shutdown and effect ownership
 
@@ -524,7 +524,7 @@ Gates launch with SIGINT unblocked. A blocked SIGINT is inherited by every Sail 
 
 For a while the whole Spark Python tree was compared only with earlier roots of this branch. "No new failures" then meant none since the last root. Run against the upstream merge base `0ba425c03`, 75 tests passed upstream and failed on the branch. The causes were general changes: the ANSI string cast lowering broke correlated subquery decorrelation (56 tests) and VALUES NaN detection; a CASE coercion used the non-ANSI policy; unresolved-column reporting failed on internal columns (8 tests); the partition-column check refused nested sources. All were fixed.
 
-A second correction followed. TPC-H, TPC-DS and two utility tests had never collected because duckdb and jedi were missing, and other tests failed for harness reasons. `run-full.py` pins the optional test dependencies as in `pyproject.toml`. Under it, upstream `0ba425c03` has 0 failures and 12 JVM fixture errors. The CDC lane's gate on `44b2f5f73` ran the whole tree: 12133 passed, 0 errors.
+A second correction followed. TPC-H, TPC-DS and two utility tests had never collected because duckdb and jedi were missing, and other tests failed for harness reasons. `run-full.py` pins the optional test dependencies as in `pyproject.toml`. Under it, upstream `0ba425c03` has 0 failures and 12 JVM fixture errors. The CDC lane's gate on the milestone commit `7d6bc1917` ran the whole tree: 12134 passed, 99 skipped, 795 xfailed, 0 errors.
 
 ## Spark oracle runs
 
@@ -554,10 +554,10 @@ Before the `2e73a0b87` fixes the same run had 8 real differences; bare `USE`, de
 | Second catalog | `fb3a6ab03` | 13 passed |
 | Delta suite | `fb3a6ab03` | same failures by name as baseline |
 | Shutdown | `fb3a6ab03` | no session cleanup failures |
-| Whole Spark Python tree | `44b2f5f73` | 12133 passed, 0 errors |
-| Local-cluster | `44b2f5f73` | 95 passed |
-| Iceberg / Hive / Unity | `44b2f5f73` | 86 / 88 / 230 passed |
-| Crash seeds | `44b2f5f73` | every recovery exact |
+| Whole Spark Python tree | `7d6bc1917` | 12134 passed, 0 errors |
+| Local-cluster | `7d6bc1917` | 96 passed |
+| Iceberg / Hive / Unity | `7d6bc1917` | 87 / 89 / 230 passed |
+| Crash seeds | `7d6bc1917` | every recovery exact |
 
 # Differences from Spark
 
