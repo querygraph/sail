@@ -46,9 +46,9 @@ use crate::pipelines::execution::run_command;
 use crate::pipelines::graph::{Flow, GraphDefinition, Name};
 use crate::pipelines::schema_merge::quoted_type;
 use crate::pipelines::streaming::binding::SourceBinding;
-use crate::pipelines::streaming::intent::{Progress, RunFrontier, next_intent};
+use crate::pipelines::streaming::intent::{BatchIntent, Progress, RunFrontier, next_intent};
 use crate::pipelines::streaming::lower::{Inputs, lower};
-use crate::pipelines::streaming::source::BoundedSource;
+use crate::pipelines::streaming::source::{BoundedSource, SourceDescriptor};
 
 /// The persisted state of one flow's checkpoint directory.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +149,67 @@ pub(super) struct FlowRun<'a> {
     pub flow_source: Option<&'a super::flow_source::FlowSource>,
 }
 
+impl FlowRun<'_> {
+    /// The plan of one batch: through the flow's sources when its query
+    /// reads views or several streams, otherwise the one bounded read of
+    /// `source` lowered under `source_name`. The caller names the batch
+    /// (its intent, where it ends, and the state keys it reads and writes).
+    pub(super) async fn batch_plan(
+        &self,
+        ctx: &SessionContext,
+        config: &Arc<PlanConfig>,
+        scope: &TaskResourceScope,
+        intent: &BatchIntent,
+        end: &Progress,
+        state: &StateKeys,
+        descriptor: SourceDescriptor,
+    ) -> SparkResult<LogicalPlan> {
+        if let Some(flow_source) = self.flow_source {
+            let graph_scope = GraphScope::new(self.graph, self.relations, self.flow);
+            return flow_source
+                .batch_plan(
+                    ctx,
+                    config,
+                    &graph_scope,
+                    self.graph,
+                    self.flow,
+                    intent,
+                    end,
+                    state,
+                )
+                .await;
+        }
+        let scans = intent
+            .ranges
+            .iter()
+            .map(|range| self.source.scan(range))
+            .collect::<Result<Vec<_>, _>>()?;
+        let binding = SourceBinding {
+            name: self.source_name.clone(),
+            schema: self.source.schema(),
+            descriptor,
+            intent: intent.clone(),
+            scans,
+        };
+        let lowered = lower(
+            ctx,
+            config.clone(),
+            scope,
+            &Inputs {
+                graph: self.graph,
+                flow: self.flow,
+                relations: self.relations,
+                sources: std::slice::from_ref(&binding),
+                statics: &[],
+                locals: &[],
+            },
+        )
+        .await
+        .map_err(|error| SparkError::invalid(error.to_string()))?;
+        Ok(lowered.plan)
+    }
+}
+
 pub(super) struct RunOutcome {
     /// Microbatches completed in this run.
     pub batches: u64,
@@ -216,56 +277,23 @@ pub(super) async fn run_flow(
         &record.progress,
         run.max_rows_per_partition,
     )? {
-        let plan = if let Some(flow_source) = run.flow_source {
-            let end = record.progress.clone().advance(&intent);
-            let graph_scope = GraphScope::new(run.graph, run.relations, run.flow);
-            let state = StateKeys {
-                dir: run.checkpoint.join("state"),
-                start: progress_digest(&record.progress)?,
-                end: progress_digest(&end)?,
-            };
-            flow_source
-                .batch_plan(
-                    ctx,
-                    &config,
-                    &graph_scope,
-                    run.graph,
-                    run.flow,
-                    &intent,
-                    &end,
-                    &state,
-                )
-                .await?
-        } else {
-            let scans = intent
-                .ranges
-                .iter()
-                .map(|range| run.source.scan(range))
-                .collect::<Result<Vec<_>, _>>()?;
-            let binding = SourceBinding {
-                name: run.source_name.clone(),
-                schema: run.source.schema(),
-                descriptor: descriptor.clone(),
-                intent: intent.clone(),
-                scans,
-            };
-            let lowered = lower(
-                ctx,
-                config.clone(),
-                scope,
-                &Inputs {
-                    graph: run.graph,
-                    flow: run.flow,
-                    relations: run.relations,
-                    sources: std::slice::from_ref(&binding),
-                    statics: &[],
-                    locals: &[],
-                },
-            )
-            .await
-            .map_err(|error| SparkError::invalid(error.to_string()))?;
-            lowered.plan
+        let end = record.progress.clone().advance(&intent);
+        let state = StateKeys {
+            dir: run.checkpoint.join("state"),
+            start: progress_digest(&record.progress)?,
+            end: progress_digest(&end)?,
         };
+        let plan = run
+            .batch_plan(
+                ctx,
+                &config,
+                scope,
+                &intent,
+                &end,
+                &state,
+                descriptor.clone(),
+            )
+            .await?;
         let batch_id = i64::try_from(record.completed_batches)
             .map_err(|_| SparkError::internal("batch id overflow"))?;
         handle_microbatch(ctx, config.clone(), run.write, &aux, plan, batch_id).await?;

@@ -47,11 +47,8 @@ use super::write::{
     replace_delta_with_view,
 };
 use crate::error::{SparkError, SparkResult};
-use crate::pipelines::analysis::GraphScope;
 use crate::pipelines::graph::Name;
-use crate::pipelines::streaming::binding::SourceBinding;
 use crate::pipelines::streaming::intent::{BatchIntent, Progress, RunFrontier, next_intent};
-use crate::pipelines::streaming::lower::{Inputs, lower};
 use crate::pipelines::streaming::source::BoundedSource;
 
 /// Where a run stands, for the crash tests. Production runs pass no hook.
@@ -678,61 +675,28 @@ impl<S: Store + 'static> DurableRun<'_, S> {
         let batch: BatchIntent =
             serde_json::from_value(intent.request.clone()).map_err(encoding_error)?;
         let run = self.run;
-        let plan = if let Some(flow_source) = run.flow_source {
-            let end: Progress =
-                serde_json::from_value(intent.end_progress.clone()).map_err(encoding_error)?;
-            let graph_scope = GraphScope::new(run.graph, run.relations, run.flow);
-            let state = StateKeys {
-                dir: self
-                    .run
-                    .checkpoint
-                    .with_file_name(guard.checkpoint_index.to_string())
-                    .join("state"),
-                start: intent.start_progress_digest.clone(),
-                end: intent.end_progress_digest.clone(),
-            };
-            flow_source
-                .batch_plan(
-                    ctx,
-                    &config,
-                    &graph_scope,
-                    run.graph,
-                    run.flow,
-                    &batch,
-                    &end,
-                    &state,
-                )
-                .await?
-        } else {
-            let scans = batch
-                .ranges
-                .iter()
-                .map(|range| run.source.scan(range))
-                .collect::<Result<Vec<_>, _>>()?;
-            let binding = SourceBinding {
-                name: run.source_name.clone(),
-                schema: run.source.schema(),
-                descriptor: run.source.describe()?,
-                intent: batch.clone(),
-                scans,
-            };
-            let lowered = lower(
-                ctx,
-                config.clone(),
-                scope,
-                &Inputs {
-                    graph: run.graph,
-                    flow: run.flow,
-                    relations: run.relations,
-                    sources: std::slice::from_ref(&binding),
-                    statics: &[],
-                    locals: &[],
-                },
-            )
-            .await
-            .map_err(|error| SparkError::invalid(error.to_string()))?;
-            lowered.plan
+        let end: Progress =
+            serde_json::from_value(intent.end_progress.clone()).map_err(encoding_error)?;
+        let state = StateKeys {
+            dir: self
+                .run
+                .checkpoint
+                .with_file_name(guard.checkpoint_index.to_string())
+                .join("state"),
+            start: intent.start_progress_digest.clone(),
+            end: intent.end_progress_digest.clone(),
         };
+        let plan = run
+            .batch_plan(
+                ctx,
+                &config,
+                scope,
+                &batch,
+                &end,
+                &state,
+                run.source.describe()?,
+            )
+            .await?;
         let batch_id = i64::try_from(intent.batch_sequence)
             .map_err(|_| SparkError::internal("batch id overflow"))?;
         let prepared = prepare_microbatch(
