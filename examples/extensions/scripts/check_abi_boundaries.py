@@ -22,15 +22,24 @@ from types import SimpleNamespace
 
 from check_compatibility import wheel_inventory
 
+HOST = {'datafusion_version': '55.2.0', 'arrow_version': '59.2.0'}
+
+
+def moved(version, step):
+    """A version that differs from the host's in exactly one component."""
+    major, minor, patch = map(int, version.split('.'))
+    return {'previous-minor': f'{major}.{minor - 1}.0',
+            'hypothetical-patch': f'{major}.{minor}.{patch + 1}',
+            'next-major': f'{major + 1}.0.0'}[step]
+
+
 VERSIONS = {
     'api-old': {'api_version': 0},
     'api-new': {'api_version': 2},
-    'df-previous-minor': {'datafusion_version': '55.0.0'},
-    'df-hypothetical-patch': {'datafusion_version': '55.1.1'},
-    'df-next-major': {'datafusion_version': '56.0.0'},
-    'arrow-previous-minor': {'arrow_version': '59.2.0'},
-    'arrow-hypothetical-patch': {'arrow_version': '59.3.1'},
-    'arrow-next-major': {'arrow_version': '60.0.0'},
+    **{f'df-{step}': {'datafusion_version': moved(HOST['datafusion_version'], step)}
+       for step in ['previous-minor', 'hypothetical-patch', 'next-major']},
+    **{f'arrow-{step}': {'arrow_version': moved(HOST['arrow_version'], step)}
+       for step in ['previous-minor', 'hypothetical-patch', 'next-major']},
 }
 LEASES = ['valid', 'version-old', 'version-new', 'size-short', 'size-long',
           'quota-mismatch', 'null-owner', 'guard-version', 'guard-size']
@@ -128,6 +137,11 @@ def version_probe(case, binary, directory):
     tests = Path(__file__).resolve().parents[1] / 'tests'
     sys.path.insert(0, str(tests))
     from test_protocol import assert_loader_rejected, manifest
+    defaults = manifest()
+    assert {key: defaults[key] for key in HOST} == HOST, \
+        'the boundary fixtures must move relative to the host tuple that test_protocol.manifest declares'
+    assert VERSIONS[case] != {key: defaults[key] for key in VERSIONS[case]}, \
+        'a fixture equal to the host tuple would be accepted and tests nothing'
     request = SimpleNamespace(config=SimpleNamespace(getoption=lambda _name: binary))
     events = assert_loader_rejected(request, directory,
                                    [dict(manifest=manifest(**VERSIONS[case]))], 'build mismatch')

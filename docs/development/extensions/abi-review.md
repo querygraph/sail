@@ -218,6 +218,57 @@ Test binaries and receipts are preserved before removing this round’s temporar
 build caches and worktrees. The task container and VM are stopped afterward;
 the pre-existing default Colima profile remains running.
 
+## Merged-tree host row (macOS arm64, 2026-11-03)
+
+The merged declarative-pipelines tree (`work/spark-declarative-pipelines`, tip
+`157d5714c`) pins the host to DataFusion 55.2.0, Arrow 59.2.0 and Rust 1.98.1,
+and the Sedona and Nutmeg wheels were rebuilt against that tuple in the examples
+re-pin unit (`6a4d90f02`). This round runs that unchanged wheel pair, by the
+recipe above, against three host executables built by the merge gates on one
+macOS arm64 machine. It is a host-revision row for the merged tree, not a repeat
+of the compiler or dependency experiments above, and it is not the Linux x86_64
+row: the Morrobay harness was occupied and its cache has to be rebuilt
+([linux-environment.md](linux-environment.md)), and the gate machine had no
+usable Linux runtime.
+
+| Host case | Source | Local | Actor cluster | Process cluster |
+| --- | --- | --- | --- | --- |
+| lifecycle-complete-a5 | `97556263a` | 67 passed, 3 skip | 68 passed, 2 skip | 68 passed, 2 skip |
+| wheel-qualification-a1b | `6a4d90f02` | 67 passed, 3 skip | 68 passed, 2 skip | 68 passed, 2 skip |
+| merged-tip-b7 | `157d5714c` | 67 passed, 3 skip | 68 passed, 2 skip | 68 passed, 2 skip |
+
+Nine runs, **609 integration passes and 21 expected skips**; the skips are the
+ones the merged tree's qualification already explains in
+[design-review.md](design-review.md). The three executables are the gate builds
+of the lifecycle-complete tip before the performance units, the examples re-pin
+tip and the merged tip. Each has a distinct source revision and binary hash;
+all were built with Rust 1.98.1 under `--locked` with `CARGO_INCREMENTAL=0`,
+and the gate logs that built them are in the bundle. The runner verifies the
+installed wheel payload before and after the round and each host's hash before
+and after its runs.
+
+The boundary runner carried literal fixture versions from the 55.1.0/59.3.0
+round. Against the 55.2.0/59.2.0 host its `arrow-previous-minor` fixture
+advertised the host's own Arrow version and was accepted, so the probe failed
+(`DID NOT RAISE`); that run is retained as `boundaries-stale-fixtures`. The
+runner now derives its fixtures from a declared host tuple, asserts that the
+tuple matches the loader fixture defaults in `test_protocol.py`, and refuses a
+fixture equal to the host, so the next re-pin fails loudly instead of accepting
+a probe. With the corrected fixtures all 17 probes pass against the merged tip:
+eight manifest refusals before binding and nine lease probes, with the 40-byte
+lease and one retain/release pair for the valid case. Wheels and binary are
+unchanged across the run, and the 20 harness unit tests under
+`examples/extensions/scripts/tests` pass.
+
+Receipts, per-run logs, the host manifest, the environment envelope and both
+runner versions are in the
+[merged-tree evidence bundle](evidence/extension-merged-tree-abi-evidence.tar.gz)
+([checksum](evidence/extension-merged-tree-abi-evidence.tar.gz.sha256)); the
+[machine-readable rows](abi-merged-tree-matrix.json) carry case labels, source
+commits, binary and wheel hashes and outcomes. Binaries and wheels are omitted
+and prior evidence is not overwritten. The gate machine was running other work
+concurrently; elapsed times carry no performance meaning.
+
 ## Consequences for the design
 
 Compiler identity need not be part of the loader's acceptance key for the tested

@@ -448,11 +448,15 @@ review units 1 and 7 ask for; the branch's matrix did not assert them, and on th
 they are host tests, so the matrix's green result here says more than the same count did on
 the branch.
 
-This is the macOS arm64 qualification of the merged tree. The Linux x86_64 host row for this
-tree (the `sail-extensions-gates` harness on Morrobay, with `hosts.json` and
-[abi-review.md](abi-review.md) extended) is a separate unit and is not claimed here; its
-environment has to be rebuilt first, since the harness cache did not survive the profile
-migration recorded in [linux-environment.md](linux-environment.md).
+This is the macOS arm64 qualification of the merged tree. The merged-tree host row in
+[abi-review.md](abi-review.md) adds the unchanged wheel pair run against three gate-built hosts
+(`97556263a`, `6a4d90f02`, `157d5714c`) in local, actor-cluster and process-cluster modes, 609
+passes and 21 expected skips, and the 17 refusal and lease boundary probes against the merged
+tip; the boundary runner's version fixtures now move with the declared host tuple. The Linux
+x86_64 host row for this tree (the `sail-extensions-gates` harness on Morrobay, with
+`hosts.json` extended) remains a separate unit and is not claimed here; its environment has to
+be rebuilt first, since the harness cache did not survive the profile migration recorded in
+[linux-environment.md](linux-environment.md).
 
 ### Prior qualification, retained
 

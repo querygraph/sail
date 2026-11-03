@@ -1,0 +1,140 @@
+{
+  "recorded_utc": "2026-11-03T22:18:15.790249+00:00",
+  "scope": "Merged declarative-pipelines tree, unchanged wheel pair of the examples re-pin unit, one macOS arm64 gate machine; a host-revision row, not an ABI range or a Linux result",
+  "tree": "work/spark-declarative-pipelines",
+  "tip": "157d5714c4e9ba54625f10dc8e844068160a5a14",
+  "extension_compiler": "1.98.1",
+  "rows": [
+    {
+      "platform": "macOS-arm64",
+      "case": "lifecycle-complete-a5",
+      "source_commit": "97556263a9cc410f446241a809e749b027b4b8ba",
+      "rustc": "1.98.1",
+      "datafusion": "55.2.0",
+      "datafusion_ffi": "55.2.0",
+      "arrow": "59.2.0",
+      "binary_sha256": "8af6516cadd1c3a8bf97fecb7de5acb00a91f38a6ffc13d6fa13b3ebea23a287",
+      "wheel_sha256": {
+        "sail_nutmeg-0.1.0-cp312-cp312-macosx_11_0_arm64.whl": "ff934709fb68a608fc1f0bb01908ac6cd5514f53e1d1c8e45da760772706d00f",
+        "sail_sedona_extension-0.1.0-cp312-cp312-macosx_11_0_arm64.whl": "58e0fe8b8e10abc5d6203e91912baed78d091ebbb75f90f3f2ac3fc7dc1f7636"
+      },
+      "runs": [
+        {
+          "mode": "local",
+          "passed": 67,
+          "skipped": 3,
+          "exit_code": 0
+        },
+        {
+          "mode": "local-cluster",
+          "passed": 68,
+          "skipped": 2,
+          "exit_code": 0
+        },
+        {
+          "mode": "process-cluster",
+          "passed": 68,
+          "skipped": 2,
+          "exit_code": 0
+        }
+      ],
+      "receipt": "compatibility/receipt.json",
+      "classification": "qualified artifact combination on the merged tree"
+    },
+    {
+      "platform": "macOS-arm64",
+      "case": "wheel-qualification-a1b",
+      "source_commit": "6a4d90f0204104f4940e40475fce3fcf43cde5ae",
+      "rustc": "1.98.1",
+      "datafusion": "55.2.0",
+      "datafusion_ffi": "55.2.0",
+      "arrow": "59.2.0",
+      "binary_sha256": "144e90a192aa42fb06fc03b42bdce8b831fca605bd1037fc766c73ca97a9bbe3",
+      "wheel_sha256": {
+        "sail_nutmeg-0.1.0-cp312-cp312-macosx_11_0_arm64.whl": "ff934709fb68a608fc1f0bb01908ac6cd5514f53e1d1c8e45da760772706d00f",
+        "sail_sedona_extension-0.1.0-cp312-cp312-macosx_11_0_arm64.whl": "58e0fe8b8e10abc5d6203e91912baed78d091ebbb75f90f3f2ac3fc7dc1f7636"
+      },
+      "runs": [
+        {
+          "mode": "local",
+          "passed": 67,
+          "skipped": 3,
+          "exit_code": 0
+        },
+        {
+          "mode": "local-cluster",
+          "passed": 68,
+          "skipped": 2,
+          "exit_code": 0
+        },
+        {
+          "mode": "process-cluster",
+          "passed": 68,
+          "skipped": 2,
+          "exit_code": 0
+        }
+      ],
+      "receipt": "compatibility/receipt.json",
+      "classification": "qualified artifact combination on the merged tree"
+    },
+    {
+      "platform": "macOS-arm64",
+      "case": "merged-tip-b7",
+      "source_commit": "157d5714c4e9ba54625f10dc8e844068160a5a14",
+      "rustc": "1.98.1",
+      "datafusion": "55.2.0",
+      "datafusion_ffi": "55.2.0",
+      "arrow": "59.2.0",
+      "binary_sha256": "43312151df9122c4bc2600790f2a26f8cc6b8200275b2c6b19fc2bc8cf3e2a91",
+      "wheel_sha256": {
+        "sail_nutmeg-0.1.0-cp312-cp312-macosx_11_0_arm64.whl": "ff934709fb68a608fc1f0bb01908ac6cd5514f53e1d1c8e45da760772706d00f",
+        "sail_sedona_extension-0.1.0-cp312-cp312-macosx_11_0_arm64.whl": "58e0fe8b8e10abc5d6203e91912baed78d091ebbb75f90f3f2ac3fc7dc1f7636"
+      },
+      "runs": [
+        {
+          "mode": "local",
+          "passed": 67,
+          "skipped": 3,
+          "exit_code": 0
+        },
+        {
+          "mode": "local-cluster",
+          "passed": 68,
+          "skipped": 2,
+          "exit_code": 0
+        },
+        {
+          "mode": "process-cluster",
+          "passed": 68,
+          "skipped": 2,
+          "exit_code": 0
+        }
+      ],
+      "receipt": "compatibility/receipt.json",
+      "classification": "qualified artifact combination on the merged tree"
+    }
+  ],
+  "integration_passed": 609,
+  "integration_skipped": 21,
+  "boundary_probes": {
+    "binary_sha256": "43312151df9122c4bc2600790f2a26f8cc6b8200275b2c6b19fc2bc8cf3e2a91",
+    "source_commit": "157d5714c4e9ba54625f10dc8e844068160a5a14",
+    "probes": 17,
+    "passed": 17,
+    "status": "passed",
+    "wheels_unchanged": true,
+    "binary_unchanged": true,
+    "receipt": "boundaries/receipt.json",
+    "stale_fixture_run": {
+      "receipt": "boundaries-stale-fixtures/receipt.json",
+      "status": "failed",
+      "failed_probe": "manifest/arrow-previous-minor",
+      "reason": "the fixture advertised the host Arrow 59.2.0 and was accepted"
+    }
+  },
+  "harness_unit_tests": {
+    "path": "examples/extensions/scripts/tests",
+    "passed": 20
+  },
+  "evidence": "evidence/extension-merged-tree-abi-evidence.tar.gz"
+}
