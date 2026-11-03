@@ -117,7 +117,11 @@ impl Actor for TaskRunnerActor {
         }
     }
 
-    async fn stop(self, _ctx: &mut ActorContext<Self>) {
+    async fn stop(mut self, _ctx: &mut ActorContext<Self>) {
+        // Subscribers of this runner's streams, local or through the worker's
+        // Flight server, end now; the producers' futures die at their next
+        // yield, which the worker's server stop must not wait for.
+        self.extensions.local_streams.end_all_streams();
         if let Some(streams) = self.extensions.celeborn_streams {
             streams.stop().await;
         }
