@@ -162,7 +162,7 @@ An enrolled Delta table carries the property `sail.autocdc.authority`. Any Sail 
 table file:///.../customers/ is enrolled with AutoCDC authority ... and refuses a write without its fence
 ```
 
-`ALTER TABLE` is refused the same way. To change the table yourself, drop it and run a full refresh, which recreates it.
+`ALTER TABLE` is refused the same way, whether the table is named through a catalog or by its path (`ALTER TABLE delta.`/path/to/customers` ...`). To change the table yourself, drop it and run a full refresh, which recreates it; a table created again at the same location is not the enrolled one, and nothing refuses writes to it until the refresh adopts it.
 
 ## Limits in this release
 
