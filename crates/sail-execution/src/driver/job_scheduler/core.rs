@@ -11,6 +11,9 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use indexmap::{IndexMap, IndexSet};
 use log::{debug, warn};
 use sail_common::actor::ActorContext;
+use sail_common_datafusion::driver_extension::{
+    contains_driver_extension, release_driver_extensions,
+};
 use sail_common_datafusion::error::CommonErrorCause;
 use sail_python_udf::error::PyErrExtractor;
 use sail_system_store::SystemEvent;
@@ -206,6 +209,18 @@ impl JobScheduler {
             .any(|x| matches!(x.state, TaskRegionState::Failed))
         {
             let cause = Self::infer_job_failure_cause(job);
+            let cause = if job
+                .graph
+                .stages()
+                .iter()
+                .any(|stage| contains_driver_extension(&stage.plan))
+            {
+                CommonErrorCause::Execution(format!(
+                    "driver extension task failed; automatic retry disabled; an unacknowledged mutation outcome is indeterminate: {cause}"
+                ))
+            } else {
+                cause
+            };
             if let JobState::Running { output, .. } = &job.state {
                 actions.push(JobAction::FailJobOutput {
                     handle: output.handle(),
@@ -251,6 +266,18 @@ impl JobScheduler {
 
     fn update_task_regions(job: &mut JobDescriptor, task_max_attempts: usize) {
         for (r, region) in job.topology.regions.iter().enumerate() {
+            // A lost acknowledgement cannot distinguish a committed native
+            // mutation from one canceled before publication. Never re-execute
+            // a region containing a driver-resident native operation.
+            let max_attempts = if region
+                .tasks
+                .iter()
+                .any(|task| contains_driver_extension(&job.graph.stages()[task.stage].plan))
+            {
+                1
+            } else {
+                task_max_attempts
+            };
             let failed = region.tasks.iter().any(|t| {
                 let attempts = &job.stages[t.stage].tasks[t.partition].attempts;
                 // A terminal cause can arrive after the attempt was canceled or replaced.
@@ -264,7 +291,7 @@ impl JobScheduler {
                 }
                 if let Some(attempt) = attempts.last()
                     && matches!(attempt.state, TaskState::Failed | TaskState::Canceled)
-                    && attempts.len() >= task_max_attempts
+                    && attempts.len() >= max_attempts
                 {
                     return true;
                 }
@@ -650,6 +677,9 @@ impl JobScheduler {
             context: job.context.clone(),
         });
         job.state.finish_output(outcome);
+        for stage in job.graph.stages() {
+            release_driver_extensions(&stage.plan);
+        }
         event_reporter.report(SystemEvent::JobUpdated {
             session_id,
             job_id: u64::from(job_id),
@@ -1130,6 +1160,10 @@ impl StageGroup {
         self.buckets[bucket].push(entry);
     }
 }
+
+#[cfg(test)]
+#[path = "native_retry_tests.rs"]
+mod native_retry_tests;
 
 #[cfg(test)]
 mod tests {

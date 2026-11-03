@@ -4,7 +4,7 @@ use datafusion::arrow::datatypes::Schema;
 use datafusion::common::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion_proto::protobuf::PhysicalPlanNode;
-use log::{error, warn};
+use log::{debug, error, warn};
 use prost::Message;
 use sail_common::actor::{ActorAction, ActorContext};
 use sail_common_datafusion::error::CommonErrorCause;
@@ -132,12 +132,17 @@ impl TaskRunnerActor {
                 });
             }
             TaskRunnerPlacement::Worker {
+                worker_id,
                 sequence,
                 driver,
                 worker,
                 retry_strategy,
                 ..
             } => {
+                debug!(
+                    "worker_task_status worker_id={worker_id} job_id={} stage={} partition={} attempt={} status={status}",
+                    key.job_id, key.stage, key.partition, key.attempt
+                );
                 let seq = *sequence;
                 *sequence = match seq.checked_add(1) {
                     Some(s) => s,

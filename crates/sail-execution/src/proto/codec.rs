@@ -101,10 +101,12 @@ use sail_common_datafusion::catalog::{
     CatalogPartitionField, LakehouseExecutionContext, PartitionTransform,
 };
 use sail_common_datafusion::datasource::PhysicalSinkMode;
+use sail_common_datafusion::driver_extension::{DRIVER_CODEC_PREFIX, DriverExtensionExec};
 use sail_common_datafusion::input_file::{
     InputFileBlockLengthFunc, InputFileBlockStartFunc, InputFileMetadataSource,
 };
 use sail_common_datafusion::lakeprocedure::LakeProcedureRootPlacement;
+use sail_common_datafusion::native_scalar::{decode_scalar, encode_scalar};
 use sail_common_datafusion::schema_evolution::{
     SchemaEvolutionCastColumnExpr, SchemaEvolutionDefaultExpr,
     SchemaEvolutionPhysicalExprAdapterFactoryWithMatching, SchemaEvolutionTimezoneMode,
@@ -385,6 +387,9 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
         ctx: &TaskContext,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        if buf.starts_with(DRIVER_CODEC_PREFIX) {
+            return DriverExtensionExec::decode(buf, inputs, ctx);
+        }
         let node = ExtendedPhysicalPlanNode::decode(buf)
             .map_err(|e| plan_datafusion_err!("failed to decode plan: {e}"))?;
         let ExtendedPhysicalPlanNode {
@@ -2298,6 +2303,9 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
         buf: &mut Vec<u8>,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<()> {
+        if let Some(native) = node.downcast_ref::<DriverExtensionExec>() {
+            return native.encode(buf);
+        }
         let mut file_scan_identity = None;
         let node_kind = if let Some(range) = node.downcast_ref::<RangeExec>() {
             let schema = try_encode_schema(range.original_schema().as_ref())?;
@@ -3613,6 +3621,9 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
     }
 
     fn try_decode_udf(&self, name: &str, buf: &[u8]) -> Result<Arc<ScalarUDF>> {
+        if buf.starts_with(sail_common_datafusion::native_scalar::SCALAR_CODEC_PREFIX) {
+            return decode_scalar(name, buf);
+        }
         // Driver-local tasks do not have the worker's default function registry.
         // Empty definitions use the same built-ins as a default DataFusion session.
         if buf.is_empty() {
@@ -4197,6 +4208,9 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
     }
 
     fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> Result<()> {
+        if encode_scalar(node, buf)? {
+            return Ok(());
+        }
         // TODO: Implement custom registry to avoid codec for built-in functions
         let node_inner = node.inner();
         let udf_kind: UdfKind = if (node.as_async().is_some()

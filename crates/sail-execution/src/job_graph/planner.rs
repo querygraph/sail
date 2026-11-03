@@ -616,14 +616,7 @@ fn plan_job_graph_stages(
         let plan =
             create_rescale_input(child, coalesce.output_partitions(), graph, scalar_context)?;
         PlannedSubtree::without_pending_scalar_subquery_expr(plan)
-    } else if subtree.plan.is::<SystemTableExec>()
-        || subtree.plan.is::<CatalogCommandExec>()
-        || is_coordinator_lake_procedure(&subtree.plan)
-        || subtree.plan.is::<FileDeleteExec>()
-        || subtree.plan.is::<DeltaCommitExec>()
-        || subtree.plan.is::<IcebergCommitExec>()
-        || subtree.plan.is::<RemoteCheckpointCommitExec>()
-    {
+    } else if is_driver_stage_plan(&subtree.plan) {
         if matches!(driver_stage_handling, DriverStageHandling::PreserveRoot) {
             subtree.into_planned_subtree()
         } else {
@@ -769,6 +762,7 @@ fn is_driver_stage_plan(plan: &Arc<dyn ExecutionPlan>) -> bool {
     }
 
     plan.is::<SystemTableExec>()
+        || plan.is::<sail_common_datafusion::driver_extension::DriverExtensionExec>()
         || plan.is::<CatalogCommandExec>()
         || is_coordinator_lake_procedure(plan)
         || plan.is::<FileDeleteExec>()

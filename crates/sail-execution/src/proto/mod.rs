@@ -2,6 +2,7 @@ mod codec;
 mod converter;
 mod decode;
 mod encode;
+mod native_expr;
 
 pub use codec::RemoteExecutionCodec;
 #[cfg(test)]
