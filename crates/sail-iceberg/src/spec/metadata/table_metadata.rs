@@ -233,6 +233,7 @@ impl TableMetadata {
     pub fn current_schema(&self) -> Option<&Schema> {
         self.schemas
             .iter()
+            .rev()
             .find(|schema| schema.schema_id() == self.current_schema_id)
     }
 
@@ -255,6 +256,7 @@ impl TableMetadata {
         if let Some(sid) = snapshot_id {
             self.snapshots
                 .iter()
+                .rev()
                 .find(|snapshot| snapshot.snapshot_id() == sid)
         } else {
             None
@@ -265,6 +267,7 @@ impl TableMetadata {
     pub fn default_partition_spec(&self) -> Option<&PartitionSpec> {
         self.partition_specs
             .iter()
+            .rev()
             .find(|spec| spec.spec_id() == self.default_spec_id)
     }
 
