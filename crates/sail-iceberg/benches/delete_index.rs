@@ -220,9 +220,8 @@ fn benchmark_partition(
     index: &DeleteFileIndex,
     data_files: &[(DataFile, i64)],
 ) {
-    // The root routes each data file through `for_data_file` on its own;
-    // the shared-descriptor routing (B5) adds a batched path, measured here
-    // beside this one when it lands.
+    // The scan routes each planned data file through `for_data_file` on its
+    // own; this case measures that lookup over a thousand files.
     let input = data_files.to_vec();
     measure_batched(
         &format!("delete_partition/per_file_{name}"),

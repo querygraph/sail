@@ -115,3 +115,57 @@ What the numbers say, read across the tips:
 | `cached_get_ranges_32x4k` | 7,968 / 7,979 / 8,013 |
 | `cached_concurrent_16x4k` | 9,179 / 9,192 / 9,202 |
 | `cached_full_stream_16m` | 344,956 / 347,984 / 362,969 |
+
+## Run of 2026-11-03, the Iceberg units
+
+The same machine and binaries' build profile, one pass of the three Iceberg bench binaries built at the tip of the B4 and B5 offer (`ee5afb18f` on root `9090d7fb0`), taken in the first idle minute after a gate (load average 17.7 at the start, 17.1 at the end; the two system processes of the first run still held a core each). The root and branch columns are the first run's, for the same cases; the benched crates are unchanged between `5b9111fc7` and `9090d7fb0`. A pass of the same binaries' predecessors fourteen minutes earlier, under load 14, agrees within 1% on every case the intervening commit did not touch, and a repeat of this pass ten minutes later agrees within 2% on every case.
+
+What each unit did, read against its own cases:
+
+- **Newest-first lookups** (`2210872a1`): `metadata_current_snapshot_1000` 415 ns → 9 ns; the lookup is constant in the snapshot count.
+- **Direct v2/v3 deserialization** (`a63542c79`): `metadata_parse_1000` 2.21 ms → 0.96 ms, `metadata_parse_0` 19.9 µs → 11.4 µs, equal to the branch. Serialization is not touched by this offer and stays at the root's number (0.91 ms at 1000; the branch's 0.75 ms came from a commit not re-applied).
+- **Streamed discovery, path kept in place** (`129d94161`): `metadata_discovery_latest_4096` 620 µs → 460 µs, and 5.7 µs → 4.2 µs at 32. The fold alone, with the path copied per object, measured 613 µs; keeping the listing's path in place is where the time was, and this is below the branch's 507 µs.
+- **Lookup without redundant work** (`7717969aa`) and **shared descriptors** (`ee5afb18f`): the lookup over eight path-scoped deletes 2.99 µs → 0.75 µs, over eight global equality deletes 2.36 µs → 0.26 µs, the mixed index of 32 9.87 µs → 1.38 µs, and the per-file routing of 100 files over a mixed index 813 µs → 111 µs. The first of the two measured alone took the per-file routing to 365 µs on an empty index; the rest is the descriptor sharing. The branch's 79 ns on the path-scoped case is not reached because the root's index checks each path-scoped position delete against the data file's partition and each equality delete against the data file's bounds, rules the branch did not have.
+- **One clone per planned file** (`1ba43e432`) has no bench case; it removes one `DataFile` clone per planned file from the scan's routing and is recorded here for the list.
+
+#### Iceberg metadata updates
+
+| Case | root (5b9111fc7) median (ns) | this offer median (ns) | branch median (ns) |
+| :--- | ---: | ---: | ---: |
+| `updates_deserialize_append` | 1,876 | 1,860 | 1,768 |
+| `metadata_current_snapshot_0` | 1 | 1 | 2 |
+| `metadata_parse_0` | 19,883 | 11,403 | 11,431 |
+| `metadata_serialize_0` | 5,578 | 5,560 | 5,371 |
+| `metadata_roundtrip_0` | 25,642 | 17,085 | 18,125 |
+| `metadata_current_snapshot_100` | 61 | 9 | 14 |
+| `metadata_parse_100` | 232,134 | 103,387 | 104,155 |
+| `metadata_serialize_100` | 94,015 | 93,448 | 75,566 |
+| `metadata_roundtrip_100` | 326,560 | 196,901 | 181,136 |
+| `metadata_current_snapshot_1000` | 415 | 9 | 14 |
+| `metadata_parse_1000` | 2,212,888 | 959,581 | 966,234 |
+| `metadata_serialize_1000` | 912,142 | 911,068 | 748,162 |
+| `metadata_roundtrip_1000` | 3,140,992 | 1,878,325 | 1,722,334 |
+
+#### Iceberg metadata discovery
+
+| Case | root (5b9111fc7) median (ns) | this offer median (ns) | branch median (ns) |
+| :--- | ---: | ---: | ---: |
+| `metadata_discovery_latest_32` | 5,719 | 4,248 | 4,959 |
+| `metadata_discovery_numeric_hint_32` | 5,740 | 4,269 | 5,124 |
+| `metadata_discovery_latest_256` | 39,949 | 30,586 | 33,674 |
+| `metadata_discovery_numeric_hint_256` | 39,959 | 30,426 | 34,044 |
+| `metadata_discovery_latest_4096` | 619,565 | 459,794 | 507,429 |
+| `metadata_discovery_numeric_hint_4096` | 620,835 | 462,477 | 508,973 |
+
+#### Iceberg delete index
+
+| Case | root (5b9111fc7) median (ns) | this offer median (ns) | branch median (ns) |
+| :--- | ---: | ---: | ---: |
+| `delete_index/empty` | 78 | 4 | 4 |
+| `delete_index/path_8` | 2,992 | 750 | 79 |
+| `delete_index/global_equality_8` | 2,356 | 258 | 52 |
+| `delete_index/partition_8` | 2,281 | 320 | 192 |
+| `delete_index/mixed_32` | 9,874 | 1,378 | 342 |
+| `delete_partition/per_file_empty_1000` | 439,769 | 369,075 | — |
+| `delete_partition/per_file_path_miss_1000` | 458,712 | 390,542 | — |
+| `delete_partition/per_file_mixed_100` | 813,000 | 110,842 | — |
