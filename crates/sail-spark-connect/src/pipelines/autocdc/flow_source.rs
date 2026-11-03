@@ -29,7 +29,7 @@ use sha2::{Digest, Sha256};
 
 use super::carry::{carried, occurrences};
 use super::state::{Snapshot, StateKeys, collect};
-use super::stateful::{Within, with_state};
+use super::stateful::{JoinWatermarks, Within, with_state};
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
 use crate::pipelines::append::{
@@ -43,7 +43,8 @@ use crate::pipelines::streaming::source::{
     SourceError,
 };
 use crate::pipelines::watermark::{
-    Windowed, WithinWatermark, event_micros, max_event, windowed_aggregate, within_watermark,
+    Windowed, WithinWatermark, event_micros, find_watermarks, max_event, windowed_aggregate,
+    within_watermark,
 };
 
 /// Where a watermarked aggregate keeps each stream's open rows.
@@ -662,7 +663,14 @@ impl FlowSource {
         let within = match within_query(scope, graph, flow)? {
             Some(within) => {
                 let (marked, _) = self
-                    .resolve_query(ctx, config, scope, graph, &within.watermark.input, streams)
+                    .resolve_query(
+                        ctx,
+                        config,
+                        scope,
+                        graph,
+                        &within.watermark.input,
+                        streams.clone(),
+                    )
                     .await?;
                 let delay_ms = within.watermark.delay_micros / 1000;
                 let next = max_event(ctx, &marked, &within.watermark.event_time)
@@ -685,7 +693,47 @@ impl FlowSource {
             }
             None => None,
         };
-        let plan = with_state(ctx, plan, state, origin, within.as_ref()).await?;
+        // A join of watermarked streams evicts by the query's watermark.
+        let joins = match within {
+            Some(_) => None,
+            None => {
+                let mut marks = vec![];
+                find_watermarks(&flow.query, &mut marks)?;
+                for output in &graph.outputs {
+                    if let Some(view) = view_flow(graph, &output.name) {
+                        find_watermarks(&view.query, &mut marks)?;
+                    }
+                }
+                if marks.is_empty() {
+                    None
+                } else {
+                    let mut values = vec![];
+                    for (index, mark) in marks.iter().enumerate() {
+                        let (marked, _) = self
+                            .resolve_query(ctx, config, scope, graph, &mark.input, streams.clone())
+                            .await?;
+                        let delay_ms = mark.delay_micros / 1000;
+                        let next = max_event(ctx, &marked, &mark.event_time)
+                            .await?
+                            .map(|latest| (latest.div_euclid(1000) - delay_ms) * 1000);
+                        let mut watermarks = self.watermarks.lock().map_err(lock_error)?;
+                        let value = match (watermarks.get(&index).copied(), next) {
+                            (Some(previous), Some(next)) => Some(previous.max(next)),
+                            (previous, next) => previous.or(next),
+                        };
+                        if let Some(value) = value {
+                            watermarks.insert(index, value);
+                        }
+                        values.push(value.unwrap_or(0));
+                    }
+                    Some(JoinWatermarks {
+                        event_times: marks.iter().map(|mark| mark.event_time.clone()).collect(),
+                        current: values.into_iter().min().unwrap_or(0),
+                    })
+                }
+            }
+        };
+        let plan = with_state(ctx, plan, state, origin, within.as_ref(), joins.as_ref()).await?;
         check_stateless(&plan, false)?;
         Ok(plan)
     }

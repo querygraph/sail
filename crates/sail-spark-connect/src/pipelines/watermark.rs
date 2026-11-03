@@ -86,6 +86,11 @@ pub(super) fn find_watermarks(
             find_watermarks(&operation.left, found)?;
             find_watermarks(&operation.right, found)
         }
+        spec::QueryNode::Join(join) => {
+            find_watermarks(&join.left, found)?;
+            find_watermarks(&join.right, found)
+        }
+        spec::QueryNode::Deduplicate(deduplicate) => find_watermarks(&deduplicate.input, found),
         _ => Ok(()),
     }
 }

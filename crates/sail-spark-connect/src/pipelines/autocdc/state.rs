@@ -51,6 +51,15 @@ impl Snapshot {
         }
     }
 
+    /// A copy of the rows under their own schema.
+    pub fn clone_rows(&self) -> SparkResult<Self> {
+        Ok(Self {
+            schema: self.schema.clone(),
+            batches: self.batches.clone(),
+            watermark: self.watermark,
+        })
+    }
+
     /// The rows as a plan scanned under `alias`.
     pub fn plan(&self, alias: &str) -> SparkResult<LogicalPlan> {
         let table = MemTable::try_new(self.schema.clone(), vec![self.batches.clone()])?;

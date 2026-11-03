@@ -711,6 +711,30 @@ def test_a_deduplication_within_the_watermark_forgets_a_key_once_it_expires(stat
     assert run(transform) == [(1, 3), (2, 1)]
 
 
+def test_a_watermarked_stream_join_forgets_rows_behind_its_state_watermark(stateful):
+    send, run = stateful
+
+    def transform(frame):
+        left = frame.withWatermark("ts", "1 hour")
+        right = frame.withWatermark("ts", "1 hour").select(
+            sf.col("id").alias("rid"), sf.col("seq").alias("rseq"), sf.col("ts").alias("rts")
+        )
+        condition = (sf.col("id") == sf.col("rid")) & (sf.col("rts") >= sf.col("ts") - sf.expr("INTERVAL 30 MINUTES")) & (
+            sf.col("rts") <= sf.col("ts") + sf.expr("INTERVAL 30 MINUTES")
+        )
+        return left.join(right, condition).select("id", "name", "seq", "ts")
+
+    send("a", (1, "a", 1, T0))
+    assert run(transform) == [(1, 1)]
+    # The row at 05:00 moves the watermark to 04:00; the state watermark of
+    # each side is 03:30, and key 1's row at 00:00 is evicted.
+    send("b", (2, "b", 1, "2024-01-01T05:00:00Z"))
+    assert run(transform) == [(1, 1), (2, 1)]
+    # A row at 00:10 is behind the state watermark: late, and never paired.
+    send("c", (1, "c", 2, "2024-01-01T00:10:00Z"))
+    assert run(transform) == [(1, 1), (2, 1)]
+
+
 def test_an_aggregate_without_a_watermark_is_refused(stateful):
     send, run = stateful
     send("a", (1, "a", 1, T0))
