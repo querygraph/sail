@@ -16,7 +16,7 @@ use datafusion::prelude::{SessionContext, col};
 
 use super::state::{Snapshot, StateKeys, collect};
 use crate::error::{SparkError, SparkResult};
-use crate::pipelines::append::reads_a_stream;
+use crate::pipelines::append::{SOURCE_ALIAS, reads_a_stream};
 
 const SEEN_ALIAS: &str = "__autocdc_seen";
 const ROWS_ALIAS: &str = "__autocdc_rows";
@@ -111,12 +111,18 @@ fn load(
     }
 }
 
-/// Rows named `c0`, `c1`… under `alias`, with the columns of `schema`.
+/// Rows named `c0`, `c1`… under `alias`, with the columns of `schema`. The
+/// rows stand in for an operator that read a stream, so they are marked as a
+/// stream read themselves: an operator above them is then still stateful,
+/// and an aggregate above them still needs a watermark.
 fn as_schema(rows: &Snapshot, alias: &str, schema: &DFSchemaRef) -> SparkResult<LogicalPlan> {
-    Ok(LogicalPlanBuilder::from(rows.plan(alias)?)
+    let marked = LogicalPlanBuilder::from(rows.plan(alias)?)
+        .alias(SOURCE_ALIAS)?
+        .build()?;
+    Ok(LogicalPlanBuilder::from(marked)
         .project((0..schema.fields().len()).map(|position| {
             let (qualifier, field) = schema.qualified_field(position);
-            col(Column::new(Some(alias), format!("c{position}")))
+            col(Column::new(Some(SOURCE_ALIAS), format!("c{position}")))
                 .alias_qualified(qualifier.cloned(), field.name())
         }))?
         .build()?)
