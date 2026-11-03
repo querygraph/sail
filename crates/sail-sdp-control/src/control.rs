@@ -10,7 +10,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::identity::{
-    AuthorityIncarnation, EffectStep, FenceToken, FlowKey, IntentId, SinkIdentity, TargetKey, escape,
+    AuthorityIncarnation, EffectStep, FenceToken, FlowKey, IntentId, SinkIdentity, TargetKey,
+    escape,
 };
 use crate::records::{
     Ack, AuthorityMillis, Completion, EffectPrepare, EffectReceipt, FlowCheckpoint, Intent,

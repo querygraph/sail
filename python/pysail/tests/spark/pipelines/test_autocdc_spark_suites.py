@@ -841,8 +841,9 @@ def test_state_written_by_another_query_asks_for_a_reset(space, pipeline_factory
 
 @sail_only
 def test_another_session_cannot_write_an_enrolled_target(space, pipeline_factory, broker, remote, tmp_path):  # noqa: F811
-    """The target names the authority that fences it, so a session that never ran
-    the pipeline, with no authority of its own, is refused a write to it."""
+    """A session that never ran the pipeline is refused a write to its target: by
+    the server's shared registry when it holds the authority, and by the authority
+    the table itself names otherwise."""
     schema = "id INT, name STRING, seq BIGINT"
     _, registry, start = pipeline_factory()
     with graph_element_registration_context(registry):
@@ -862,10 +863,8 @@ def test_another_session_cannot_write_an_enrolled_target(space, pipeline_factory
     with spark_session_factory(remote) as sessions:
         other = sessions.create()
         frame = other.createDataFrame([(2, "b", 2)], schema)
-        with pytest.raises((PySparkException, SparkConnectGrpcException), match="enrolled with AutoCDC authority"):
-            frame.write.format("delta").mode("append").save(table.as_uri())
         with pytest.raises((PySparkException, SparkConnectGrpcException), match="enrolled"):
-            other.sql(f"ALTER TABLE delta.`{table.as_uri()}` SET TBLPROPERTIES ('x' = 'y')")
+            frame.write.format("delta").mode("append").save(table.as_uri())
     assert rows(space, "id", "seq") == [(1, 1)]
 
 
