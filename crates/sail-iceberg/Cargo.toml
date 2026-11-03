@@ -73,3 +73,19 @@ sail-telemetry = { path = "../sail-telemetry" }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "manifest_parsing"
+harness = false
+
+[[bench]]
+name = "metadata_updates"
+harness = false
+
+[[bench]]
+name = "delete_index"
+harness = false
+
+[[bench]]
+name = "metadata_discovery"
+harness = false
