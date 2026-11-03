@@ -1,0 +1,5 @@
+.deps/
+target/
+dist/
+__pycache__/
+*.so

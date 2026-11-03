@@ -1,0 +1,32 @@
+{
+  "timestamp_utc": "2026-09-26T00:21:34.282016+00:00",
+  "host": "Capitola.local",
+  "sedonadb_commit": "0a1993d9be8bcf52150593ad08fc6a3412d50f29",
+  "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "python": "3.12.13",
+  "datafusion": "55.2.0",
+  "arrow_and_parquet": "59.2.0",
+  "datafusion_ffi_features": [
+    "default",
+    "parquet"
+  ],
+  "geos": "3.14.1",
+  "native_tests": {
+    "command": "cargo test --locked",
+    "passed": 4,
+    "failed": 0
+  },
+  "wheel_smoke": {
+    "command": "python scripts/smoke.py",
+    "primary_scalars": 128,
+    "result": "passed"
+  },
+  "wheel": {
+    "path": "dist/sail_sedona_extension-0.1.0-cp312-cp312-macosx_11_0_arm64.whl",
+    "bytes": 9712545,
+    "sha256": "11c1d4601443efa5b162c8ccacbaedf38c5bf89cb7bd8db7f4f1d62120241e6b"
+  },
+  "patch_sha256": "90db28761250319ed7e194b9acefbebc71e740a51efe2f0f27955b461eb4bbde",
+  "cargo_lock_sha256": "7984e003f77c11fbb96f538e88a3cd0deef76f9a34677e1565a927b61f1990da",
+  "boundary": "Independent native wheel and capsule tests; Sail end-to-end receipts are maintained by the host PoC."
+}

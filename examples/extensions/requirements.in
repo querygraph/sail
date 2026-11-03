@@ -1,0 +1,6 @@
+pyspark[connect]==4.2.1
+pyarrow==21.0.0
+pytest==8.4.2
+maturin==1.9.6
+apache-sedona==1.8.0
+delocate==0.13.0; sys_platform == 'darwin'

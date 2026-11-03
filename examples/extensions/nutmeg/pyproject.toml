@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "sail-nutmeg"
+version = "0.1.0"
+description = "Nutmeg graph kernels as a native Sail Connect extension proof of concept"
+requires-python = ">=3.10"
+license = "MIT OR Apache-2.0"
+
+[project.optional-dependencies]
+client = ["pyspark[connect]>=4.0,<4.2"]
+
+[project.entry-points."pysail.extensions"]
+nutmeg = "sail_nutmeg:extension"
+
+[tool.maturin]
+python-source = "python"
+module-name = "sail_nutmeg._native"
+features = ["extension-module"]

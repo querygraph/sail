@@ -1,0 +1,27 @@
+{
+  "driver": {
+    "repo": "/path/to/sail-candidate",
+    "python": "/path/to/venv/bin/python",
+    "sail": "/path/to/gate/host/debug/sail",
+    "advertise": "192.0.2.10",
+    "connect_port": 50151,
+    "gateway_port": 50152
+  },
+  "workers": [
+    {
+      "repo": "/path/to/sail-candidate",
+      "python": "/path/to/venv/bin/python",
+      "sail": "/path/to/gate/host/debug/sail",
+      "advertise": "192.0.2.10",
+      "port": 50161
+    },
+    {
+      "repo": "/path/on/worker/sail-candidate",
+      "python": "/path/on/worker/venv/bin/python",
+      "sail": "/path/on/worker/gate/host/debug/sail",
+      "advertise": "192.0.2.11",
+      "port": 50162,
+      "ssh": "worker-host"
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+# Unified diffs encode empty context lines as one space.
+*.patch -whitespace
