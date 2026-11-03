@@ -15,6 +15,7 @@ use futures::{Stream, StreamExt};
 use sail_common::actor::ActorContext;
 use sail_common_datafusion::error::CommonErrorCause;
 use tokio::sync::mpsc;
+use tokio::task::AbortHandle;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 
 use crate::driver::{DriverActor, DriverMessage};
@@ -100,13 +101,16 @@ pub fn build_job_output(
     job_id: JobId,
     schema: SchemaRef,
     stopping: Arc<AtomicBool>,
-) -> (JobOutputManager, SendableRecordBatchStream) {
+) -> (JobOutputManager, AbortHandle, SendableRecordBatchStream) {
     let (sender, receiver) = mpsc::channel(JobOutputItem::CHANNEL_SIZE);
     let (tx, rx) = mpsc::channel(1);
     let handle = ctx.handle().clone();
     let ended = Arc::new(AtomicBool::new(false));
     let output = truncation_guarded(job_id, rx, ended.clone());
-    ctx.spawn(async move {
+    // The forwarder owns the Flight streams fetched from the workers. A
+    // stopping driver aborts it through this handle before it closes the
+    // workers, so no worker waits on a response the driver still holds open.
+    let forwarder = ctx.spawn(async move {
         let outcome = forward_job_output(JobOutputStream::new(receiver), &tx).await;
         // The output of a stopping driver ends because its job was abandoned,
         // which looks the same here as the end of a finished job.
@@ -122,6 +126,7 @@ pub fn build_job_output(
     });
     (
         JobOutputManager { sender },
+        forwarder,
         Box::pin(RecordBatchStreamAdapter::new(schema, output)),
     )
 }

@@ -149,6 +149,8 @@ where
         while let Some(result) = self.tasks.try_join_next() {
             match result {
                 Ok(()) => {}
+                // An actor aborts a task of its own on purpose.
+                Err(e) if e.is_cancelled() => {}
                 Err(e) => error!("failed to join task spawned by actor: {e}"),
             }
         }
