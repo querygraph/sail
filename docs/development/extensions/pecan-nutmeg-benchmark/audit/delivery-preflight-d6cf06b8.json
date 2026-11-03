@@ -1,0 +1,79 @@
+{
+  "recorded_utc": "2026-09-27T21:24:08.406391+00:00",
+  "boundary": "Preserved superseded documentation preflight: the evidence guide passed a JSON filename to the auditor --summary option, which takes its containing directory. Corrected the guide and delivery command; benchmark source/data are unchanged.",
+  "original_receipt": {
+    "started_utc": "2026-09-27T21:23:14.318794+00:00",
+    "source_sha": "d6cf06b81df1dbca1466e47e3a27c004a1a0e9d3",
+    "free_disk_before": 68196741120,
+    "commands": [
+      {
+        "name": "benchmark-launcher",
+        "command": [
+          "/Users/alexy/src/sail-extensions-poc/.venvs/extensions-x86-final-de8e67098/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "examples/extensions/benchmarks",
+          "examples/extensions/scripts/tests"
+        ],
+        "returncode": 0
+      },
+      {
+        "name": "auditor-corruption-controls",
+        "command": [
+          "/Users/alexy/src/sail-extensions-poc/.venvs/extensions-x86-final-de8e67098/bin/python",
+          "/private/tmp/sail-pecan-report-d6cf06b8/docs/development/extensions/pecan-nutmeg-benchmark/reproduce/test_audit_matrix.py"
+        ],
+        "returncode": 0
+      },
+      {
+        "name": "public-primary-audit",
+        "command": [
+          "/Users/alexy/src/sail-extensions-poc/.venvs/extensions-x86-final-de8e67098/bin/python",
+          "/private/tmp/sail-pecan-report-d6cf06b8/docs/development/extensions/pecan-nutmeg-benchmark/reproduce/audit_matrix.py",
+          "--repo",
+          "/private/tmp/sail-pecan-report-d6cf06b8",
+          "--kind",
+          "main",
+          "--evidence",
+          "/private/tmp/sail-pecan-report-d6cf06b8/target/pecan-public-proof/primary/export-matrix-3c1fd28c",
+          "--summary",
+          "/private/tmp/sail-pecan-report-d6cf06b8/docs/development/extensions/pecan-nutmeg-benchmark/primary/summary.json",
+          "--output",
+          "/Users/alexy/src/sail-extensions-poc/target/pecan-benchmark/gates-report-d6cf06b8/public-primary-audit"
+        ],
+        "returncode": 1
+      }
+    ],
+    "documentation_blocks_checked": [
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "python",
+      "python",
+      "python",
+      "json",
+      "bash",
+      "bash",
+      "python"
+    ],
+    "unpacked_files_verified": 2630,
+    "outcome": "failed",
+    "error": "AssertionError(('public-primary-audit', 1))",
+    "finished_utc": "2026-09-27T21:23:23.440391+00:00",
+    "ending_sha": "d6cf06b81df1dbca1466e47e3a27c004a1a0e9d3",
+    "ending_status": "",
+    "free_disk_after": 68132945920
+  },
+  "original_failure_log": "Traceback (most recent call last):\n  File \"/private/tmp/sail-pecan-report-d6cf06b8/docs/development/extensions/pecan-nutmeg-benchmark/reproduce/audit_matrix.py\", line 724, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"/private/tmp/sail-pecan-report-d6cf06b8/docs/development/extensions/pecan-nutmeg-benchmark/reproduce/audit_matrix.py\", line 715, in main\n    result = Audit(args).run()\n             ^^^^^^^^^^^^^^^^^\n  File \"/private/tmp/sail-pecan-report-d6cf06b8/docs/development/extensions/pecan-nutmeg-benchmark/reproduce/audit_matrix.py\", line 549, in run\n    existing = read(self.args.summary / 'summary.json')\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/private/tmp/sail-pecan-report-d6cf06b8/docs/development/extensions/pecan-nutmeg-benchmark/reproduce/audit_matrix.py\", line 35, in read\n    return json.loads(path.read_text())\n                      ^^^^^^^^^^^^^^^^\n  File \"/Users/alexy/.local/share/uv/python/cpython-3.12.13-macos-x86_64-none/lib/python3.12/pathlib.py\", line 1027, in read_text\n    with self.open(mode='r', encoding=encoding, errors=errors) as f:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/alexy/.local/share/uv/python/cpython-3.12.13-macos-x86_64-none/lib/python3.12/pathlib.py\", line 1013, in open\n    return io.open(self, mode, buffering, encoding, errors, newline)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nNotADirectoryError: [Errno 20] Not a directory: '/private/tmp/sail-pecan-report-d6cf06b8/docs/development/extensions/pecan-nutmeg-benchmark/primary/summary.json/summary.json'\n"
+}

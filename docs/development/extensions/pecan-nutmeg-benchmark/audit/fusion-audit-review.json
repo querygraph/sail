@@ -1,0 +1,1746 @@
+{
+  "recorded_utc": "2026-09-27T21:15:51.307810+00:00",
+  "audit_sha256": "8c71e9b9f570e1045d92b5c3f0a255bfeb5f8f78293bc4eabe10b4b31f5fc84b",
+  "auditor_sha256": "1e9e6b00a00fb34b76ae58251f6a2161127e58ac00b7db3cea48761ebe3e77c6",
+  "sources": {
+    "harness_source_sha": "3fd6978757713482942656cb0b23205fe57647d0",
+    "runtime_source_sha": "70b0d1cab2cab945d4dbaf6842ee0e38c8aa1822",
+    "native_source_sha": "9d7155aa2302d9dda4e93e48ee3fd81aac1ee637"
+  },
+  "outcomes": {
+    "passed": 78
+  },
+  "comparisons": [
+    {
+      "suite": "chain-diagnostic",
+      "dataset": "chain-512",
+      "mode": "process-cluster",
+      "engine": "nutmeg-datafusion",
+      "fused": {
+        "seconds": {
+          "samples": 1,
+          "minimum": 2.2379164020003373,
+          "median": 2.2379164020003373,
+          "maximum": 2.2379164020003373
+        },
+        "pss_bytes": {
+          "samples": 1,
+          "minimum": 818269184,
+          "median": 818269184,
+          "maximum": 818269184
+        },
+        "execution_samples": {
+          "samples": 1,
+          "minimum": 31,
+          "median": 31,
+          "maximum": 31
+        },
+        "cells": [
+          {
+            "cell_id": "chain-diagnostic-r1-chain-512-nutmeg-datafusion-wcc-fused",
+            "repeat": 1,
+            "seconds": 2.2379164020003373,
+            "pss_bytes": 818269184,
+            "execution_samples": 31
+          }
+        ]
+      },
+      "optimized": {
+        "seconds": {
+          "samples": 1,
+          "minimum": 3.0506517049998365,
+          "median": 3.0506517049998365,
+          "maximum": 3.0506517049998365
+        },
+        "pss_bytes": {
+          "samples": 1,
+          "minimum": 793106432,
+          "median": 793106432,
+          "maximum": 793106432
+        },
+        "execution_samples": {
+          "samples": 1,
+          "minimum": 41,
+          "median": 41,
+          "maximum": 41
+        },
+        "cells": [
+          {
+            "cell_id": "chain-diagnostic-r1-chain-512-nutmeg-datafusion-wcc-optimized",
+            "repeat": 1,
+            "seconds": 3.0506517049998365,
+            "pss_bytes": 793106432,
+            "execution_samples": 41
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.7335863344650343,
+      "ranges_overlap_seconds": false,
+      "fused_over_unfused_pss_bytes": 1.0317268288148242,
+      "ranges_overlap_pss_bytes": false
+    },
+    {
+      "suite": "chain-diagnostic",
+      "dataset": "chain-512",
+      "mode": "process-cluster",
+      "engine": "nutmeg-native",
+      "optimized": {
+        "seconds": {
+          "samples": 1,
+          "minimum": 0.04569969700060028,
+          "median": 0.04569969700060028,
+          "maximum": 0.04569969700060028
+        },
+        "pss_bytes": {
+          "samples": 1,
+          "minimum": 451982336,
+          "median": 451982336,
+          "maximum": 451982336
+        },
+        "execution_samples": {
+          "samples": 1,
+          "minimum": 1,
+          "median": 1,
+          "maximum": 1
+        },
+        "cells": [
+          {
+            "cell_id": "chain-diagnostic-r1-chain-512-nutmeg-native-wcc-optimized",
+            "repeat": 1,
+            "seconds": 0.04569969700060028,
+            "pss_bytes": 451982336,
+            "execution_samples": 1
+          }
+        ]
+      },
+      "fused": {
+        "seconds": {
+          "samples": 1,
+          "minimum": 0.04207327800031635,
+          "median": 0.04207327800031635,
+          "maximum": 0.04207327800031635
+        },
+        "pss_bytes": null,
+        "execution_samples": {
+          "samples": 1,
+          "minimum": 0,
+          "median": 0,
+          "maximum": 0
+        },
+        "cells": [
+          {
+            "cell_id": "chain-diagnostic-r1-chain-512-nutmeg-native-wcc-fused",
+            "repeat": 1,
+            "seconds": 0.04207327800031635,
+            "pss_bytes": null,
+            "execution_samples": 0
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.9206467605193028,
+      "ranges_overlap_seconds": false,
+      "fused_over_unfused_pss_bytes": null,
+      "ranges_overlap_pss_bytes": null
+    },
+    {
+      "suite": "chain-diagnostic",
+      "dataset": "chain-512",
+      "mode": "process-cluster",
+      "engine": "pecan",
+      "fused": {
+        "seconds": {
+          "samples": 1,
+          "minimum": 2.1801425610010483,
+          "median": 2.1801425610010483,
+          "maximum": 2.1801425610010483
+        },
+        "pss_bytes": {
+          "samples": 1,
+          "minimum": 783853568,
+          "median": 783853568,
+          "maximum": 783853568
+        },
+        "execution_samples": {
+          "samples": 1,
+          "minimum": 30,
+          "median": 30,
+          "maximum": 30
+        },
+        "cells": [
+          {
+            "cell_id": "chain-diagnostic-r1-chain-512-pecan-wcc-fused",
+            "repeat": 1,
+            "seconds": 2.1801425610010483,
+            "pss_bytes": 783853568,
+            "execution_samples": 30
+          }
+        ]
+      },
+      "optimized": {
+        "seconds": {
+          "samples": 1,
+          "minimum": 3.007479294999939,
+          "median": 3.007479294999939,
+          "maximum": 3.007479294999939
+        },
+        "pss_bytes": {
+          "samples": 1,
+          "minimum": 838269952,
+          "median": 838269952,
+          "maximum": 838269952
+        },
+        "execution_samples": {
+          "samples": 1,
+          "minimum": 41,
+          "median": 41,
+          "maximum": 41
+        },
+        "cells": [
+          {
+            "cell_id": "chain-diagnostic-r1-chain-512-pecan-wcc-optimized",
+            "repeat": 1,
+            "seconds": 3.007479294999939,
+            "pss_bytes": 838269952,
+            "execution_samples": 41
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.7249069227594108,
+      "ranges_overlap_seconds": false,
+      "fused_over_unfused_pss_bytes": 0.9350848925573799,
+      "ranges_overlap_pss_bytes": false
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-10000",
+      "mode": "process-cluster",
+      "engine": "nutmeg-datafusion",
+      "optimized": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 2.108707419998609,
+          "median": 2.188178013000652,
+          "maximum": 2.2279380499985564
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 964392960,
+          "median": 974261248,
+          "maximum": 980319232
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 29,
+          "median": 30,
+          "maximum": 30
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-10000-nutmeg-datafusion-wcc-optimized",
+            "repeat": 1,
+            "seconds": 2.2279380499985564,
+            "pss_bytes": 964392960,
+            "execution_samples": 30
+          },
+          {
+            "cell_id": "distributed-r2-sparse-10000-nutmeg-datafusion-wcc-optimized",
+            "repeat": 2,
+            "seconds": 2.188178013000652,
+            "pss_bytes": 974261248,
+            "execution_samples": 30
+          },
+          {
+            "cell_id": "distributed-r3-sparse-10000-nutmeg-datafusion-wcc-optimized",
+            "repeat": 3,
+            "seconds": 2.108707419998609,
+            "pss_bytes": 980319232,
+            "execution_samples": 29
+          }
+        ]
+      },
+      "fused": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 1.6390260020016285,
+          "median": 1.697874004001278,
+          "maximum": 1.7012294819996896
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 909548544,
+          "median": 911809536,
+          "maximum": 947749888
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 23,
+          "median": 23,
+          "maximum": 23
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-10000-nutmeg-datafusion-wcc-fused",
+            "repeat": 1,
+            "seconds": 1.7012294819996896,
+            "pss_bytes": 947749888,
+            "execution_samples": 23
+          },
+          {
+            "cell_id": "distributed-r2-sparse-10000-nutmeg-datafusion-wcc-fused",
+            "repeat": 2,
+            "seconds": 1.6390260020016285,
+            "pss_bytes": 911809536,
+            "execution_samples": 23
+          },
+          {
+            "cell_id": "distributed-r3-sparse-10000-nutmeg-datafusion-wcc-fused",
+            "repeat": 3,
+            "seconds": 1.697874004001278,
+            "pss_bytes": 909548544,
+            "execution_samples": 23
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.7759304745380294,
+      "ranges_overlap_seconds": false,
+      "fused_over_unfused_pss_bytes": 0.9358983926249728,
+      "ranges_overlap_pss_bytes": false
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-10000",
+      "mode": "process-cluster",
+      "engine": "nutmeg-native",
+      "optimized": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 0.12939705600001616,
+          "median": 0.13118404699889652,
+          "maximum": 0.13667669099959312
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 575540224,
+          "median": 576021504,
+          "maximum": 612550656
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 2,
+          "median": 2,
+          "maximum": 2
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-10000-nutmeg-native-wcc-optimized",
+            "repeat": 1,
+            "seconds": 0.12939705600001616,
+            "pss_bytes": 575540224,
+            "execution_samples": 2
+          },
+          {
+            "cell_id": "distributed-r2-sparse-10000-nutmeg-native-wcc-optimized",
+            "repeat": 2,
+            "seconds": 0.13118404699889652,
+            "pss_bytes": 576021504,
+            "execution_samples": 2
+          },
+          {
+            "cell_id": "distributed-r3-sparse-10000-nutmeg-native-wcc-optimized",
+            "repeat": 3,
+            "seconds": 0.13667669099959312,
+            "pss_bytes": 612550656,
+            "execution_samples": 2
+          }
+        ]
+      },
+      "fused": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 0.12186464400110708,
+          "median": 0.12491031100034888,
+          "maximum": 0.13205333999940194
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 576351232,
+          "median": 585059328,
+          "maximum": 589228032
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 2,
+          "median": 2,
+          "maximum": 2
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-10000-nutmeg-native-wcc-fused",
+            "repeat": 1,
+            "seconds": 0.12491031100034888,
+            "pss_bytes": 589228032,
+            "execution_samples": 2
+          },
+          {
+            "cell_id": "distributed-r2-sparse-10000-nutmeg-native-wcc-fused",
+            "repeat": 2,
+            "seconds": 0.12186464400110708,
+            "pss_bytes": 576351232,
+            "execution_samples": 2
+          },
+          {
+            "cell_id": "distributed-r3-sparse-10000-nutmeg-native-wcc-fused",
+            "repeat": 3,
+            "seconds": 0.13205333999940194,
+            "pss_bytes": 585059328,
+            "execution_samples": 2
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.9521760752006652,
+      "ranges_overlap_seconds": true,
+      "fused_over_unfused_pss_bytes": 1.0156900809036462,
+      "ranges_overlap_pss_bytes": true
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-10000",
+      "mode": "process-cluster",
+      "engine": "pecan",
+      "optimized": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 2.164004099000522,
+          "median": 2.1982663849994424,
+          "maximum": 2.2555505979998998
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 953682944,
+          "median": 969517056,
+          "maximum": 982361088
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 30,
+          "median": 30,
+          "maximum": 31
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-10000-pecan-wcc-optimized",
+            "repeat": 1,
+            "seconds": 2.1982663849994424,
+            "pss_bytes": 982361088,
+            "execution_samples": 30
+          },
+          {
+            "cell_id": "distributed-r2-sparse-10000-pecan-wcc-optimized",
+            "repeat": 2,
+            "seconds": 2.164004099000522,
+            "pss_bytes": 969517056,
+            "execution_samples": 30
+          },
+          {
+            "cell_id": "distributed-r3-sparse-10000-pecan-wcc-optimized",
+            "repeat": 3,
+            "seconds": 2.2555505979998998,
+            "pss_bytes": 953682944,
+            "execution_samples": 31
+          }
+        ]
+      },
+      "fused": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 1.6117728779991012,
+          "median": 1.6440522240009159,
+          "maximum": 1.6672663930003182
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 921234432,
+          "median": 948329472,
+          "maximum": 959900672
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 22,
+          "median": 22,
+          "maximum": 23
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-10000-pecan-wcc-fused",
+            "repeat": 1,
+            "seconds": 1.6117728779991012,
+            "pss_bytes": 948329472,
+            "execution_samples": 22
+          },
+          {
+            "cell_id": "distributed-r2-sparse-10000-pecan-wcc-fused",
+            "repeat": 2,
+            "seconds": 1.6440522240009159,
+            "pss_bytes": 959900672,
+            "execution_samples": 22
+          },
+          {
+            "cell_id": "distributed-r3-sparse-10000-pecan-wcc-fused",
+            "repeat": 3,
+            "seconds": 1.6672663930003182,
+            "pss_bytes": 921234432,
+            "execution_samples": 23
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.7478858045683726,
+      "ranges_overlap_seconds": false,
+      "fused_over_unfused_pss_bytes": 0.978146249342518,
+      "ranges_overlap_pss_bytes": true
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-100000",
+      "mode": "process-cluster",
+      "engine": "nutmeg-datafusion",
+      "fused": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 2.5883897280000383,
+          "median": 2.596404428999449,
+          "maximum": 2.6687226529993495
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 1261017088,
+          "median": 1339828224,
+          "maximum": 1379643392
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 35,
+          "median": 35,
+          "maximum": 36
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-100000-nutmeg-datafusion-wcc-fused",
+            "repeat": 1,
+            "seconds": 2.6687226529993495,
+            "pss_bytes": 1379643392,
+            "execution_samples": 36
+          },
+          {
+            "cell_id": "distributed-r2-sparse-100000-nutmeg-datafusion-wcc-fused",
+            "repeat": 2,
+            "seconds": 2.5883897280000383,
+            "pss_bytes": 1339828224,
+            "execution_samples": 35
+          },
+          {
+            "cell_id": "distributed-r3-sparse-100000-nutmeg-datafusion-wcc-fused",
+            "repeat": 3,
+            "seconds": 2.596404428999449,
+            "pss_bytes": 1261017088,
+            "execution_samples": 35
+          }
+        ]
+      },
+      "optimized": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 3.4757163829999627,
+          "median": 3.4973873240014655,
+          "maximum": 3.51541215799989
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 1445222400,
+          "median": 1449658368,
+          "maximum": 1484188672
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 47,
+          "median": 47,
+          "maximum": 48
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-100000-nutmeg-datafusion-wcc-optimized",
+            "repeat": 1,
+            "seconds": 3.51541215799989,
+            "pss_bytes": 1449658368,
+            "execution_samples": 48
+          },
+          {
+            "cell_id": "distributed-r2-sparse-100000-nutmeg-datafusion-wcc-optimized",
+            "repeat": 2,
+            "seconds": 3.4757163829999627,
+            "pss_bytes": 1445222400,
+            "execution_samples": 47
+          },
+          {
+            "cell_id": "distributed-r3-sparse-100000-nutmeg-datafusion-wcc-optimized",
+            "repeat": 3,
+            "seconds": 3.4973873240014655,
+            "pss_bytes": 1484188672,
+            "execution_samples": 47
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.7423840108246361,
+      "ranges_overlap_seconds": false,
+      "fused_over_unfused_pss_bytes": 0.9242372227661296,
+      "ranges_overlap_pss_bytes": false
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-100000",
+      "mode": "process-cluster",
+      "engine": "nutmeg-native",
+      "fused": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 0.7950123110003915,
+          "median": 0.8072052180013998,
+          "maximum": 0.829921901000489
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 757626880,
+          "median": 761239552,
+          "maximum": 803724288
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 12,
+          "median": 12,
+          "maximum": 13
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-100000-nutmeg-native-wcc-fused",
+            "repeat": 1,
+            "seconds": 0.829921901000489,
+            "pss_bytes": 803724288,
+            "execution_samples": 13
+          },
+          {
+            "cell_id": "distributed-r2-sparse-100000-nutmeg-native-wcc-fused",
+            "repeat": 2,
+            "seconds": 0.8072052180013998,
+            "pss_bytes": 757626880,
+            "execution_samples": 12
+          },
+          {
+            "cell_id": "distributed-r3-sparse-100000-nutmeg-native-wcc-fused",
+            "repeat": 3,
+            "seconds": 0.7950123110003915,
+            "pss_bytes": 761239552,
+            "execution_samples": 12
+          }
+        ]
+      },
+      "optimized": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 0.8243648000006942,
+          "median": 0.8290019670002948,
+          "maximum": 0.8524876860010409
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 744278016,
+          "median": 776226816,
+          "maximum": 789371904
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 13,
+          "median": 13,
+          "maximum": 13
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-100000-nutmeg-native-wcc-optimized",
+            "repeat": 1,
+            "seconds": 0.8243648000006942,
+            "pss_bytes": 744278016,
+            "execution_samples": 13
+          },
+          {
+            "cell_id": "distributed-r2-sparse-100000-nutmeg-native-wcc-optimized",
+            "repeat": 2,
+            "seconds": 0.8290019670002948,
+            "pss_bytes": 789371904,
+            "execution_samples": 13
+          },
+          {
+            "cell_id": "distributed-r3-sparse-100000-nutmeg-native-wcc-optimized",
+            "repeat": 3,
+            "seconds": 0.8524876860010409,
+            "pss_bytes": 776226816,
+            "execution_samples": 13
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.9737072409155245,
+      "ranges_overlap_seconds": true,
+      "fused_over_unfused_pss_bytes": 0.9806921589269083,
+      "ranges_overlap_pss_bytes": true
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-100000",
+      "mode": "process-cluster",
+      "engine": "pecan",
+      "optimized": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 3.4201499539994984,
+          "median": 3.433413908998773,
+          "maximum": 3.521463679999215
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 1431026688,
+          "median": 1452956672,
+          "maximum": 1493322752
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 47,
+          "median": 47,
+          "maximum": 47
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-100000-pecan-wcc-optimized",
+            "repeat": 1,
+            "seconds": 3.4201499539994984,
+            "pss_bytes": 1431026688,
+            "execution_samples": 47
+          },
+          {
+            "cell_id": "distributed-r2-sparse-100000-pecan-wcc-optimized",
+            "repeat": 2,
+            "seconds": 3.521463679999215,
+            "pss_bytes": 1493322752,
+            "execution_samples": 47
+          },
+          {
+            "cell_id": "distributed-r3-sparse-100000-pecan-wcc-optimized",
+            "repeat": 3,
+            "seconds": 3.433413908998773,
+            "pss_bytes": 1452956672,
+            "execution_samples": 47
+          }
+        ]
+      },
+      "fused": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 2.5757373289998213,
+          "median": 2.5759825370005274,
+          "maximum": 2.673346069001127
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 1309976576,
+          "median": 1324685312,
+          "maximum": 1334594560
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 35,
+          "median": 35,
+          "maximum": 36
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-100000-pecan-wcc-fused",
+            "repeat": 1,
+            "seconds": 2.5757373289998213,
+            "pss_bytes": 1324685312,
+            "execution_samples": 35
+          },
+          {
+            "cell_id": "distributed-r2-sparse-100000-pecan-wcc-fused",
+            "repeat": 2,
+            "seconds": 2.5759825370005274,
+            "pss_bytes": 1309976576,
+            "execution_samples": 35
+          },
+          {
+            "cell_id": "distributed-r3-sparse-100000-pecan-wcc-fused",
+            "repeat": 3,
+            "seconds": 2.673346069001127,
+            "pss_bytes": 1334594560,
+            "execution_samples": 36
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.750268568042155,
+      "ranges_overlap_seconds": false,
+      "fused_over_unfused_pss_bytes": 0.9117170095489262,
+      "ranges_overlap_pss_bytes": false
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-1000000",
+      "mode": "process-cluster",
+      "engine": "nutmeg-datafusion",
+      "optimized": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 8.559390028000053,
+          "median": 8.70590612200067,
+          "maximum": 8.71868845300014
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 1750801408,
+          "median": 1816513536,
+          "maximum": 1838275584
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 101,
+          "median": 102,
+          "maximum": 102
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-1000000-nutmeg-datafusion-wcc-optimized",
+            "repeat": 1,
+            "seconds": 8.70590612200067,
+            "pss_bytes": 1750801408,
+            "execution_samples": 101
+          },
+          {
+            "cell_id": "distributed-r2-sparse-1000000-nutmeg-datafusion-wcc-optimized",
+            "repeat": 2,
+            "seconds": 8.559390028000053,
+            "pss_bytes": 1838275584,
+            "execution_samples": 102
+          },
+          {
+            "cell_id": "distributed-r3-sparse-1000000-nutmeg-datafusion-wcc-optimized",
+            "repeat": 3,
+            "seconds": 8.71868845300014,
+            "pss_bytes": 1816513536,
+            "execution_samples": 102
+          }
+        ]
+      },
+      "fused": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 7.63783478500045,
+          "median": 7.8065999549999106,
+          "maximum": 7.997040543999901
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 2197842944,
+          "median": 2322118656,
+          "maximum": 2456697856
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 88,
+          "median": 89,
+          "maximum": 92
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-1000000-nutmeg-datafusion-wcc-fused",
+            "repeat": 1,
+            "seconds": 7.8065999549999106,
+            "pss_bytes": 2322118656,
+            "execution_samples": 92
+          },
+          {
+            "cell_id": "distributed-r2-sparse-1000000-nutmeg-datafusion-wcc-fused",
+            "repeat": 2,
+            "seconds": 7.63783478500045,
+            "pss_bytes": 2197842944,
+            "execution_samples": 88
+          },
+          {
+            "cell_id": "distributed-r3-sparse-1000000-nutmeg-datafusion-wcc-fused",
+            "repeat": 3,
+            "seconds": 7.997040543999901,
+            "pss_bytes": 2456697856,
+            "execution_samples": 89
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.896701600683687,
+      "ranges_overlap_seconds": false,
+      "fused_over_unfused_pss_bytes": 1.2783382066688878,
+      "ranges_overlap_pss_bytes": false
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-1000000",
+      "mode": "process-cluster",
+      "engine": "nutmeg-native",
+      "optimized": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 7.947328459000346,
+          "median": 8.022911624999324,
+          "maximum": 8.268109036998794
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 1986497536,
+          "median": 2011445248,
+          "maximum": 2026200064
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 112,
+          "median": 114,
+          "maximum": 114
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-1000000-nutmeg-native-wcc-optimized",
+            "repeat": 1,
+            "seconds": 8.022911624999324,
+            "pss_bytes": 2026200064,
+            "execution_samples": 114
+          },
+          {
+            "cell_id": "distributed-r2-sparse-1000000-nutmeg-native-wcc-optimized",
+            "repeat": 2,
+            "seconds": 7.947328459000346,
+            "pss_bytes": 2011445248,
+            "execution_samples": 112
+          },
+          {
+            "cell_id": "distributed-r3-sparse-1000000-nutmeg-native-wcc-optimized",
+            "repeat": 3,
+            "seconds": 8.268109036998794,
+            "pss_bytes": 1986497536,
+            "execution_samples": 114
+          }
+        ]
+      },
+      "fused": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 7.611969471998236,
+          "median": 7.620358242998918,
+          "maximum": 7.660538524998628
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 1994729472,
+          "median": 2002724864,
+          "maximum": 2039024640
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 106,
+          "median": 107,
+          "maximum": 107
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-1000000-nutmeg-native-wcc-fused",
+            "repeat": 1,
+            "seconds": 7.620358242998918,
+            "pss_bytes": 2002724864,
+            "execution_samples": 107
+          },
+          {
+            "cell_id": "distributed-r2-sparse-1000000-nutmeg-native-wcc-fused",
+            "repeat": 2,
+            "seconds": 7.611969471998236,
+            "pss_bytes": 2039024640,
+            "execution_samples": 106
+          },
+          {
+            "cell_id": "distributed-r3-sparse-1000000-nutmeg-native-wcc-fused",
+            "repeat": 3,
+            "seconds": 7.660538524998628,
+            "pss_bytes": 1994729472,
+            "execution_samples": 107
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.9498245274513492,
+      "ranges_overlap_seconds": false,
+      "fused_over_unfused_pss_bytes": 0.9956646177624419,
+      "ranges_overlap_pss_bytes": true
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-1000000",
+      "mode": "process-cluster",
+      "engine": "pecan",
+      "optimized": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 8.670592990998557,
+          "median": 8.831397785999798,
+          "maximum": 9.611498731999745
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 1726991360,
+          "median": 1804976128,
+          "maximum": 1819282432
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 104,
+          "median": 105,
+          "maximum": 110
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-1000000-pecan-wcc-optimized",
+            "repeat": 1,
+            "seconds": 8.831397785999798,
+            "pss_bytes": 1819282432,
+            "execution_samples": 105
+          },
+          {
+            "cell_id": "distributed-r2-sparse-1000000-pecan-wcc-optimized",
+            "repeat": 2,
+            "seconds": 8.670592990998557,
+            "pss_bytes": 1804976128,
+            "execution_samples": 104
+          },
+          {
+            "cell_id": "distributed-r3-sparse-1000000-pecan-wcc-optimized",
+            "repeat": 3,
+            "seconds": 9.611498731999745,
+            "pss_bytes": 1726991360,
+            "execution_samples": 110
+          }
+        ]
+      },
+      "fused": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 7.20073881999997,
+          "median": 7.43416169000011,
+          "maximum": 7.459710944998733
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 2380852224,
+          "median": 2401462272,
+          "maximum": 2439649280
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 83,
+          "median": 85,
+          "maximum": 87
+        },
+        "cells": [
+          {
+            "cell_id": "distributed-r1-sparse-1000000-pecan-wcc-fused",
+            "repeat": 1,
+            "seconds": 7.459710944998733,
+            "pss_bytes": 2439649280,
+            "execution_samples": 87
+          },
+          {
+            "cell_id": "distributed-r2-sparse-1000000-pecan-wcc-fused",
+            "repeat": 2,
+            "seconds": 7.43416169000011,
+            "pss_bytes": 2380852224,
+            "execution_samples": 85
+          },
+          {
+            "cell_id": "distributed-r3-sparse-1000000-pecan-wcc-fused",
+            "repeat": 3,
+            "seconds": 7.20073881999997,
+            "pss_bytes": 2401462272,
+            "execution_samples": 83
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.8417876614940059,
+      "ranges_overlap_seconds": false,
+      "fused_over_unfused_pss_bytes": 1.3304676082674485,
+      "ranges_overlap_pss_bytes": false
+    },
+    {
+      "suite": "local",
+      "dataset": "sparse-100000",
+      "mode": "local",
+      "engine": "nutmeg-datafusion",
+      "optimized": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 2.7723274519994447,
+          "median": 2.7729972610013647,
+          "maximum": 2.8463255549995665
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 741793792,
+          "median": 748478464,
+          "maximum": 770707456
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 42,
+          "median": 43,
+          "maximum": 43
+        },
+        "cells": [
+          {
+            "cell_id": "local-r1-sparse-100000-nutmeg-datafusion-wcc-optimized",
+            "repeat": 1,
+            "seconds": 2.7729972610013647,
+            "pss_bytes": 770707456,
+            "execution_samples": 42
+          },
+          {
+            "cell_id": "local-r2-sparse-100000-nutmeg-datafusion-wcc-optimized",
+            "repeat": 2,
+            "seconds": 2.8463255549995665,
+            "pss_bytes": 741793792,
+            "execution_samples": 43
+          },
+          {
+            "cell_id": "local-r3-sparse-100000-nutmeg-datafusion-wcc-optimized",
+            "repeat": 3,
+            "seconds": 2.7723274519994447,
+            "pss_bytes": 748478464,
+            "execution_samples": 43
+          }
+        ]
+      },
+      "fused": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 2.009398089001479,
+          "median": 2.021927544999926,
+          "maximum": 2.082405428000129
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 698384384,
+          "median": 724414464,
+          "maximum": 759934976
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 30,
+          "median": 31,
+          "maximum": 32
+        },
+        "cells": [
+          {
+            "cell_id": "local-r1-sparse-100000-nutmeg-datafusion-wcc-fused",
+            "repeat": 1,
+            "seconds": 2.021927544999926,
+            "pss_bytes": 759934976,
+            "execution_samples": 31
+          },
+          {
+            "cell_id": "local-r2-sparse-100000-nutmeg-datafusion-wcc-fused",
+            "repeat": 2,
+            "seconds": 2.009398089001479,
+            "pss_bytes": 698384384,
+            "execution_samples": 30
+          },
+          {
+            "cell_id": "local-r3-sparse-100000-nutmeg-datafusion-wcc-fused",
+            "repeat": 3,
+            "seconds": 2.082405428000129,
+            "pss_bytes": 724414464,
+            "execution_samples": 32
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.7291487710556851,
+      "ranges_overlap_seconds": false,
+      "fused_over_unfused_pss_bytes": 0.9678494423588385,
+      "ranges_overlap_pss_bytes": true
+    },
+    {
+      "suite": "local",
+      "dataset": "sparse-100000",
+      "mode": "local",
+      "engine": "nutmeg-native",
+      "optimized": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 0.7356569399998989,
+          "median": 0.7644882490003511,
+          "maximum": 0.78706794000027
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 500928512,
+          "median": 513241088,
+          "maximum": 544393216
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 12,
+          "median": 13,
+          "maximum": 13
+        },
+        "cells": [
+          {
+            "cell_id": "local-r1-sparse-100000-nutmeg-native-wcc-optimized",
+            "repeat": 1,
+            "seconds": 0.78706794000027,
+            "pss_bytes": 500928512,
+            "execution_samples": 13
+          },
+          {
+            "cell_id": "local-r2-sparse-100000-nutmeg-native-wcc-optimized",
+            "repeat": 2,
+            "seconds": 0.7356569399998989,
+            "pss_bytes": 544393216,
+            "execution_samples": 12
+          },
+          {
+            "cell_id": "local-r3-sparse-100000-nutmeg-native-wcc-optimized",
+            "repeat": 3,
+            "seconds": 0.7644882490003511,
+            "pss_bytes": 513241088,
+            "execution_samples": 13
+          }
+        ]
+      },
+      "fused": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 0.7490628129999095,
+          "median": 0.7569465340002353,
+          "maximum": 0.7662607439997373
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 507158528,
+          "median": 512249856,
+          "maximum": 515047424
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 12,
+          "median": 13,
+          "maximum": 13
+        },
+        "cells": [
+          {
+            "cell_id": "local-r1-sparse-100000-nutmeg-native-wcc-fused",
+            "repeat": 1,
+            "seconds": 0.7490628129999095,
+            "pss_bytes": 512249856,
+            "execution_samples": 12
+          },
+          {
+            "cell_id": "local-r2-sparse-100000-nutmeg-native-wcc-fused",
+            "repeat": 2,
+            "seconds": 0.7662607439997373,
+            "pss_bytes": 507158528,
+            "execution_samples": 13
+          },
+          {
+            "cell_id": "local-r3-sparse-100000-nutmeg-native-wcc-fused",
+            "repeat": 3,
+            "seconds": 0.7569465340002353,
+            "pss_bytes": 515047424,
+            "execution_samples": 13
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.9901349497392833,
+      "ranges_overlap_seconds": true,
+      "fused_over_unfused_pss_bytes": 0.9980686815160053,
+      "ranges_overlap_pss_bytes": true
+    },
+    {
+      "suite": "local",
+      "dataset": "sparse-100000",
+      "mode": "local",
+      "engine": "pecan",
+      "fused": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 2.0344182639983046,
+          "median": 2.0519888090002496,
+          "maximum": 2.0532284499986417
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 717479936,
+          "median": 730169344,
+          "maximum": 739790848
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 30,
+          "median": 31,
+          "maximum": 31
+        },
+        "cells": [
+          {
+            "cell_id": "local-r1-sparse-100000-pecan-wcc-fused",
+            "repeat": 1,
+            "seconds": 2.0344182639983046,
+            "pss_bytes": 717479936,
+            "execution_samples": 30
+          },
+          {
+            "cell_id": "local-r2-sparse-100000-pecan-wcc-fused",
+            "repeat": 2,
+            "seconds": 2.0519888090002496,
+            "pss_bytes": 730169344,
+            "execution_samples": 31
+          },
+          {
+            "cell_id": "local-r3-sparse-100000-pecan-wcc-fused",
+            "repeat": 3,
+            "seconds": 2.0532284499986417,
+            "pss_bytes": 739790848,
+            "execution_samples": 31
+          }
+        ]
+      },
+      "optimized": {
+        "seconds": {
+          "samples": 3,
+          "minimum": 2.7397170460008056,
+          "median": 2.7461115719997906,
+          "maximum": 2.766596147999735
+        },
+        "pss_bytes": {
+          "samples": 3,
+          "minimum": 754208768,
+          "median": 762884096,
+          "maximum": 774574080
+        },
+        "execution_samples": {
+          "samples": 3,
+          "minimum": 42,
+          "median": 42,
+          "maximum": 42
+        },
+        "cells": [
+          {
+            "cell_id": "local-r1-sparse-100000-pecan-wcc-optimized",
+            "repeat": 1,
+            "seconds": 2.7397170460008056,
+            "pss_bytes": 762884096,
+            "execution_samples": 42
+          },
+          {
+            "cell_id": "local-r2-sparse-100000-pecan-wcc-optimized",
+            "repeat": 2,
+            "seconds": 2.766596147999735,
+            "pss_bytes": 754208768,
+            "execution_samples": 42
+          },
+          {
+            "cell_id": "local-r3-sparse-100000-pecan-wcc-optimized",
+            "repeat": 3,
+            "seconds": 2.7461115719997906,
+            "pss_bytes": 774574080,
+            "execution_samples": 42
+          }
+        ]
+      },
+      "fused_over_unfused_seconds": 0.7472343184898119,
+      "ranges_overlap_seconds": false,
+      "fused_over_unfused_pss_bytes": 0.9571170087677382,
+      "ranges_overlap_pss_bytes": false
+    }
+  ],
+  "raw_coverage": {
+    "raw_full_vector": 6,
+    "receipt_only": 72
+  },
+  "raw_cells": [
+    {
+      "cell_id": "distributed-r1-sparse-100000-nutmeg-datafusion-wcc-fused",
+      "coverage": "raw_full_vector",
+      "rows": 100000,
+      "result_files": 4,
+      "components": 5093,
+      "membership_mismatches": 0
+    },
+    {
+      "cell_id": "distributed-r1-sparse-100000-nutmeg-native-wcc-fused",
+      "coverage": "raw_full_vector",
+      "rows": 100000,
+      "result_files": 4,
+      "components": 5093,
+      "membership_mismatches": 0
+    },
+    {
+      "cell_id": "distributed-r1-sparse-100000-nutmeg-native-wcc-optimized",
+      "coverage": "raw_full_vector",
+      "rows": 100000,
+      "result_files": 4,
+      "components": 5093,
+      "membership_mismatches": 0
+    },
+    {
+      "cell_id": "distributed-r1-sparse-100000-pecan-wcc-optimized",
+      "coverage": "raw_full_vector",
+      "rows": 100000,
+      "result_files": 4,
+      "components": 5093,
+      "membership_mismatches": 0
+    },
+    {
+      "cell_id": "distributed-r1-sparse-100000-nutmeg-datafusion-wcc-optimized",
+      "coverage": "raw_full_vector",
+      "rows": 100000,
+      "result_files": 4,
+      "components": 5093,
+      "membership_mismatches": 0
+    },
+    {
+      "cell_id": "distributed-r1-sparse-100000-pecan-wcc-fused",
+      "coverage": "raw_full_vector",
+      "rows": 100000,
+      "result_files": 4,
+      "components": 5093,
+      "membership_mismatches": 0
+    }
+  ],
+  "reconstructed_memory_samples": 5147,
+  "cells_without_execution_pss": [
+    "chain-diagnostic-r1-chain-512-nutmeg-native-wcc-fused"
+  ],
+  "sample_coverage": [
+    {
+      "engine": "nutmeg-datafusion",
+      "algorithm": "wcc",
+      "variant": "fused",
+      "cells": 13,
+      "execution_samples": {
+        "observations": 13,
+        "minimum": 23,
+        "median": 32,
+        "maximum": 92
+      },
+      "pss_samples": {
+        "observations": 13,
+        "minimum": 23,
+        "median": 32,
+        "maximum": 92
+      },
+      "maximum_scan_seconds": {
+        "observations": 13,
+        "minimum": 0.021799501000714372,
+        "median": 0.02953382700070506,
+        "maximum": 0.08370583000032639
+      }
+    },
+    {
+      "engine": "nutmeg-datafusion",
+      "algorithm": "wcc",
+      "variant": "optimized",
+      "cells": 13,
+      "execution_samples": {
+        "observations": 13,
+        "minimum": 29,
+        "median": 43,
+        "maximum": 102
+      },
+      "pss_samples": {
+        "observations": 13,
+        "minimum": 29,
+        "median": 43,
+        "maximum": 102
+      },
+      "maximum_scan_seconds": {
+        "observations": 13,
+        "minimum": 0.021116406000146526,
+        "median": 0.03191155099921161,
+        "maximum": 0.07593770799940103
+      }
+    },
+    {
+      "engine": "nutmeg-native",
+      "algorithm": "wcc",
+      "variant": "fused",
+      "cells": 13,
+      "execution_samples": {
+        "observations": 13,
+        "minimum": 0,
+        "median": 12,
+        "maximum": 107
+      },
+      "pss_samples": {
+        "observations": 13,
+        "minimum": 0,
+        "median": 12,
+        "maximum": 107
+      },
+      "maximum_scan_seconds": {
+        "observations": 12,
+        "minimum": 0.012312234999626526,
+        "median": 0.020000796999738668,
+        "maximum": 0.054839128999446984
+      }
+    },
+    {
+      "engine": "nutmeg-native",
+      "algorithm": "wcc",
+      "variant": "optimized",
+      "cells": 13,
+      "execution_samples": {
+        "observations": 13,
+        "minimum": 1,
+        "median": 13,
+        "maximum": 114
+      },
+      "pss_samples": {
+        "observations": 13,
+        "minimum": 1,
+        "median": 13,
+        "maximum": 114
+      },
+      "maximum_scan_seconds": {
+        "observations": 13,
+        "minimum": 0.01154026999938651,
+        "median": 0.017842824001490953,
+        "maximum": 0.05033245799859287
+      }
+    },
+    {
+      "engine": "pecan",
+      "algorithm": "wcc",
+      "variant": "fused",
+      "cells": 13,
+      "execution_samples": {
+        "observations": 13,
+        "minimum": 22,
+        "median": 31,
+        "maximum": 87
+      },
+      "pss_samples": {
+        "observations": 13,
+        "minimum": 22,
+        "median": 31,
+        "maximum": 87
+      },
+      "maximum_scan_seconds": {
+        "observations": 13,
+        "minimum": 0.022340872999848216,
+        "median": 0.029363421999732964,
+        "maximum": 0.08739356700061762
+      }
+    },
+    {
+      "engine": "pecan",
+      "algorithm": "wcc",
+      "variant": "optimized",
+      "cells": 13,
+      "execution_samples": {
+        "observations": 13,
+        "minimum": 30,
+        "median": 42,
+        "maximum": 110
+      },
+      "pss_samples": {
+        "observations": 13,
+        "minimum": 30,
+        "median": 42,
+        "maximum": 110
+      },
+      "maximum_scan_seconds": {
+        "observations": 13,
+        "minimum": 0.02118171300026006,
+        "median": 0.03374336799970479,
+        "maximum": 0.07581940000090981
+      }
+    }
+  ],
+  "contractions": [
+    {
+      "dataset": "sparse-100000",
+      "cells": 36,
+      "rounds": 9,
+      "first_edges_by_variant": {
+        "fused": [
+          799212
+        ],
+        "optimized": [
+          776998
+        ]
+      },
+      "all_later_common_trace_fields_identical": true
+    },
+    {
+      "dataset": "sparse-1000000",
+      "cells": 18,
+      "rounds": 11,
+      "first_edges_by_variant": {
+        "optimized": [
+          7771135
+        ],
+        "fused": [
+          7992341
+        ]
+      },
+      "all_later_common_trace_fields_identical": true
+    },
+    {
+      "dataset": "sparse-10000",
+      "cells": 18,
+      "rounds": 6,
+      "first_edges_by_variant": {
+        "optimized": [
+          77565
+        ],
+        "fused": [
+          79897
+        ]
+      },
+      "all_later_common_trace_fields_identical": true
+    },
+    {
+      "dataset": "chain-512",
+      "cells": 6,
+      "rounds": 9,
+      "first_edges_by_variant": {
+        "optimized": [
+          511
+        ],
+        "fused": [
+          511
+        ]
+      },
+      "all_later_common_trace_fields_identical": true
+    }
+  ],
+  "native_widths": [
+    {
+      "dataset": "chain-512",
+      "algorithm": "wcc",
+      "variant": "fused",
+      "actual_recorded_widths": [
+        1
+      ],
+      "actual_width_recorded_cells": 1,
+      "cells": 1
+    },
+    {
+      "dataset": "chain-512",
+      "algorithm": "wcc",
+      "variant": "optimized",
+      "actual_recorded_widths": [
+        1
+      ],
+      "actual_width_recorded_cells": 1,
+      "cells": 1
+    },
+    {
+      "dataset": "sparse-10000",
+      "algorithm": "wcc",
+      "variant": "fused",
+      "actual_recorded_widths": [
+        3
+      ],
+      "actual_width_recorded_cells": 3,
+      "cells": 3
+    },
+    {
+      "dataset": "sparse-10000",
+      "algorithm": "wcc",
+      "variant": "optimized",
+      "actual_recorded_widths": [
+        3
+      ],
+      "actual_width_recorded_cells": 3,
+      "cells": 3
+    },
+    {
+      "dataset": "sparse-100000",
+      "algorithm": "wcc",
+      "variant": "fused",
+      "actual_recorded_widths": [
+        8
+      ],
+      "actual_width_recorded_cells": 6,
+      "cells": 6
+    },
+    {
+      "dataset": "sparse-100000",
+      "algorithm": "wcc",
+      "variant": "optimized",
+      "actual_recorded_widths": [
+        8
+      ],
+      "actual_width_recorded_cells": 6,
+      "cells": 6
+    },
+    {
+      "dataset": "sparse-1000000",
+      "algorithm": "wcc",
+      "variant": "fused",
+      "actual_recorded_widths": [
+        8
+      ],
+      "actual_width_recorded_cells": 3,
+      "cells": 3
+    },
+    {
+      "dataset": "sparse-1000000",
+      "algorithm": "wcc",
+      "variant": "optimized",
+      "actual_recorded_widths": [
+        8
+      ],
+      "actual_width_recorded_cells": 3,
+      "cells": 3
+    }
+  ],
+  "boundaries": {
+    "input DataFrame handles to completed full result Parquet write; server startup and correctness verification excluded": 78
+  },
+  "cache_boundaries": {
+    "fresh Sail state; dataset checksum reads before timing warm OS page cache; no cache flushing": 78
+  },
+  "output_boundaries": {
+    "export of already materialized Pecan result": 52,
+    "includes native kernel/CSR execution": 26
+  },
+  "steal": {
+    "observations": 78,
+    "minimum": 0.0,
+    "median": 0.0,
+    "maximum": 0.0
+  },
+  "cleanup": {
+    "recorded_utc": "2026-09-27T21:07:54.158085+00:00",
+    "run": "/targets/pecan-benchmark/runs/pecan-fusion-matrix-3fd69787",
+    "harness_source_sha": "3fd6978757713482942656cb0b23205fe57647d0",
+    "completed_cell_directories": 78,
+    "remaining_staging_regular_files": [],
+    "outcome": "passed"
+  },
+  "exit_codes": {
+    "0": 78
+  },
+  "limitations": [
+    "Six 100k process-worker repeat-1 outputs have independent full-Parquet verification; the other 72 are receipt-only.",
+    "The native fused chain trial has no execution RSS/PSS sample; unavailable is not zero memory.",
+    "Ratios divide contemporaneous group medians, not paired-trial ratios or causal effect estimates.",
+    "There are three sparse repetitions per group and one chain diagnostic per method; overlap is descriptive, not a significance test.",
+    "All whole-VM steal observations are zero; that does not measure scheduling delay outside the VM.",
+    "PSS sampling can miss peaks, and cgroup page-cache ownership makes its warm-cache peak a different memory boundary.",
+    "Representative-map parity is established by implementation tests; exported benchmark traces compare coefficients/counts, and the selected full outputs verify the final partitions."
+  ]
+}

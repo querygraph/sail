@@ -1,0 +1,283 @@
+{
+  "recorded_utc": "2026-09-26T19:26:46.471324+00:00",
+  "scope": "Exact unchanged-wheel artifact combinations; FFI downgrade diagnostic is not production support",
+  "extension_compiler": "1.97.1",
+  "rows": [
+    {
+      "platform": "macOS-arm64",
+      "case": "baseline-rust-1.97.1",
+      "source_commit": "bf97367dd231de2535ad9b04b415fd2619bc4696",
+      "rustc": "1.97.1",
+      "datafusion": "55.1.0",
+      "datafusion_ffi": "55.1.0",
+      "arrow": "59.3.0",
+      "binary_sha256": "a96ea07af94705d0998d671f066f19f2678315a05ba6cad52da033298eb0ea29",
+      "wheel_sha256": {
+        "sail_nutmeg-0.1.0-cp312-cp312-macosx_11_0_arm64.whl": "569a7eacd416f015cf943ae7c6eff59580159383dccc9ded8f8ac1d7cbab3f03",
+        "sail_sedona_extension-0.1.0-cp312-cp312-macosx_26_0_arm64.whl": "95f4202d628115d6af5b73d5b8c7ef91dc35fb7387592ce9f124b507a4fb4489"
+      },
+      "runs": [
+        {
+          "mode": "local",
+          "passed": 64,
+          "skipped": 1,
+          "exit_code": 0
+        },
+        {
+          "mode": "local-cluster",
+          "passed": 65,
+          "skipped": 0,
+          "exit_code": 0
+        },
+        {
+          "mode": "process-cluster",
+          "passed": 65,
+          "skipped": 0,
+          "exit_code": 0
+        }
+      ],
+      "receipt": "abi/mac-compiler-compatibility/receipt.json",
+      "classification": "qualified artifact combination"
+    },
+    {
+      "platform": "macOS-arm64",
+      "case": "compiler-rust-1.98.1",
+      "source_commit": "287930474c6af2523223621cddc9a42c44ef0fdd",
+      "rustc": "1.98.1",
+      "datafusion": "55.1.0",
+      "datafusion_ffi": "55.1.0",
+      "arrow": "59.3.0",
+      "binary_sha256": "0b9574f2ea81c8f56241d24229e905146992119526466f6e120cb65405fc5acc",
+      "wheel_sha256": {
+        "sail_nutmeg-0.1.0-cp312-cp312-macosx_11_0_arm64.whl": "569a7eacd416f015cf943ae7c6eff59580159383dccc9ded8f8ac1d7cbab3f03",
+        "sail_sedona_extension-0.1.0-cp312-cp312-macosx_26_0_arm64.whl": "95f4202d628115d6af5b73d5b8c7ef91dc35fb7387592ce9f124b507a4fb4489"
+      },
+      "runs": [
+        {
+          "mode": "local",
+          "passed": 64,
+          "skipped": 1,
+          "exit_code": 0
+        },
+        {
+          "mode": "local-cluster",
+          "passed": 65,
+          "skipped": 0,
+          "exit_code": 0
+        },
+        {
+          "mode": "process-cluster",
+          "passed": 65,
+          "skipped": 0,
+          "exit_code": 0
+        }
+      ],
+      "receipt": "abi/mac-compiler-compatibility/receipt.json",
+      "classification": "qualified artifact combination"
+    },
+    {
+      "platform": "Linux-x86_64",
+      "case": "baseline",
+      "source_commit": "bf97367dd231de2535ad9b04b415fd2619bc4696",
+      "rustc": "1.97.1",
+      "datafusion": "55.1.0",
+      "datafusion_ffi": "55.1.0",
+      "arrow": "59.3.0",
+      "binary_sha256": "60687b282bf89497cd52d8b260c35dbf38849f0b7ceb9b25f7d83f4e646aedd9",
+      "wheel_sha256": {
+        "sail_nutmeg-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl": "fdba9efd2c30b0fbafeb4366989d8e65899564bcc1db40a740ae15715d7bd355",
+        "sail_sedona_extension-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl": "7aad880b8ffe911af14faf1f7522a6108c0d1d4b26fa2df22c4d6dec1532e06d"
+      },
+      "runs": [
+        {
+          "mode": "local",
+          "passed": 64,
+          "skipped": 1,
+          "exit_code": 0
+        },
+        {
+          "mode": "local-cluster",
+          "passed": 65,
+          "skipped": 0,
+          "exit_code": 0
+        },
+        {
+          "mode": "process-cluster",
+          "passed": 65,
+          "skipped": 0,
+          "exit_code": 0
+        }
+      ],
+      "receipt": "abi/linux/compatibility/receipt.json",
+      "classification": "qualified artifact combination"
+    },
+    {
+      "platform": "Linux-x86_64",
+      "case": "upstream",
+      "source_commit": "77c43834ca8e7df01a335da3a0ae4f553ff04634",
+      "rustc": "1.97.1",
+      "datafusion": "55.1.0",
+      "datafusion_ffi": "55.1.0",
+      "arrow": "59.3.0",
+      "binary_sha256": "b54aba7208dab8ec2f38db3e9b690e9cf505094c13a01450a0c2b33693981129",
+      "wheel_sha256": {
+        "sail_nutmeg-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl": "fdba9efd2c30b0fbafeb4366989d8e65899564bcc1db40a740ae15715d7bd355",
+        "sail_sedona_extension-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl": "7aad880b8ffe911af14faf1f7522a6108c0d1d4b26fa2df22c4d6dec1532e06d"
+      },
+      "runs": [
+        {
+          "mode": "local",
+          "passed": 64,
+          "skipped": 1,
+          "exit_code": 0
+        },
+        {
+          "mode": "local-cluster",
+          "passed": 65,
+          "skipped": 0,
+          "exit_code": 0
+        },
+        {
+          "mode": "process-cluster",
+          "passed": 65,
+          "skipped": 0,
+          "exit_code": 0
+        }
+      ],
+      "receipt": "abi/linux/compatibility/receipt.json",
+      "classification": "qualified artifact combination"
+    },
+    {
+      "platform": "Linux-x86_64",
+      "case": "compiler",
+      "source_commit": "287930474c6af2523223621cddc9a42c44ef0fdd",
+      "rustc": "1.98.1",
+      "datafusion": "55.1.0",
+      "datafusion_ffi": "55.1.0",
+      "arrow": "59.3.0",
+      "binary_sha256": "a4e85c9ae63c0ad75267b458c5197c4d7451b390780841c885871ccf3206f4a5",
+      "wheel_sha256": {
+        "sail_nutmeg-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl": "fdba9efd2c30b0fbafeb4366989d8e65899564bcc1db40a740ae15715d7bd355",
+        "sail_sedona_extension-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl": "7aad880b8ffe911af14faf1f7522a6108c0d1d4b26fa2df22c4d6dec1532e06d"
+      },
+      "runs": [
+        {
+          "mode": "local",
+          "passed": 64,
+          "skipped": 1,
+          "exit_code": 0
+        },
+        {
+          "mode": "local-cluster",
+          "passed": 65,
+          "skipped": 0,
+          "exit_code": 0
+        },
+        {
+          "mode": "process-cluster",
+          "passed": 65,
+          "skipped": 0,
+          "exit_code": 0
+        }
+      ],
+      "receipt": "abi/linux/compatibility/receipt.json",
+      "classification": "qualified artifact combination"
+    },
+    {
+      "platform": "Linux-x86_64",
+      "case": "ffi-diagnostic",
+      "source_commit": "1378bbcb3ba7a481f4b81f3fbec2f168999e590e",
+      "rustc": "1.97.1",
+      "datafusion": "55.1.0",
+      "datafusion_ffi": "55.0.0",
+      "arrow": "59.3.0",
+      "binary_sha256": "653e680af69b95d19191e767481b32517d41bb5600a0564cbc70443b292a413a",
+      "wheel_sha256": {
+        "sail_nutmeg-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl": "fdba9efd2c30b0fbafeb4366989d8e65899564bcc1db40a740ae15715d7bd355",
+        "sail_sedona_extension-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl": "7aad880b8ffe911af14faf1f7522a6108c0d1d4b26fa2df22c4d6dec1532e06d"
+      },
+      "runs": [
+        {
+          "mode": "local",
+          "passed": 64,
+          "skipped": 1,
+          "exit_code": 0
+        },
+        {
+          "mode": "local-cluster",
+          "passed": 65,
+          "skipped": 0,
+          "exit_code": 0
+        },
+        {
+          "mode": "process-cluster",
+          "passed": 65,
+          "skipped": 0,
+          "exit_code": 0
+        }
+      ],
+      "receipt": "abi/linux/compatibility/receipt.json",
+      "classification": "diagnostic only"
+    }
+  ],
+  "mixed_compiler_workers": [
+    {
+      "platform": "macOS-arm64",
+      "driver": {
+        "source_commit": "bf97367dd231de2535ad9b04b415fd2619bc4696",
+        "rustc": "1.97.1",
+        "binary_sha256": "a96ea07af94705d0998d671f066f19f2678315a05ba6cad52da033298eb0ea29"
+      },
+      "worker": {
+        "source_commit": "287930474c6af2523223621cddc9a42c44ef0fdd",
+        "rustc": "1.98.1",
+        "binary_sha256": "0b9574f2ea81c8f56241d24229e905146992119526466f6e120cb65405fc5acc"
+      },
+      "mode": "process-cluster",
+      "passed": 65,
+      "receipt": "abi/mac-mixed-compilers/receipt.json"
+    },
+    {
+      "platform": "macOS-arm64",
+      "driver": {
+        "source_commit": "287930474c6af2523223621cddc9a42c44ef0fdd",
+        "rustc": "1.98.1",
+        "binary_sha256": "0b9574f2ea81c8f56241d24229e905146992119526466f6e120cb65405fc5acc"
+      },
+      "worker": {
+        "source_commit": "bf97367dd231de2535ad9b04b415fd2619bc4696",
+        "rustc": "1.97.1",
+        "binary_sha256": "a96ea07af94705d0998d671f066f19f2678315a05ba6cad52da033298eb0ea29"
+      },
+      "mode": "process-cluster",
+      "passed": 65,
+      "receipt": "abi/mac-mixed-compilers/receipt.json"
+    }
+  ],
+  "boundary_probes": [
+    {
+      "platform": "macOS-arm64",
+      "passed": 17,
+      "receipt": "abi/mac-boundaries-release/receipt.json"
+    },
+    {
+      "platform": "Linux-x86_64",
+      "passed": 17,
+      "receipt": "abi/linux/boundaries-release/receipt.json"
+    }
+  ],
+  "integration_passed": 1294,
+  "integration_skipped": 6,
+  "whole_engine_downgrade": {
+    "source_commit": "fa34dd697ff9926e7bcdd1da1a28f7c705a00922",
+    "datafusion": "55.0.0",
+    "outcome": "build_incompatible",
+    "exit_code": 101,
+    "reason": "CastExpr::has_explicit_metadata missing",
+    "log": "abi/mac-df55-build.log"
+  },
+  "newer_datafusion_patch": {
+    "outcome": "unavailable",
+    "evidence": "abi/available-versions.json"
+  }
+}

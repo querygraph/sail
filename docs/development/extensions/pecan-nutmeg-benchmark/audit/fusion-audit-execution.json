@@ -1,0 +1,20 @@
+{
+  "started_utc": "2026-09-27T21:09:47.447867+00:00",
+  "command": [
+    "/Users/alexy/src/sail-extensions-poc/.venvs/extensions-datafusion/bin/python",
+    "/Users/alexy/src/sail-extensions-poc/target/pecan-benchmark/audit_matrix.py",
+    "--kind",
+    "fusion",
+    "--evidence",
+    "/Users/alexy/src/sail-extensions-poc/target/extensions-pecan-benchmark/export/export-fusion-matrix-3fd69787",
+    "--summary",
+    "/Users/alexy/src/sail-extensions-poc/target/extensions-pecan-benchmark/export/fusion-matrix-3fd69787-summary",
+    "--raw",
+    "/Users/alexy/src/sail-extensions-poc/target/extensions-pecan-benchmark/export/raw-audit-fusion-3fd69787",
+    "--require-raw",
+    "--output",
+    "/Users/alexy/src/sail-extensions-poc/target/pecan-benchmark/fusion-audit"
+  ],
+  "returncode": 0,
+  "finished_utc": "2026-09-27T21:09:48.887445+00:00"
+}

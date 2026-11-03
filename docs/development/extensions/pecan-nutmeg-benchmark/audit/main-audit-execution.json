@@ -1,0 +1,21 @@
+{
+  "started_utc": "2026-09-27T20:40:28.646620+00:00",
+  "command": [
+    "/Users/alexy/src/sail-extensions-poc/.venvs/extensions-datafusion/bin/python",
+    "/Users/alexy/src/sail-extensions-poc/target/pecan-benchmark/audit_matrix.py",
+    "--kind",
+    "main",
+    "--evidence",
+    "/Users/alexy/src/sail-extensions-poc/target/extensions-pecan-benchmark/export/export-matrix-3c1fd28c",
+    "--summary",
+    "/Users/alexy/src/sail-extensions-poc/target/extensions-pecan-benchmark/export/matrix-3c1fd28c-summary",
+    "--raw",
+    "/Users/alexy/src/sail-extensions-poc/target/extensions-pecan-benchmark/export/raw-audit-main-3c1fd28c",
+    "--require-raw",
+    "--output",
+    "/Users/alexy/src/sail-extensions-poc/target/pecan-benchmark/main-audit"
+  ],
+  "reason": "Recognize recorded collection-context cleanup snapshot and report sampling/width detail.",
+  "returncode": 0,
+  "finished_utc": "2026-09-27T20:40:38.634455+00:00"
+}

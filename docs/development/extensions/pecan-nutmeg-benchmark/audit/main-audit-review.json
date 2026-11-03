@@ -1,0 +1,138 @@
+{
+  "reviewed_utc": "2026-09-27T20:42:32.721158+00:00",
+  "raw_pagerank_vectors": 8,
+  "raw_wcc_vectors": 8,
+  "raw_pagerank_residual_range": [
+    4.666204456975912e-09,
+    7.920545169498174e-09
+  ],
+  "raw_pagerank_reference_l1_range": [
+    3.1725068467994104e-16,
+    1.9370018522468642e-08
+  ],
+  "raw_pagerank_maximum_mass_error": 6.701306176637445e-13,
+  "delta_integer_traces": [
+    {
+      "dataset": "sparse-10000",
+      "compared_cells": 9,
+      "identical_observed_integer_traces": true,
+      "pushes": 59,
+      "messages": 4656532,
+      "reactivations": 4485
+    },
+    {
+      "dataset": "sparse-100000",
+      "compared_cells": 18,
+      "identical_observed_integer_traces": true,
+      "pushes": 59,
+      "messages": 45820538,
+      "reactivations": 67360
+    },
+    {
+      "dataset": "sparse-1000000",
+      "compared_cells": 9,
+      "identical_observed_integer_traces": true,
+      "pushes": 62,
+      "messages": 477240350,
+      "reactivations": 975826
+    }
+  ],
+  "nonmonotonic_relational_pagerank_pss": [
+    {
+      "dataset": "sparse-100000",
+      "engine": "nutmeg-datafusion",
+      "variant": "optimized",
+      "gib": {
+        "minimum": 2.5363025665283203,
+        "median": 2.6312780380249023,
+        "maximum": 2.6587133407592773
+      },
+      "samples": 3
+    },
+    {
+      "dataset": "sparse-100000",
+      "engine": "nutmeg-datafusion",
+      "variant": "reference",
+      "gib": {
+        "minimum": 2.0066394805908203,
+        "median": 2.023684501647949,
+        "maximum": 2.0292272567749023
+      },
+      "samples": 3
+    },
+    {
+      "dataset": "sparse-100000",
+      "engine": "pecan",
+      "variant": "optimized",
+      "gib": {
+        "minimum": 2.513906478881836,
+        "median": 2.547006607055664,
+        "maximum": 2.6522207260131836
+      },
+      "samples": 3
+    },
+    {
+      "dataset": "sparse-100000",
+      "engine": "pecan",
+      "variant": "reference",
+      "gib": {
+        "minimum": 2.0974531173706055,
+        "median": 2.146918296813965,
+        "maximum": 2.1590938568115234
+      },
+      "samples": 3
+    },
+    {
+      "dataset": "sparse-1000000",
+      "engine": "nutmeg-datafusion",
+      "variant": "optimized",
+      "gib": {
+        "minimum": 2.0352649688720703,
+        "median": 2.1058950424194336,
+        "maximum": 2.151003837585449
+      },
+      "samples": 3
+    },
+    {
+      "dataset": "sparse-1000000",
+      "engine": "nutmeg-datafusion",
+      "variant": "reference",
+      "gib": {
+        "minimum": 1.7679901123046875,
+        "median": 1.7713985443115234,
+        "maximum": 1.8046741485595703
+      },
+      "samples": 3
+    },
+    {
+      "dataset": "sparse-1000000",
+      "engine": "pecan",
+      "variant": "optimized",
+      "gib": {
+        "minimum": 2.007875442504883,
+        "median": 2.0386343002319336,
+        "maximum": 2.133479118347168
+      },
+      "samples": 3
+    },
+    {
+      "dataset": "sparse-1000000",
+      "engine": "pecan",
+      "variant": "reference",
+      "gib": {
+        "minimum": 1.8735990524291992,
+        "median": 1.8778858184814453,
+        "maximum": 1.940474510192871
+      },
+      "samples": 3
+    }
+  ],
+  "qualifications": [
+    "134 cells checked through receipts/inventories;16 through actual full raw vectors.",
+    "All 150 execution phases have PSS samples, but native chain WCC has only one execution sample.",
+    "Reference native kernels expose requested concurrency, not actual kernel-width diagnostics.",
+    "Lower sampled PR PSS at 1m than 100k is observed across all three repetitions; cause is unestablished.",
+    "Whole-VM steal recorded 0 in every cell; this does not exclude macOS host contention or sampling gaps.",
+    "Nutmeg 8 GiB prepaid lease applies to driver/local session; workers retain their 16 GiB Sail pool without that Nutmeg lease."
+  ]
+}

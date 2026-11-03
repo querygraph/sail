@@ -27,6 +27,7 @@ todo = "deny"
 
 [workspace.dependencies]
 orc-rust = { path = "vendor/orc-rust", default-features = false, features = ["async"] }
+stacker = "0.1.25"
 thiserror = { version = "2.0.21" }
 tokio = { version = "1.53.2", features = ["full", "test-util"] }
 tokio-util = { version = "0.7.19", features = ["rt"] }
@@ -198,6 +199,10 @@ datafusion-datasource-json = { version = "55.2.0" }
 datafusion-datasource-parquet = { version = "55.2.0" }
 datafusion-expr = { version = "55.2.0", default-features = false }
 datafusion-expr-common = { version = "55.2.0" }
+# The FFI boundary of native extensions (examples/extensions). The version is the
+# one Cargo.lock resolves for `datafusion`; the extension workspaces pin exactly
+# that, because both sides of the boundary must agree on the ABI.
+datafusion-ffi = { version = "55.2.0" }
 datafusion-proto = { version = "55.2.0" }
 datafusion-functions = { version = "55.2.0" }
 datafusion-functions-nested = { version = "55.2.0", default-features = false }

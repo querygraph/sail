@@ -1,0 +1,51 @@
+{
+  "recorded_utc": "2026-09-27T21:22:50.519135+00:00",
+  "boundary": "Preserved superseded documentation preflight. Git ignored the tar.gz archive, so the detached candidate lacked the required file. No algorithm code or measurement changed; final delivery stages the exact verified archive explicitly.",
+  "original_receipt": {
+    "started_utc": "2026-09-27T21:21:24.779497+00:00",
+    "source_sha": "1570b1172cd8523296bceed3016fab777d18cb43",
+    "free_disk_before": 68259401728,
+    "commands": [
+      {
+        "name": "benchmark-launcher",
+        "command": [
+          "/Users/alexy/src/sail-extensions-poc/.venvs/extensions-x86-final-de8e67098/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "examples/extensions/benchmarks",
+          "examples/extensions/scripts/tests"
+        ],
+        "returncode": 0
+      }
+    ],
+    "documentation_blocks_checked": [
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "bash",
+      "python",
+      "python",
+      "python",
+      "json",
+      "bash",
+      "bash",
+      "python"
+    ],
+    "outcome": "failed",
+    "error": "FileNotFoundError(2, 'No such file or directory')",
+    "finished_utc": "2026-09-27T21:21:30.870423+00:00",
+    "ending_sha": "1570b1172cd8523296bceed3016fab777d18cb43",
+    "ending_status": "",
+    "free_disk_after": 68257558528
+  }
+}

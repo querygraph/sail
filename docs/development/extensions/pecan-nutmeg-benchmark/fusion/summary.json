@@ -1,0 +1,1906 @@
+{
+  "generated_utc": "2026-09-27T21:07:55.312478+00:00",
+  "planned_cells": 78,
+  "outcomes": {
+    "passed": 78
+  },
+  "expected_outcomes_observed": 78,
+  "sources": {
+    "harness_source_sha": "3fd6978757713482942656cb0b23205fe57647d0",
+    "runtime_source_sha": "70b0d1cab2cab945d4dbaf6842ee0e38c8aa1822",
+    "native_source_sha": "9d7155aa2302d9dda4e93e48ee3fd81aac1ee637"
+  },
+  "integrity_errors": [],
+  "groups": [
+    {
+      "suite": "chain-diagnostic",
+      "dataset": "chain-512",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-datafusion",
+      "variant": "fused",
+      "planned": 1,
+      "passed": 1,
+      "outcomes": {
+        "passed": 1
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 1,
+          "median": 2.2379164020003373,
+          "minimum": 2.2379164020003373,
+          "maximum": 2.2379164020003373
+        },
+        "execution_rss_bytes": {
+          "samples": 1,
+          "median": 962260992,
+          "minimum": 962260992,
+          "maximum": 962260992
+        },
+        "execution_pss_bytes": {
+          "samples": 1,
+          "median": 818269184,
+          "minimum": 818269184,
+          "maximum": 818269184
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 1,
+          "median": 669990912.0,
+          "minimum": 669990912.0,
+          "maximum": 669990912.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 1,
+          "median": 705507328.0,
+          "minimum": 705507328.0,
+          "maximum": 705507328.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 1,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 1,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "chain-diagnostic",
+      "dataset": "chain-512",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-datafusion",
+      "variant": "optimized",
+      "planned": 1,
+      "passed": 1,
+      "outcomes": {
+        "passed": 1
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 1,
+          "median": 3.0506517049998365,
+          "minimum": 3.0506517049998365,
+          "maximum": 3.0506517049998365
+        },
+        "execution_rss_bytes": {
+          "samples": 1,
+          "median": 937873408,
+          "minimum": 937873408,
+          "maximum": 937873408
+        },
+        "execution_pss_bytes": {
+          "samples": 1,
+          "median": 793106432,
+          "minimum": 793106432,
+          "maximum": 793106432
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 1,
+          "median": 669712384.0,
+          "minimum": 669712384.0,
+          "maximum": 669712384.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 1,
+          "median": 674717696.0,
+          "minimum": 674717696.0,
+          "maximum": 674717696.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 1,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 1,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "chain-diagnostic",
+      "dataset": "chain-512",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-native",
+      "variant": "fused",
+      "planned": 1,
+      "passed": 1,
+      "outcomes": {
+        "passed": 1
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 1,
+          "median": 0.04207327800031635,
+          "minimum": 0.04207327800031635,
+          "maximum": 0.04207327800031635
+        },
+        "execution_rss_bytes": null,
+        "execution_pss_bytes": null,
+        "cgroup_peak_through_result_bytes": {
+          "samples": 1,
+          "median": 367194112.0,
+          "minimum": 367194112.0,
+          "maximum": 367194112.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 1,
+          "median": 436334592.0,
+          "minimum": 436334592.0,
+          "maximum": 436334592.0
+        },
+        "native_pool_peak_bytes": {
+          "samples": 1,
+          "median": 643901,
+          "minimum": 643901,
+          "maximum": 643901
+        },
+        "native_read_peak_bytes": {
+          "samples": 1,
+          "median": 554552,
+          "minimum": 554552,
+          "maximum": 554552
+        },
+        "iterations": {
+          "samples": 1,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 1,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "chain-diagnostic",
+      "dataset": "chain-512",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-native",
+      "variant": "optimized",
+      "planned": 1,
+      "passed": 1,
+      "outcomes": {
+        "passed": 1
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 1,
+          "median": 0.04569969700060028,
+          "minimum": 0.04569969700060028,
+          "maximum": 0.04569969700060028
+        },
+        "execution_rss_bytes": {
+          "samples": 1,
+          "median": 566931456,
+          "minimum": 566931456,
+          "maximum": 566931456
+        },
+        "execution_pss_bytes": {
+          "samples": 1,
+          "median": 451982336,
+          "minimum": 451982336,
+          "maximum": 451982336
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 1,
+          "median": 333471744.0,
+          "minimum": 333471744.0,
+          "maximum": 333471744.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 1,
+          "median": 438534144.0,
+          "minimum": 438534144.0,
+          "maximum": 438534144.0
+        },
+        "native_pool_peak_bytes": {
+          "samples": 1,
+          "median": 643901,
+          "minimum": 643901,
+          "maximum": 643901
+        },
+        "native_read_peak_bytes": {
+          "samples": 1,
+          "median": 554552,
+          "minimum": 554552,
+          "maximum": 554552
+        },
+        "iterations": {
+          "samples": 1,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 1,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "chain-diagnostic",
+      "dataset": "chain-512",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "pecan",
+      "variant": "fused",
+      "planned": 1,
+      "passed": 1,
+      "outcomes": {
+        "passed": 1
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 1,
+          "median": 2.1801425610010483,
+          "minimum": 2.1801425610010483,
+          "maximum": 2.1801425610010483
+        },
+        "execution_rss_bytes": {
+          "samples": 1,
+          "median": 928919552,
+          "minimum": 928919552,
+          "maximum": 928919552
+        },
+        "execution_pss_bytes": {
+          "samples": 1,
+          "median": 783853568,
+          "minimum": 783853568,
+          "maximum": 783853568
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 1,
+          "median": 635031552.0,
+          "minimum": 635031552.0,
+          "maximum": 635031552.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 1,
+          "median": 651960320.0,
+          "minimum": 651960320.0,
+          "maximum": 651960320.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 1,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 1,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "chain-diagnostic",
+      "dataset": "chain-512",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "pecan",
+      "variant": "optimized",
+      "planned": 1,
+      "passed": 1,
+      "outcomes": {
+        "passed": 1
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 1,
+          "median": 3.007479294999939,
+          "minimum": 3.007479294999939,
+          "maximum": 3.007479294999939
+        },
+        "execution_rss_bytes": {
+          "samples": 1,
+          "median": 980647936,
+          "minimum": 980647936,
+          "maximum": 980647936
+        },
+        "execution_pss_bytes": {
+          "samples": 1,
+          "median": 838269952,
+          "minimum": 838269952,
+          "maximum": 838269952
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 1,
+          "median": 699731968.0,
+          "minimum": 699731968.0,
+          "maximum": 699731968.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 1,
+          "median": 699731968.0,
+          "minimum": 699731968.0,
+          "maximum": 699731968.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 1,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 1,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-10000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-datafusion",
+      "variant": "fused",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 1.697874004001278,
+          "minimum": 1.6390260020016285,
+          "maximum": 1.7012294819996896
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 1058988032,
+          "minimum": 1052581888,
+          "maximum": 1093304320
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 911809536,
+          "minimum": 909548544,
+          "maximum": 947749888
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 782831616.0,
+          "minimum": 764538880.0,
+          "maximum": 788766720.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 810893312.0,
+          "minimum": 781680640.0,
+          "maximum": 817225728.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 6,
+          "minimum": 6,
+          "maximum": 6
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-10000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-datafusion",
+      "variant": "optimized",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 2.188178013000652,
+          "minimum": 2.108707419998609,
+          "maximum": 2.2279380499985564
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 1116078080,
+          "minimum": 1107873792,
+          "maximum": 1125777408
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 974261248,
+          "minimum": 964392960,
+          "maximum": 980319232
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 845058048.0,
+          "minimum": 836079616.0,
+          "maximum": 845127680.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 872148992.0,
+          "minimum": 858828800.0,
+          "maximum": 878403584.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 6,
+          "minimum": 6,
+          "maximum": 6
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-10000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-native",
+      "variant": "fused",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 0.12491031100034888,
+          "minimum": 0.12186464400110708,
+          "maximum": 0.13205333999940194
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 711991296,
+          "minimum": 704663552,
+          "maximum": 717139968
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 585059328,
+          "minimum": 576351232,
+          "maximum": 589228032
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 445358080.0,
+          "minimum": 438394880.0,
+          "maximum": 447025152.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 568209408.0,
+          "minimum": 558350336.0,
+          "maximum": 588247040.0
+        },
+        "native_pool_peak_bytes": {
+          "samples": 3,
+          "median": 56148398,
+          "minimum": 56148398,
+          "maximum": 56148398
+        },
+        "native_read_peak_bytes": {
+          "samples": 3,
+          "median": 9895848,
+          "minimum": 9895848,
+          "maximum": 9895848
+        },
+        "iterations": {
+          "samples": 3,
+          "median": 6,
+          "minimum": 6,
+          "maximum": 6
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-10000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-native",
+      "variant": "optimized",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 0.13118404699889652,
+          "minimum": 0.12939705600001616,
+          "maximum": 0.13667669099959312
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 704532480,
+          "minimum": 703934464,
+          "maximum": 739463168
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 576021504,
+          "minimum": 575540224,
+          "maximum": 612550656
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 448397312.0,
+          "minimum": 439308288.0,
+          "maximum": 463413248.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 571625472.0,
+          "minimum": 560783360.0,
+          "maximum": 583561216.0
+        },
+        "native_pool_peak_bytes": {
+          "samples": 3,
+          "median": 56148398,
+          "minimum": 56148398,
+          "maximum": 56148398
+        },
+        "native_read_peak_bytes": {
+          "samples": 3,
+          "median": 9895848,
+          "minimum": 9895848,
+          "maximum": 9895848
+        },
+        "iterations": {
+          "samples": 3,
+          "median": 6,
+          "minimum": 6,
+          "maximum": 6
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-10000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "pecan",
+      "variant": "fused",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 1.6440522240009159,
+          "minimum": 1.6117728779991012,
+          "maximum": 1.6672663930003182
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 1095397376,
+          "minimum": 1066123264,
+          "maximum": 1106481152
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 948329472,
+          "minimum": 921234432,
+          "maximum": 959900672
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 785870848.0,
+          "minimum": 783884288.0,
+          "maximum": 828211200.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 807702528.0,
+          "minimum": 801939456.0,
+          "maximum": 845037568.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 6,
+          "minimum": 6,
+          "maximum": 6
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-10000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "pecan",
+      "variant": "optimized",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 2.1982663849994424,
+          "minimum": 2.164004099000522,
+          "maximum": 2.2555505979998998
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 1111916544,
+          "minimum": 1096810496,
+          "maximum": 1125777408
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 969517056,
+          "minimum": 953682944,
+          "maximum": 982361088
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 833769472.0,
+          "minimum": 828919808.0,
+          "maximum": 854056960.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 864317440.0,
+          "minimum": 857387008.0,
+          "maximum": 865423360.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 6,
+          "minimum": 6,
+          "maximum": 6
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-100000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-datafusion",
+      "variant": "fused",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 2.596404428999449,
+          "minimum": 2.5883897280000383,
+          "maximum": 2.6687226529993495
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 1483644928,
+          "minimum": 1405546496,
+          "maximum": 1528684544
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 1339828224,
+          "minimum": 1261017088,
+          "maximum": 1379643392
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 1261395968.0,
+          "minimum": 1170337792.0,
+          "maximum": 1299464192.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 1314058240.0,
+          "minimum": 1242394624.0,
+          "maximum": 1381298176.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-100000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-datafusion",
+      "variant": "optimized",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 3.4973873240014655,
+          "minimum": 3.4757163829999627,
+          "maximum": 3.51541215799989
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 1591275520,
+          "minimum": 1587957760,
+          "maximum": 1627369472
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 1449658368,
+          "minimum": 1445222400,
+          "maximum": 1484188672
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 1337466880.0,
+          "minimum": 1337159680.0,
+          "maximum": 1446576128.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 1413939200.0,
+          "minimum": 1402712064.0,
+          "maximum": 1532370944.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-100000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-native",
+      "variant": "fused",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 0.8072052180013998,
+          "minimum": 0.7950123110003915,
+          "maximum": 0.829921901000489
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 892076032,
+          "minimum": 889413632,
+          "maximum": 936591360
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 761239552,
+          "minimum": 757626880,
+          "maximum": 803724288
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 673026048.0,
+          "minimum": 650973184.0,
+          "maximum": 692932608.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 913653760.0,
+          "minimum": 908980224.0,
+          "maximum": 924766208.0
+        },
+        "native_pool_peak_bytes": {
+          "samples": 3,
+          "median": 570503902,
+          "minimum": 570471422,
+          "maximum": 570503902
+        },
+        "native_read_peak_bytes": {
+          "samples": 3,
+          "median": 40727908,
+          "minimum": 40727908,
+          "maximum": 45086504
+        },
+        "iterations": {
+          "samples": 3,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-100000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-native",
+      "variant": "optimized",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 0.8290019670002948,
+          "minimum": 0.8243648000006942,
+          "maximum": 0.8524876860010409
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 906727424,
+          "minimum": 876318720,
+          "maximum": 920080384
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 776226816,
+          "minimum": 744278016,
+          "maximum": 789371904
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 675139584.0,
+          "minimum": 630001664.0,
+          "maximum": 689836032.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 903839744.0,
+          "minimum": 885256192.0,
+          "maximum": 935489536.0
+        },
+        "native_pool_peak_bytes": {
+          "samples": 3,
+          "median": 570471422,
+          "minimum": 570471422,
+          "maximum": 570503902
+        },
+        "native_read_peak_bytes": {
+          "samples": 3,
+          "median": 41633532,
+          "minimum": 40727908,
+          "maximum": 45086492
+        },
+        "iterations": {
+          "samples": 3,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-100000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "pecan",
+      "variant": "fused",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 2.5759825370005274,
+          "minimum": 2.5757373289998213,
+          "maximum": 2.673346069001127
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 1468112896,
+          "minimum": 1456238592,
+          "maximum": 1479503872
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 1324685312,
+          "minimum": 1309976576,
+          "maximum": 1334594560
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 1269583872.0,
+          "minimum": 1253564416.0,
+          "maximum": 1295380480.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 1331175424.0,
+          "minimum": 1328930816.0,
+          "maximum": 1358245888.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-100000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "pecan",
+      "variant": "optimized",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 3.433413908998773,
+          "minimum": 3.4201499539994984,
+          "maximum": 3.521463679999215
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 1594904576,
+          "minimum": 1573924864,
+          "maximum": 1636651008
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 1452956672,
+          "minimum": 1431026688,
+          "maximum": 1493322752
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 1347137536.0,
+          "minimum": 1340174336.0,
+          "maximum": 1391239168.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 1437831168.0,
+          "minimum": 1408344064.0,
+          "maximum": 1441554432.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-1000000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-datafusion",
+      "variant": "fused",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 7.8065999549999106,
+          "minimum": 7.63783478500045,
+          "maximum": 7.997040543999901
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 2470731776,
+          "minimum": 2341482496,
+          "maximum": 2599124992
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 2322118656,
+          "minimum": 2197842944,
+          "maximum": 2456697856
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 2449666048.0,
+          "minimum": 2346606592.0,
+          "maximum": 2587611136.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 2449666048.0,
+          "minimum": 2346606592.0,
+          "maximum": 2587611136.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 11,
+          "minimum": 11,
+          "maximum": 11
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-1000000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-datafusion",
+      "variant": "optimized",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 8.70590612200067,
+          "minimum": 8.559390028000053,
+          "maximum": 8.71868845300014
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 1957908480,
+          "minimum": 1893687296,
+          "maximum": 1979543552
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 1816513536,
+          "minimum": 1750801408,
+          "maximum": 1838275584
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 1956708352.0,
+          "minimum": 1934704640.0,
+          "maximum": 1982406656.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 1956708352.0,
+          "minimum": 1934704640.0,
+          "maximum": 1982406656.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 11,
+          "minimum": 11,
+          "maximum": 11
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-1000000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-native",
+      "variant": "fused",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 7.620358242998918,
+          "minimum": 7.611969471998236,
+          "maximum": 7.660538524998628
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 2136682496,
+          "minimum": 2125815808,
+          "maximum": 2168958976
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 2002724864,
+          "minimum": 1994729472,
+          "maximum": 2039024640
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 1961000960.0,
+          "minimum": 1953329152.0,
+          "maximum": 1987960832.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 2053918720.0,
+          "minimum": 2037202944.0,
+          "maximum": 2096091136.0
+        },
+        "native_pool_peak_bytes": {
+          "samples": 3,
+          "median": 5795063610,
+          "minimum": 5795063610,
+          "maximum": 5795063610
+        },
+        "native_read_peak_bytes": {
+          "samples": 3,
+          "median": 328313992,
+          "minimum": 315139880,
+          "maximum": 394184500
+        },
+        "iterations": {
+          "samples": 3,
+          "median": 11,
+          "minimum": 11,
+          "maximum": 11
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-1000000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "nutmeg-native",
+      "variant": "optimized",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 8.022911624999324,
+          "minimum": 7.947328459000346,
+          "maximum": 8.268109036998794
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 2142400512,
+          "minimum": 2118709248,
+          "maximum": 2159292416
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 2011445248,
+          "minimum": 1986497536,
+          "maximum": 2026200064
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 1964625920.0,
+          "minimum": 1949294592.0,
+          "maximum": 1980502016.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 2059509760.0,
+          "minimum": 2048233472.0,
+          "maximum": 2073079808.0
+        },
+        "native_pool_peak_bytes": {
+          "samples": 3,
+          "median": 5795063610,
+          "minimum": 5795063610,
+          "maximum": 5795063610
+        },
+        "native_read_peak_bytes": {
+          "samples": 3,
+          "median": 394184504,
+          "minimum": 354662184,
+          "maximum": 438098160
+        },
+        "iterations": {
+          "samples": 3,
+          "median": 11,
+          "minimum": 11,
+          "maximum": 11
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-1000000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "pecan",
+      "variant": "fused",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 7.43416169000011,
+          "minimum": 7.20073881999997,
+          "maximum": 7.459710944998733
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 2548305920,
+          "minimum": 2513969152,
+          "maximum": 2573180928
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 2401462272,
+          "minimum": 2380852224,
+          "maximum": 2439649280
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 2472292352.0,
+          "minimum": 2470428672.0,
+          "maximum": 2584715264.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 2472292352.0,
+          "minimum": 2470428672.0,
+          "maximum": 2584715264.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 11,
+          "minimum": 11,
+          "maximum": 11
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "distributed",
+      "dataset": "sparse-1000000",
+      "mode": "process-cluster",
+      "algorithm": "wcc",
+      "engine": "pecan",
+      "variant": "optimized",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 8.831397785999798,
+          "minimum": 8.670592990998557,
+          "maximum": 9.611498731999745
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 1944821760,
+          "minimum": 1866465280,
+          "maximum": 1954623488
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 1804976128,
+          "minimum": 1726991360,
+          "maximum": 1819282432
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 1931501568.0,
+          "minimum": 1843662848.0,
+          "maximum": 1935126528.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 1931501568.0,
+          "minimum": 1843662848.0,
+          "maximum": 1935126528.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 11,
+          "minimum": 11,
+          "maximum": 11
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "local",
+      "dataset": "sparse-100000",
+      "mode": "local",
+      "algorithm": "wcc",
+      "engine": "nutmeg-datafusion",
+      "variant": "fused",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 2.021927544999926,
+          "minimum": 2.009398089001479,
+          "maximum": 2.082405428000129
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 733298688,
+          "minimum": 707301376,
+          "maximum": 768909312
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 724414464,
+          "minimum": 698384384,
+          "maximum": 759934976
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 590188544.0,
+          "minimum": 565538816.0,
+          "maximum": 622493696.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 607379456.0,
+          "minimum": 573489152.0,
+          "maximum": 622493696.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "local",
+      "dataset": "sparse-100000",
+      "mode": "local",
+      "algorithm": "wcc",
+      "engine": "nutmeg-datafusion",
+      "variant": "optimized",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 2.7729972610013647,
+          "minimum": 2.7723274519994447,
+          "maximum": 2.8463255549995665
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 757391360,
+          "minimum": 750632960,
+          "maximum": 779665408
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 748478464,
+          "minimum": 741793792,
+          "maximum": 770707456
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 628355072.0,
+          "minimum": 625115136.0,
+          "maximum": 633921536.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 633921536.0,
+          "minimum": 633065472.0,
+          "maximum": 635056128.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "local",
+      "dataset": "sparse-100000",
+      "mode": "local",
+      "algorithm": "wcc",
+      "engine": "nutmeg-native",
+      "variant": "fused",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 0.7569465340002353,
+          "minimum": 0.7490628129999095,
+          "maximum": 0.7662607439997373
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 519368704,
+          "minimum": 516075520,
+          "maximum": 521183232
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 512249856,
+          "minimum": 507158528,
+          "maximum": 515047424
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 397471744.0,
+          "minimum": 389865472.0,
+          "maximum": 402599936.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 473333760.0,
+          "minimum": 458240000.0,
+          "maximum": 482643968.0
+        },
+        "native_pool_peak_bytes": {
+          "samples": 3,
+          "median": 570471422,
+          "minimum": 570471422,
+          "maximum": 570471422
+        },
+        "native_read_peak_bytes": {
+          "samples": 3,
+          "median": 45086492,
+          "minimum": 45086492,
+          "maximum": 49445072
+        },
+        "iterations": {
+          "samples": 3,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "local",
+      "dataset": "sparse-100000",
+      "mode": "local",
+      "algorithm": "wcc",
+      "engine": "nutmeg-native",
+      "variant": "optimized",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 0.7644882490003511,
+          "minimum": 0.7356569399998989,
+          "maximum": 0.78706794000027
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 522162176,
+          "minimum": 509837312,
+          "maximum": 550359040
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 513241088,
+          "minimum": 500928512,
+          "maximum": 544393216
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 413425664.0,
+          "minimum": 397058048.0,
+          "maximum": 414351360.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 465977344.0,
+          "minimum": 460730368.0,
+          "maximum": 482349056.0
+        },
+        "native_pool_peak_bytes": {
+          "samples": 3,
+          "median": 570471422,
+          "minimum": 570471422,
+          "maximum": 570471422
+        },
+        "native_read_peak_bytes": {
+          "samples": 3,
+          "median": 49445072,
+          "minimum": 45086504,
+          "maximum": 49445072
+        },
+        "iterations": {
+          "samples": 3,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "local",
+      "dataset": "sparse-100000",
+      "mode": "local",
+      "algorithm": "wcc",
+      "engine": "pecan",
+      "variant": "fused",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 2.0519888090002496,
+          "minimum": 2.0344182639983046,
+          "maximum": 2.0532284499986417
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 739143680,
+          "minimum": 726478848,
+          "maximum": 748736512
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 730169344,
+          "minimum": 717479936,
+          "maximum": 739790848
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 595111936.0,
+          "minimum": 583131136.0,
+          "maximum": 603238400.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 595111936.0,
+          "minimum": 583131136.0,
+          "maximum": 611209216.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    },
+    {
+      "suite": "local",
+      "dataset": "sparse-100000",
+      "mode": "local",
+      "algorithm": "wcc",
+      "engine": "pecan",
+      "variant": "optimized",
+      "planned": 3,
+      "passed": 3,
+      "outcomes": {
+        "passed": 3
+      },
+      "metrics": {
+        "seconds": {
+          "samples": 3,
+          "median": 2.7461115719997906,
+          "minimum": 2.7397170460008056,
+          "maximum": 2.766596147999735
+        },
+        "execution_rss_bytes": {
+          "samples": 3,
+          "median": 771895296,
+          "minimum": 763232256,
+          "maximum": 783540224
+        },
+        "execution_pss_bytes": {
+          "samples": 3,
+          "median": 762884096,
+          "minimum": 754208768,
+          "maximum": 774574080
+        },
+        "cgroup_peak_through_result_bytes": {
+          "samples": 3,
+          "median": 624418816.0,
+          "minimum": 623267840.0,
+          "maximum": 642056192.0
+        },
+        "cgroup_lifetime_peak_bytes": {
+          "samples": 3,
+          "median": 624418816.0,
+          "minimum": 623267840.0,
+          "maximum": 650047488.0
+        },
+        "native_pool_peak_bytes": null,
+        "native_read_peak_bytes": null,
+        "iterations": {
+          "samples": 3,
+          "median": 9,
+          "minimum": 9,
+          "maximum": 9
+        },
+        "true_residual": null,
+        "whole_vm_steal_fraction": {
+          "samples": 3,
+          "median": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0
+        }
+      }
+    }
+  ]
+}

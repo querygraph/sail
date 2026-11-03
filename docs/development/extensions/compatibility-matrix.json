@@ -1,0 +1,127 @@
+{
+  "recorded_utc": "2026-09-26T08:09:17.665650+00:00",
+  "status": "qualified for the listed artifact combinations only",
+  "api": 1,
+  "datafusion": "55.1.0",
+  "arrow": "59.3.0",
+  "unchanged_wheels_within_each_platform": true,
+  "platforms": [
+    {
+      "platform": "mac-arm64",
+      "python": "3.12.8 (main, Jan  5 2025, 06:55:30) [Clang 19.1.6 ]",
+      "wheels": {
+        "sail_sedona_extension-0.1.0-cp312-cp312-macosx_26_0_arm64.whl": "95f4202d628115d6af5b73d5b8c7ef91dc35fb7387592ce9f124b507a4fb4489",
+        "sail_nutmeg-0.1.0-cp312-cp312-macosx_11_0_arm64.whl": "569a7eacd416f015cf943ae7c6eff59580159383dccc9ded8f8ac1d7cbab3f03"
+      },
+      "hosts": [
+        {
+          "source_commit": "de8e670989edb8ed5343764c52d0d002b6b6cd63",
+          "binary_sha256": "ab8b187fbbe50abd52b50de410fee875a53cc9d0dd332b946da69589e6cd0236",
+          "runs": [
+            {
+              "mode": "local",
+              "passed": 64,
+              "skipped": 1
+            },
+            {
+              "mode": "local-cluster",
+              "passed": 65,
+              "skipped": 0
+            },
+            {
+              "mode": "process-cluster",
+              "passed": 65,
+              "skipped": 0
+            }
+          ]
+        },
+        {
+          "source_commit": "bf97367dd231de2535ad9b04b415fd2619bc4696",
+          "binary_sha256": "a96ea07af94705d0998d671f066f19f2678315a05ba6cad52da033298eb0ea29",
+          "runs": [
+            {
+              "mode": "local",
+              "passed": 64,
+              "skipped": 1
+            },
+            {
+              "mode": "local-cluster",
+              "passed": 65,
+              "skipped": 0
+            },
+            {
+              "mode": "process-cluster",
+              "passed": 65,
+              "skipped": 0
+            }
+          ]
+        }
+      ],
+      "receipt": "follow-up/mac-arm64/compatibility/receipt.json"
+    },
+    {
+      "platform": "linux-x86_64",
+      "python": "3.12.14 (main, Sep 24 2026, 17:57:43) [Clang 22.1.3 ]",
+      "wheels": {
+        "sail_nutmeg-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl": "fdba9efd2c30b0fbafeb4366989d8e65899564bcc1db40a740ae15715d7bd355",
+        "sail_sedona_extension-0.1.0-cp312-cp312-manylinux_2_34_x86_64.whl": "7aad880b8ffe911af14faf1f7522a6108c0d1d4b26fa2df22c4d6dec1532e06d"
+      },
+      "hosts": [
+        {
+          "source_commit": "de8e670989edb8ed5343764c52d0d002b6b6cd63",
+          "binary_sha256": "eeb2c32d8b275194445cbd09e0898b21c5053e3fb0c7ad771c19d27fbbd4725b",
+          "runs": [
+            {
+              "mode": "local",
+              "passed": 64,
+              "skipped": 1
+            },
+            {
+              "mode": "local-cluster",
+              "passed": 65,
+              "skipped": 0
+            },
+            {
+              "mode": "process-cluster",
+              "passed": 65,
+              "skipped": 0
+            }
+          ]
+        },
+        {
+          "source_commit": "bf97367dd231de2535ad9b04b415fd2619bc4696",
+          "binary_sha256": "60687b282bf89497cd52d8b260c35dbf38849f0b7ceb9b25f7d83f4e646aedd9",
+          "runs": [
+            {
+              "mode": "local",
+              "passed": 64,
+              "skipped": 1
+            },
+            {
+              "mode": "local-cluster",
+              "passed": 65,
+              "skipped": 0
+            },
+            {
+              "mode": "process-cluster",
+              "passed": 65,
+              "skipped": 0
+            }
+          ]
+        }
+      ],
+      "receipt": "follow-up/linux-x86_64/compatibility/receipt.json"
+    }
+  ],
+  "scope_exclusions": [
+    "cross-compiler reuse",
+    "different DataFusion or Arrow versions",
+    "mixed host revisions within one cluster",
+    "arbitrary release ABI compatibility",
+    "repeat of original two-host qualification"
+  ],
+  "evidence_bundle": {
+    "path": "evidence/extension-review-evidence.tar.gz",
+    "sha256": "199f96474a93c29847a392030e97945d5b821d822d6ee890ec5714e9c06ae99e"
+  }
+}

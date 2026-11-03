@@ -1,0 +1,358 @@
+{
+  "recorded_utc": "2026-09-27T19:46:52.351190+00:00",
+  "verified_copied_files": 142,
+  "omitted_parquet_files": 66,
+  "reconstructed_memory_samples": 3659,
+  "summary_reproduced": true,
+  "outcomes": {
+    "passed": 16,
+    "error": 4,
+    "not_run": 130
+  },
+  "sources": [
+    "a6567b511a2ef1d99688f644134effb8461594f8",
+    "70b0d1cab2cab945d4dbaf6842ee0e38c8aa1822",
+    "4e6100f0320fb952e9926b867193ec1768edfcda"
+  ],
+  "binary_sha256": "7353a7df02a624b3336f6c30d0968cbd42ae1f4bd3333ed6af9c638bbc77165a",
+  "cleanup_snapshot": {
+    "recorded_utc": "2026-09-27T19:34:50.892467+00:00",
+    "run": "/targets/pecan-benchmark/runs/pecan-matrix-a6567b51",
+    "harness_source_sha": "a6567b511a2ef1d99688f644134effb8461594f8",
+    "completed_cell_directories": 20,
+    "remaining_staging_regular_files": [],
+    "outcome": "passed"
+  },
+  "errors": [
+    {
+      "cell_id": "distributed-r1-sparse-1000000-nutmeg-native-pagerank-optimized",
+      "cause": "native_staging_quota"
+    },
+    {
+      "cell_id": "distributed-r1-sparse-100000-nutmeg-datafusion-wcc-optimized",
+      "cause": "task_slots"
+    },
+    {
+      "cell_id": "distributed-r1-sparse-1000000-nutmeg-native-pagerank-reference",
+      "cause": "native_staging_quota"
+    },
+    {
+      "cell_id": "distributed-r1-sparse-1000000-pecan-wcc-optimized",
+      "cause": "task_slots"
+    }
+  ],
+  "completed_cells": [
+    {
+      "cell_id": "distributed-r1-sparse-100000-nutmeg-datafusion-wcc-reference",
+      "sequence": 1,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 100000,
+        "unique_ids": 100000,
+        "null_ids": 0,
+        "membership_mismatches": 0,
+        "components": 5093,
+        "canonicalization": "minimum numeric vertex ID per output component"
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-1000000-nutmeg-native-pagerank-optimized",
+      "sequence": 2,
+      "outcome": "error",
+      "correctness": null
+    },
+    {
+      "cell_id": "distributed-r1-sparse-10000-nutmeg-native-wcc-reference",
+      "sequence": 3,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 10000,
+        "unique_ids": 10000,
+        "null_ids": 0,
+        "membership_mismatches": 0,
+        "components": 510,
+        "canonicalization": "minimum numeric vertex ID per output component"
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-10000-pecan-pagerank-optimized",
+      "sequence": 4,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 10000,
+        "unique_ids": 10000,
+        "null_ids": 0,
+        "rank_sum": 1.0000000000000018,
+        "l1_error": 1.1867708393666196e-08,
+        "max_error": 5.311661782072749e-11,
+        "min_iterations": 59,
+        "max_iterations": 59,
+        "all_converged": 1,
+        "reported_residual": 4.600003127452239e-09,
+        "min_reported_residual": 4.600003127452239e-09,
+        "l1_error_limit": 1.2333433333333333e-07,
+        "true_fixed_point_residual": 4.6000031466595585e-09,
+        "stationary_l1_error_bound": 3.066668764439705e-08
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-1000000-nutmeg-datafusion-pagerank-reference",
+      "sequence": 5,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 1000000,
+        "unique_ids": 1000000,
+        "null_ids": 0,
+        "rank_sum": 0.9999999999999976,
+        "l1_error": 2.4417361860473572e-15,
+        "max_error": 2.541098841762901e-20,
+        "min_iterations": 59,
+        "max_iterations": 59,
+        "all_converged": 1,
+        "reported_residual": null,
+        "min_reported_residual": null,
+        "l1_error_limit": 1.1333433333333332e-07,
+        "true_fixed_point_residual": 7.920544944234659e-09,
+        "stationary_l1_error_bound": 5.2803632961564384e-08
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-1000000-nutmeg-datafusion-pagerank-optimized",
+      "sequence": 6,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 1000000,
+        "unique_ids": 1000000,
+        "null_ids": 0,
+        "rank_sum": 1.0000000000000016,
+        "l1_error": 1.937053044569403e-08,
+        "max_error": 3.593316344530816e-10,
+        "min_iterations": 62,
+        "max_iterations": 62,
+        "all_converged": 1,
+        "reported_residual": 4.748736925013666e-09,
+        "min_reported_residual": 4.748736925013666e-09,
+        "l1_error_limit": 1.2333433333333333e-07,
+        "true_fixed_point_residual": 4.74873827083332e-09,
+        "stationary_l1_error_bound": 3.1658255138888796e-08
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-100000-nutmeg-native-pagerank-reference",
+      "sequence": 7,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 100000,
+        "unique_ids": 100000,
+        "null_ids": 0,
+        "rank_sum": 0.9999999999999981,
+        "l1_error": 3.1725068467994104e-16,
+        "max_error": 3.3881317890172014e-20,
+        "min_iterations": 57,
+        "max_iterations": 57,
+        "all_converged": 1,
+        "reported_residual": 8.433763080572284e-09,
+        "min_reported_residual": 8.433763080572284e-09,
+        "l1_error_limit": 1.1333433333333332e-07,
+        "true_fixed_point_residual": 6.770794350255557e-09,
+        "stationary_l1_error_bound": 4.513862900170371e-08
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-100000-nutmeg-datafusion-wcc-optimized",
+      "sequence": 8,
+      "outcome": "error",
+      "correctness": null
+    },
+    {
+      "cell_id": "distributed-r1-sparse-100000-nutmeg-native-pagerank-optimized",
+      "sequence": 9,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 100000,
+        "unique_ids": 100000,
+        "null_ids": 0,
+        "rank_sum": 0.999999999999887,
+        "l1_error": 1.1679279636297226e-08,
+        "max_error": 2.6255468977057477e-09,
+        "min_iterations": 59,
+        "max_iterations": 59,
+        "all_converged": 1,
+        "reported_residual": 4.66619345479635e-09,
+        "min_reported_residual": 4.66619345479635e-09,
+        "l1_error_limit": 1.2333433333333333e-07,
+        "true_fixed_point_residual": 4.666204457183435e-09,
+        "stationary_l1_error_bound": 3.110802971455623e-08
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-1000000-pecan-pagerank-optimized",
+      "sequence": 10,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 1000000,
+        "unique_ids": 1000000,
+        "null_ids": 0,
+        "rank_sum": 1.0000000000000013,
+        "l1_error": 1.937053061932316e-08,
+        "max_error": 3.5933163444630534e-10,
+        "min_iterations": 62,
+        "max_iterations": 62,
+        "all_converged": 1,
+        "reported_residual": 4.74873687983277e-09,
+        "min_reported_residual": 4.74873687983277e-09,
+        "l1_error_limit": 1.2333433333333333e-07,
+        "true_fixed_point_residual": 4.7487383363480625e-09,
+        "stationary_l1_error_bound": 3.1658255575653745e-08
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-100000-nutmeg-native-wcc-optimized",
+      "sequence": 11,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 100000,
+        "unique_ids": 100000,
+        "null_ids": 0,
+        "membership_mismatches": 0,
+        "components": 5093,
+        "canonicalization": "minimum numeric vertex ID per output component"
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-10000-nutmeg-datafusion-wcc-reference",
+      "sequence": 12,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 10000,
+        "unique_ids": 10000,
+        "null_ids": 0,
+        "membership_mismatches": 0,
+        "components": 510,
+        "canonicalization": "minimum numeric vertex ID per output component"
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-1000000-nutmeg-native-pagerank-reference",
+      "sequence": 13,
+      "outcome": "error",
+      "correctness": null
+    },
+    {
+      "cell_id": "distributed-r1-sparse-100000-nutmeg-native-wcc-reference",
+      "sequence": 14,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 100000,
+        "unique_ids": 100000,
+        "null_ids": 0,
+        "membership_mismatches": 0,
+        "components": 5093,
+        "canonicalization": "minimum numeric vertex ID per output component"
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-100000-pecan-pagerank-optimized",
+      "sequence": 15,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 100000,
+        "unique_ids": 100000,
+        "null_ids": 0,
+        "rank_sum": 0.9999999999999968,
+        "l1_error": 1.1679238631338229e-08,
+        "max_error": 2.6255469103231505e-09,
+        "min_iterations": 59,
+        "max_iterations": 59,
+        "all_converged": 1,
+        "reported_residual": 4.666210873500786e-09,
+        "min_reported_residual": 4.666210873500786e-09,
+        "l1_error_limit": 1.2333433333333333e-07,
+        "true_fixed_point_residual": 4.666210608478576e-09,
+        "stationary_l1_error_bound": 3.11080707231905e-08
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-1000000-pecan-wcc-optimized",
+      "sequence": 16,
+      "outcome": "error",
+      "correctness": null
+    },
+    {
+      "cell_id": "distributed-r1-sparse-1000000-nutmeg-datafusion-wcc-reference",
+      "sequence": 17,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 1000000,
+        "unique_ids": 1000000,
+        "null_ids": 0,
+        "membership_mismatches": 0,
+        "components": 50928,
+        "canonicalization": "minimum numeric vertex ID per output component"
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-10000-pecan-pagerank-reference",
+      "sequence": 18,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 10000,
+        "unique_ids": 10000,
+        "null_ids": 0,
+        "rank_sum": 0.9999999999999997,
+        "l1_error": 1.5710767105672763e-16,
+        "max_error": 1.6263032587282567e-19,
+        "min_iterations": 57,
+        "max_iterations": 57,
+        "all_converged": 1,
+        "reported_residual": null,
+        "min_reported_residual": null,
+        "l1_error_limit": 1.1333433333333332e-07,
+        "true_fixed_point_residual": 6.985160152006472e-09,
+        "stationary_l1_error_bound": 4.656773434670981e-08
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-10000-nutmeg-datafusion-pagerank-reference",
+      "sequence": 19,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 10000,
+        "unique_ids": 10000,
+        "null_ids": 0,
+        "rank_sum": 0.9999999999999997,
+        "l1_error": 1.3002294553532412e-16,
+        "max_error": 1.3552527156068805e-19,
+        "min_iterations": 57,
+        "max_iterations": 57,
+        "all_converged": 1,
+        "reported_residual": null,
+        "min_reported_residual": null,
+        "l1_error_limit": 1.1333433333333332e-07,
+        "true_fixed_point_residual": 6.9851601481880476e-09,
+        "stationary_l1_error_bound": 4.656773432125364e-08
+      }
+    },
+    {
+      "cell_id": "distributed-r1-sparse-1000000-pecan-pagerank-reference",
+      "sequence": 20,
+      "outcome": "passed",
+      "correctness": {
+        "rows": 1000000,
+        "unique_ids": 1000000,
+        "null_ids": 0,
+        "rank_sum": 0.9999999999999982,
+        "l1_error": 1.6436834218938492e-15,
+        "max_error": 2.541098841762901e-20,
+        "min_iterations": 59,
+        "max_iterations": 59,
+        "all_converged": 1,
+        "reported_residual": null,
+        "min_reported_residual": null,
+        "l1_error_limit": 1.1333433333333332e-07,
+        "true_fixed_point_residual": 7.920545077586973e-09,
+        "stationary_l1_error_bound": 5.280363385057981e-08
+      }
+    }
+  ]
+}

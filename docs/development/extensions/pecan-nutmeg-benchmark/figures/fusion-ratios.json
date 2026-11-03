@@ -1,0 +1,65 @@
+[
+  {
+    "vertices": 10000,
+    "path": "Pecan",
+    "fused_to_unfused_seconds_ratio": 0.7478858045683726,
+    "unfused_seconds": 2.1982663849994424,
+    "fused_seconds": 1.6440522240009159
+  },
+  {
+    "vertices": 10000,
+    "path": "Banda",
+    "fused_to_unfused_seconds_ratio": 0.9521760752006652,
+    "unfused_seconds": 0.13118404699889652,
+    "fused_seconds": 0.12491031100034888
+  },
+  {
+    "vertices": 10000,
+    "path": "Grenada",
+    "fused_to_unfused_seconds_ratio": 0.7759304745380294,
+    "unfused_seconds": 2.188178013000652,
+    "fused_seconds": 1.697874004001278
+  },
+  {
+    "vertices": 100000,
+    "path": "Pecan",
+    "fused_to_unfused_seconds_ratio": 0.750268568042155,
+    "unfused_seconds": 3.433413908998773,
+    "fused_seconds": 2.5759825370005274
+  },
+  {
+    "vertices": 100000,
+    "path": "Banda",
+    "fused_to_unfused_seconds_ratio": 0.9737072409155245,
+    "unfused_seconds": 0.8290019670002948,
+    "fused_seconds": 0.8072052180013998
+  },
+  {
+    "vertices": 100000,
+    "path": "Grenada",
+    "fused_to_unfused_seconds_ratio": 0.7423840108246361,
+    "unfused_seconds": 3.4973873240014655,
+    "fused_seconds": 2.596404428999449
+  },
+  {
+    "vertices": 1000000,
+    "path": "Pecan",
+    "fused_to_unfused_seconds_ratio": 0.8417876614940059,
+    "unfused_seconds": 8.831397785999798,
+    "fused_seconds": 7.43416169000011
+  },
+  {
+    "vertices": 1000000,
+    "path": "Banda",
+    "fused_to_unfused_seconds_ratio": 0.9498245274513492,
+    "unfused_seconds": 8.022911624999324,
+    "fused_seconds": 7.620358242998918
+  },
+  {
+    "vertices": 1000000,
+    "path": "Grenada",
+    "fused_to_unfused_seconds_ratio": 0.896701600683687,
+    "unfused_seconds": 8.70590612200067,
+    "fused_seconds": 7.8065999549999106
+  }
+]
