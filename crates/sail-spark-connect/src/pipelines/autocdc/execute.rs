@@ -665,14 +665,13 @@ impl CdcRun {
             max_rows_per_partition: MAX_ROWS_PER_PARTITION,
             flow_source: self.sources.1.get(&flow.name).map(Arc::as_ref),
         };
-        let reset = crate::pipelines::materialize::resets(output, selection);
         if plain {
             let format = &commits.format;
-            let outcome = run_plain_flow(ctx, config, &self.scope, &run, format, reset).await?;
+            let outcome = run_plain_flow(ctx, config, &self.scope, &run, format, resets).await?;
             return Ok(DurableOutcome {
                 batches: outcome.batches,
                 recovered: None,
-                reset: reset.then_some(0),
+                reset: resets.then_some(0),
             });
         }
         run_durable_flow(
@@ -685,7 +684,7 @@ impl CdcRun {
                 owner: &self.owner,
                 lease_ms: LEASE_MS,
                 lease_wait_ms: LEASE_MS + LEASE_WAIT_MARGIN_MS,
-                reset,
+                reset: resets,
                 stage_hook: None,
                 lease_lost: Default::default(),
             },
