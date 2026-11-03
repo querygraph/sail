@@ -403,84 +403,73 @@ without treating the entire branch as one indivisible change.
 
 ## Evidence and what it establishes
 
-At `de8e67098`, independent macOS arm64 and Linux x86_64 full extension gates passed in
-detached source trees with private target directories. Each platform recorded:
+The extensions now live on the Sail Declarative Pipelines root. The current evidence is the
+gate of that tree at `6a4d90f02` (branch `work/spark-declarative-pipelines`): DataFusion
+55.2.0, Arrow 59.2.0, Rust 1.98.1, Python 3.12, PySpark 4.2.1; Nutmeg on Grust 0.24.1 from
+crates.io, Sedona on SedonaDB `0a1993d9b` with its DataFusion 55 patch at the same pins. The
+host's build identity is derived from the workspace lockfile when `sail-session` is compiled,
+so a package declared for other pins is refused as a build mismatch before any native code
+loads; the earlier literal identity (`55.1.0`/`59.3.0`) refused every package on this tree
+and is gone.
 
-- 651 Rust tests: 586 host library, 4 Sedona, 5 Nutmeg, 55 vendored graph unit and
-  one isolated allocation-admission integration test; strict host clippy and formatting.
-- 22 release stress runs: two fixtures, each once idle and ten times with all
-  logical CPUs busy (10 on macOS, 36 in the Linux guest).
-- Three Python client and five launcher/parser tests.
-- Integration: local 64 passed/one expected worker-only skip, actor cluster 65
-  passed, separate-process workers 65 passed: 194 passes per platform.
+On macOS arm64 at `6a4d90f02`, in a detached gate tree with its own target directory:
 
-These are selected host/extension gates, not a claim that every Sail workspace feature or
-every upstream Sedona function was tested. The isolated allocator regression rejects a
-million-row expanding-ID input before expanded arrays are allocated; accepted
-normalization/canonicalization stays within its admitted peak. Its measurements concern
-allocation requests, not process RSS.
+- Host workspace gate: formatting, clippy with `-D warnings` on all targets and features,
+  and 2,001 library tests across the fifteen gated crates, 0 failed. `sail-session`'s 83
+  carry the lifecycle, lease and cleanup regressions of review units 1, 6 and 7.
+- Spark Connect suites against the gate-built executable: the frozen suite (300 selected
+  public and 67 upstream tests) passed; pipelines 1,284 passed, 25 skipped, 4 xfailed; CLI 6
+  passed; Hive Metastore 69 passed, 2 xfailed; second catalog 13 passed; Delta 841 passed,
+  10 skipped, 5 xfailed, with its 8 failures and 12 errors the recorded pre-existing set of
+  this root, unchanged.
+- Extension workspaces against the host pins, each with `--locked`: Nutmeg 5 tests, the
+  vendored `nutmeg-graph` 73 unit tests and its isolated admission-before-allocation
+  integration test, Sedona 4 tests; both wheels built and repaired.
+- Lifecycle matrix (`examples/extensions/tests`: client lifecycle, protocol, resources,
+  distributed execution, graph tables, Nutmeg, Sedona, geometry composition and the joint
+  test) against the gate-built executable, from the examples' own environment: local 67
+  passed, 3 skipped; local-cluster 68 passed, 2 skipped; 0 failed.
 
-A separate real two-host run used identical x86_64 binary/wheel identities on Capitola
-(Rosetta) and native Intel Morrobay. Morrobay completed 81 worker tasks, Capitola 70; 30
-stages had successful tasks on both workers. It covered 17 Sedona geometries after shuffle,
-relational degree/two-hop queries, spatial input to a five-node/four-edge native graph, native
-results through shuffle, scans and drop. All task rows were retained; successful-task claims
-use terminal task records. This qualifies cross-host execution, not native mixed-architecture
-compatibility or performance. Driver and worker cleanup was verified.
+The skips are the branch's one worker-only case and, in local mode, the two
+`test_separate_worker_rejects_unavailable_or_changed_package` cases, which start the server
+with the process-worker experiment this tree does not carry; they stay in the file, skipped
+with that reason, until the experiment returns. Nothing else in the matrix changed: its
+expectations are the branch's, with the host identity strings moved to the new pins.
 
-Linux ran in Colima/QEMU on Morrobay with 36 visible CPUs, approximately 78.53 GiB guest RAM
-and a 72 GiB no-swap container limit. The task environment was stopped after evidence
-collection; the pre-existing default Colima profile was preserved. See the [environment
-record](linux-environment.md) for reproduction and limitations.
+What the merge changed is on the host side, and the host's own tests state it. A session is
+reported deleted only after its cleanup succeeded
+(`deleted_status_is_only_reported_after_the_cleanup_succeeded`); a cleanup failure alone is
+reported and the actors are still joined; destroying the session actor during shutdown is an
+interruption, never a success; and a lease owned by the session's own extensions no longer
+blocks that session's cleanup
+(`a_lease_owned_by_the_session_s_own_extensions_does_not_block_its_cleanup`), which would
+otherwise have deadlocked every real extension session at deletion. These are the behaviours
+review units 1 and 7 ask for; the branch's matrix did not assert them, and on the merged tree
+they are host tests, so the matrix's green result here says more than the same count did on
+the branch.
 
-Failed candidates remain evidence. `d7143e099` failed scalar-list geometry metadata and
-geometry/NULL coercion checks. The fix preserved the assertions and corrected the subject.
-Earlier review found allocation before admission, duplicate CSR construction, missing bundled
-GEOS and incomplete lifecycle evidence; the [resolution
-record](implementation-review-resolution.md) maps each to code and tests.
+This is the macOS arm64 qualification of the merged tree. The Linux x86_64 host row for this
+tree (the `sail-extensions-gates` harness on Morrobay, with `hosts.json` and
+[abi-review.md](abi-review.md) extended) is a separate unit and is not claimed here; its
+environment has to be rebuilt first, since the harness cache did not survive the profile
+migration recorded in [linux-environment.md](linux-environment.md).
 
-At `bf97367dd`, both platforms passed 35 session library tests, strict all-target session
-clippy, workspace formatting and the Sail executable build. The same installed wheel pair
-within each platform then ran against both host revisions:
+### Prior qualification, retained
 
-| Platform / host revision | Local | Actor cluster | Process cluster |
-| --- | --- | --- | --- |
-| macOS arm64 / `de8e67098` | 64 passed, 1 skip | 65 passed | 65 passed |
-| macOS arm64 / `bf97367dd` | 64 passed, 1 skip | 65 passed | 65 passed |
-| Linux x86_64 / `de8e67098` | 64 passed, 1 skip | 65 passed | 65 passed |
-| Linux x86_64 / `bf97367dd` | 64 passed, 1 skip | 65 passed | 65 passed |
-
-This matrix contains 776 integration passes and four expected worker-only skips. Installed
-wheel payloads and archive bytes were verified before and after testing; binary hashes
-distinguish the two host builds. The runner and all ten executable Python fixture hashes match
-across platforms. Seven Python harness tests also passed. Both host builds use Rust 1.97.1;
-the result is not cross-compiler qualification.
-
-The follow-up Linux envelope is separate: 24 visible CPUs, 67,414,478,848 bytes of guest RAM
-and a 56 GiB no-swap container limit. Both sets of environment records are retained. The
-targeted follow-up gates do not repeat the original 651-test Rust suites or two-host run.
-Failed gate attempts, corrections and an evidence transfer recovery are documented in the
-[follow-up record](review-follow-up.md).
-
-A separate [ABI review](abi-review.md) extends the experiment to Rust 1.98.1, an
-upstream Sail merge and an isolated older FFI implementation, while retaining the
-original wheels. It also records strict refusal probes and a whole-engine downgrade
-that fails to compile. Its [expanded matrix](abi-compatibility-matrix.json) and
-[evidence bundle](evidence/extension-abi-evidence.tar.gz) preserve those distinct
-outcomes. These are targeted compatibility experiments, not new full-workspace
-or two-host qualification. Production dependency pins and manifest checks remain unchanged.
-
-The original [machine-readable matrix](compatibility-matrix.json) identifies host binary and
-platform-specific wheel hashes. The [evidence
-bundle](evidence/extension-review-evidence.tar.gz) contains redacted receipts, logs, retained
-failures and cleanup records from both qualification stages. It is available with the
-repository. Original unredacted artifacts under `target/extensions-datafusion-final/` and
-`target/extensions-review-followup/` remain local and are not part of a clone.
-
-Not established: network acknowledgement-loss fault tolerance, abrupt process recovery,
-arbitrary cancellation interleavings, Kubernetes operation, optimized spatial joins, full
-native allocation/RSS accounting, portable binary ABI across Sail releases, distributed native
-graph iteration or benchmark performance.
+The original branch was qualified at `de8e67098` and `bf97367dd`, at DataFusion 55.1.0 and
+Arrow 59.3.0, on independent macOS arm64 and Linux x86_64 gates: 651 Rust tests per platform
+(586 host library, 4 Sedona, 5 Nutmeg, 55 vendored graph unit and one isolated
+allocation-admission integration test), 22 release stress runs, the Python client and
+launcher tests, and the integration matrix of local, actor-cluster and process-cluster modes
+(64 with one expected skip, 65 and 65 per platform and host revision: 776 passes and four
+expected worker-only skips across both platforms and both host revisions). A real two-host
+run with identical x86_64 binary and wheel identities on Capitola (Rosetta) and Morrobay
+completed 81 and 70 worker tasks, with 30 stages succeeding on both. Failed candidates
+(`d7143e099`) and the review findings they answered are in the [resolution
+record](implementation-review-resolution.md) and the [follow-up record](review-follow-up.md);
+the evidence bundles under [evidence](evidence/) retain the receipts, with the Linux envelope
+in the [environment record](linux-environment.md). Those numbers describe the branch at its
+pins and are not restated for the merged tree.
 
 ## Reproduction and evidence validation
 
