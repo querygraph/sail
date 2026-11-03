@@ -1,0 +1,1 @@
+![Sail Declarative Pipelines cover: a rowing boat on a river carrying a tablet and a scroll, with a dataflow graph drawn on the water and a city skyline behind.](docs/books/sail-declarative-pipelines-manual/art/sail-sdp-cover.png)
