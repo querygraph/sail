@@ -5,7 +5,9 @@ use chumsky::input::Input;
 use chumsky::span::SimpleSpan;
 use sail_sql_parser::ast::statement::Statement;
 use sail_sql_parser::options::ParserOptions;
-use sail_sql_parser::parser::{create_parser, create_parser_with_spans};
+use sail_sql_parser::parser::{
+    create_one_statement_parser, create_parser, create_parser_with_spans,
+};
 pub use sail_sql_parser::span::TokenSpan;
 use sail_sql_parser::token::{Keyword, Punctuation, Token};
 
@@ -71,7 +73,28 @@ impl<'a> SqlSource<'a> {
         Ok(statements)
     }
 
+    /// One statement is the common case (every Spark Connect `sql` call), so
+    /// it is tried first with the parser specialized for exactly one
+    /// statement, which skips the statement-list and span machinery. When
+    /// that parser rejects the input, the general path runs so that the
+    /// error message, with its source context, and the cardinality check are
+    /// the established ones.
     pub fn parse_one_statement(&self) -> SqlResult<Statement> {
+        let length = self.text.len();
+        let tokens = self
+            .tokens
+            .as_slice()
+            .map((length..length).into(), map_parser_input);
+        let parsed = create_one_statement_parser::<
+            _,
+            chumsky::extra::Err<chumsky::error::Rich<_, _>>,
+        >(&self.options)
+        .parse(tokens)
+        .into_result();
+        if let Ok(statement) = parsed {
+            crate::validation::validate_insert_modes(&statement)?;
+            return Ok(statement);
+        }
         let mut statements = self.parse_statements()?;
         match (statements.pop(), statements.is_empty()) {
             (Some(statement), true) => Ok(statement),

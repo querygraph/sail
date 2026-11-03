@@ -155,7 +155,7 @@ mod tests {
     use sail_sql_parser::ast::statement::{DescribeItem, Statement};
     use sail_sql_parser::tree::TreeText;
 
-    use crate::error::SqlResult;
+    use crate::error::{SqlError, SqlResult};
     use crate::parser::{parse_one_statement, parse_statements};
 
     #[test]
@@ -170,6 +170,20 @@ mod tests {
             ]
         ));
         Ok(())
+    }
+
+    #[test]
+    fn test_parse_one_statement_cardinality() {
+        for sql in ["", ";; /* comment */", "SELECT 1; SELECT 2"] {
+            assert!(matches!(
+                parse_one_statement(sql),
+                Err(SqlError::InvalidArgument(message)) if message == "expected one statement"
+            ));
+        }
+        assert!(matches!(
+            parse_one_statement(";; SELECT 1;;"),
+            Ok(Statement::Query(Query { .. }))
+        ));
     }
 
     #[test]
