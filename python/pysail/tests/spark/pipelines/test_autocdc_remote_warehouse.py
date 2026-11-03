@@ -79,6 +79,16 @@ def test_a_remote_warehouse_runs_and_a_lost_state_stops_it(pipeline_spark, pipel
     run(spark, pipeline_factory, str(landing))
     assert [tuple(row) for row in spark.table("target").select("id", "name").collect()] == [(1, "alicia")]
 
+    # A state directory that is not the one the warehouse names is refused too.
+    # The state lives under the digest of the warehouse URL.
+    [state_id] = state.glob("*/_control/state_id")
+    original = state_id.read_text()
+    state_id.write_text("another-machine")
+    with pytest.raises(FAILURE, match="another state directory"):
+        run(spark, pipeline_factory, str(landing))
+    state_id.write_text(original)
+    run(spark, pipeline_factory, str(landing))
+
     shutil.rmtree(state)
     with pytest.raises(FAILURE, match="does not hold it"):
         run(spark, pipeline_factory, str(landing))

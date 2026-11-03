@@ -34,13 +34,15 @@ use datafusion_common::{
 use datafusion_physical_expr::{Distribution, EquivalenceProperties, PhysicalExpr};
 use futures::stream::{self, StreamExt};
 use log::warn;
-use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, PutOptions};
+use object_store::{Error as ObjectStoreError, ObjectStoreExt};
 use sail_catalog::manager::CatalogManager;
 use sail_common::spec::FencedWrite;
 use sail_common_datafusion::catalog::{CommitAuthority, LakehouseExecutionContext};
 use sail_common_datafusion::datasource::PhysicalSinkMode;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
-use sail_common_datafusion::fenced_commit::{FencedCommits, FencedEffect, Ratification};
+use sail_common_datafusion::fenced_commit::{
+    FencedCommitRegistry, FencedCommits, FencedEffect, Ratification,
+};
 use url::Url;
 
 use crate::catalog::coordinator::{DeltaCatalogCommitCoordinator, DeltaCatalogManagedTable};
@@ -69,21 +71,56 @@ const METRIC_CHECKPOINT_CREATED: &str = "checkpoint_created";
 const METRIC_LOG_FILES_CLEANED: &str = "log_files_cleaned";
 
 /// The session's commit authority for this commit. A fenced write without an
-/// authority and an unfenced write to an enrolled table are both refused, so
-/// no choice of operation removes the fence.
-async fn fenced_authority(
+/// authority is refused here; an unfenced write to an enrolled table is
+/// refused by `refuse_unfenced_enrolled` once the table's identity is known.
+fn fenced_authority(
     context: &Arc<TaskContext>,
-    table_url: &Url,
     fenced_write: Option<&FencedWrite>,
 ) -> Result<Option<Arc<FencedCommits>>> {
     let authority = context.extension::<FencedCommits>().ok();
     match (&authority, fenced_write) {
         (None, Some(_)) => not_impl_err!("a fenced Delta commit needs a commit authority"),
-        (Some(authority), None) if authority.0.is_enrolled(table_url.as_str()).await? => {
-            plan_err!("table {table_url} is enrolled and refuses a write without a fence")
-        }
         _ => Ok(authority),
     }
+}
+
+/// An unfenced write to an enrolled table is refused, so no choice of
+/// operation removes the fence: by the session's own authority, by any
+/// authority a session of this server installed, and by the authority the
+/// table itself names. `table_id` is the live table's identity, so a table
+/// created again at an enrolled location is not mistaken for the one enrolled.
+async fn refuse_unfenced_enrolled(
+    context: &Arc<TaskContext>,
+    table_url: &Url,
+    table_id: &str,
+    configuration: &std::collections::HashMap<String, String>,
+    fenced_write: Option<&FencedWrite>,
+) -> Result<()> {
+    crate::fenced::check_enrolled_authority(table_url, configuration, fenced_write)?;
+    if fenced_write.is_some() {
+        return Ok(());
+    }
+    let by_session = match context.extension::<FencedCommits>() {
+        Ok(authority) => {
+            authority
+                .0
+                .is_enrolled(table_url.as_str(), Some(table_id))
+                .await?
+        }
+        Err(_) => false,
+    };
+    let by_server = match context.extension::<FencedCommitRegistry>() {
+        Ok(registry) => {
+            registry
+                .is_enrolled(table_url.as_str(), Some(table_id))
+                .await?
+        }
+        Err(_) => false,
+    };
+    if by_session || by_server {
+        return plan_err!("table {table_url} is enrolled and refuses a write without a fence");
+    }
+    Ok(())
 }
 
 fn commit_count_batch(schema: SchemaRef, row_count: u64) -> Result<RecordBatch> {
@@ -506,21 +543,7 @@ impl DeltaCommitExec {
             .bytes()
             .await
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
-        match store
-            .put_opts(
-                &commit_path(staged.version),
-                bytes.into(),
-                PutOptions {
-                    mode: PutMode::Create,
-                    ..Default::default()
-                },
-            )
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(ObjectStoreError::AlreadyExists { .. }) => Ok(()),
-            Err(err) => Err(DataFusionError::External(Box::new(err))),
-        }
+        crate::fenced::publish_entry(store.as_ref(), staged.version, bytes).await
     }
 
     pub(crate) async fn latest_published_backfilled_version(
@@ -650,7 +673,7 @@ impl ExecutionPlan for DeltaCommitExec {
                 let commits = context.extension::<FencedCommits>().ok()?;
                 commits.0.ambient_fence()
             });
-            let authority = fenced_authority(&context, &table_url, fenced_write.as_ref()).await?;
+            let authority = fenced_authority(&context, fenced_write.as_ref())?;
             let storage_config = StorageConfig;
             let object_store = get_object_store_from_context(&context, &table_url)?;
 
@@ -913,6 +936,16 @@ impl ExecutionPlan for DeltaCommitExec {
             } else {
                 None
             };
+            if let Some(snapshot) = &reference {
+                refuse_unfenced_enrolled(
+                    &context,
+                    &table_url,
+                    snapshot.metadata().id(),
+                    snapshot.metadata().configuration(),
+                    fenced_write.as_ref(),
+                )
+                .await?;
+            }
 
             if matches!(sink_mode, PhysicalSinkMode::OverwritePartitions)
                 && let Some(snapshot) = &reference

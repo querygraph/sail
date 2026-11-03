@@ -10,6 +10,7 @@ Delta target, so there it uses its row-level test catalog.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import os
 import re
 import time
@@ -811,6 +812,68 @@ def test_a_key_with_a_dot_needs_quoting_as_a_column(space, pipeline_factory, bro
         space.table(TARGET).select("a.b").collect()
     assert "42703" in str(failure.value)
     assert "`a`.`b`" in str(failure.value)
+
+
+@sail_only
+def test_state_written_by_another_query_asks_for_a_reset(space, pipeline_factory, broker):  # noqa: F811
+    """Spark refuses to read operator state under a changed schema; so does Sail."""
+    schema = "id INT, name STRING, seq BIGINT"
+
+    def go(key, reset=False):
+        _, registry, start = pipeline_factory()
+        with graph_element_registration_context(registry):
+
+            @dp.temporary_view
+            def changes():
+                return space.readStream.format("json").schema(schema).load(broker.url).dropDuplicates([key])
+
+            dp.create_streaming_table(TARGET, **FORMAT)
+            dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["id"], sequence_by="seq")
+        start(full_refresh_all=True) if reset else start()
+
+    broker.send({"id": 1, "name": "a", "seq": 1})
+    go("id")
+    broker.send({"id": 2, "name": "b", "seq": 1})
+    with pytest.raises((PySparkException, SparkConnectGrpcException), match="reset the flow"):
+        go("name")
+    go("name", reset=True)
+    assert rows(space, "id", "seq") == [(1, 1), (2, 1)]
+
+
+@sail_only
+@delta_only
+def test_another_session_cannot_write_an_enrolled_target(space, pipeline_factory, broker, remote, tmp_path):  # noqa: F811
+    """A session that never ran the pipeline is refused a write to its target: by
+    the server's shared registry when it holds the authority, and by the authority
+    the table itself names otherwise."""
+    schema = "id INT, name STRING, seq BIGINT"
+    _, registry, start = pipeline_factory()
+    with graph_element_registration_context(registry):
+
+        @dp.temporary_view
+        def changes():
+            return space.readStream.format("json").schema(schema).load(broker.url)
+
+        dp.create_streaming_table(TARGET, **FORMAT)
+        dp.create_auto_cdc_flow(target=TARGET, source="changes", keys=["id"], sequence_by="seq")
+
+    broker.send({"id": 1, "name": "a", "seq": 1})
+    start()
+    from urllib.parse import urlparse
+
+    [location] = [row.data_type for row in space.sql(f"DESCRIBE EXTENDED {TARGET}").collect() if row.col_name == "Location"]
+    table = Path(urlparse(location).path)
+    assert (table / "_delta_log").is_dir()
+    from pysail.testing.spark.session import spark_session_factory
+
+    with spark_session_factory(remote) as sessions:
+        other = sessions.create()
+        frame = other.createDataFrame([(2, "b", 2)], schema)
+        with pytest.raises((PySparkException, SparkConnectGrpcException), match="enrolled"):
+            frame.write.format("delta").mode("append").save(table.as_uri())
+        with pytest.raises((PySparkException, SparkConnectGrpcException), match="enrolled"):
+            other.sql(f"ALTER TABLE delta.`{table.as_uri()}` SET TBLPROPERTIES ('x' = 'y')")
+    assert rows(space, "id", "seq") == [(1, 1)]
 
 
 def test_a_dropped_auxiliary_table_forgets_its_tombstones(space, pipeline_factory, broker):  # noqa: F811

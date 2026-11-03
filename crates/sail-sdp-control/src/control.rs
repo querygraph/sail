@@ -9,7 +9,10 @@ use std::time::Duration;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::identity::{EffectStep, FenceToken, FlowKey, IntentId, SinkIdentity, TargetKey, escape};
+use crate::identity::{
+    AuthorityIncarnation, EffectStep, FenceToken, FlowKey, IntentId, SinkIdentity, TargetKey,
+    escape,
+};
 use crate::records::{
     Ack, AuthorityMillis, Completion, EffectPrepare, EffectReceipt, FlowCheckpoint, Intent,
     Operation, RatifiedCommit, SinkHead, TargetGuard,
@@ -293,6 +296,11 @@ impl<S: Store> Control<S> {
         Self { store, clock }
     }
 
+    /// The authority this control speaks for, as its tables carry it.
+    pub fn authority(&self) -> AuthorityIncarnation {
+        self.store.authority()
+    }
+
     pub async fn enroll(
         &self,
         target: &TargetKey,
@@ -407,6 +415,23 @@ impl<S: Store> Control<S> {
             let (next, acquired) = transitions::acquire(&guard, owner, self.clock.now(), lease_ms)?;
             put_guard(&tx, &next).await?;
             Ok::<_, Fail>(acquired)
+        })
+    }
+
+    /// Extend the live owner's lease without a new epoch. Fails, changing
+    /// nothing, once the lease has expired or belongs to another owner.
+    pub async fn renew(
+        &self,
+        target: &TargetKey,
+        owner: &str,
+        lease_ms: i64,
+    ) -> Result<AuthorityMillis, Outcome> {
+        transact!(self, |tx| {
+            let guard = guard_of(&tx, target).await?;
+            let next = transitions::renew(&guard, owner, self.clock.now(), lease_ms)?;
+            let deadline = next.lease_deadline.unwrap_or_default();
+            put_guard(&tx, &next).await?;
+            Ok::<_, Fail>(deadline)
         })
     }
 
@@ -705,6 +730,30 @@ impl<S: Store> Control<S> {
             let next =
                 transitions::rebind_auxiliary(&guard, token, self.clock.now(), auxiliary.clone())?;
             ensure_head(&tx, auxiliary, head).await?;
+            put_guard(&tx, &next).await?;
+            Ok::<_, Fail>(next)
+        })
+    }
+
+    /// Adopt a recreated target table under a begun reset. Its head is
+    /// recorded so the reset's truncate is fenced against the live log.
+    pub async fn rebind_sink(
+        &self,
+        token: &FenceToken,
+        physical_key: &str,
+        sink: &SinkIdentity,
+        head: u64,
+    ) -> Result<TargetGuard, Outcome> {
+        transact!(self, |tx| {
+            let guard = guard_of(&tx, &token.target).await?;
+            let next = transitions::rebind_sink(
+                &guard,
+                token,
+                self.clock.now(),
+                physical_key,
+                sink.clone(),
+            )?;
+            ensure_head(&tx, sink, head).await?;
             put_guard(&tx, &next).await?;
             Ok::<_, Fail>(next)
         })

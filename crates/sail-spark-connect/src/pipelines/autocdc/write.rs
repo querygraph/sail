@@ -16,6 +16,7 @@ use sail_catalog::provider::CreateTemporaryViewOptions;
 use sail_common::spec;
 use sail_common_datafusion::catalog::TableKind;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
+use sail_common_datafusion::fenced_commit::ENROLLED_AUTHORITY_PROPERTY;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_plan::config::PlanConfig;
 use sail_plan::error::PlanError;
@@ -638,19 +639,29 @@ pub(super) async fn noop_fenced(
 
 /// `CommandNode` for turning on in-commit timestamps, which every fenced
 /// commit needs and a table made outside a pipeline may lack.
-pub(super) async fn enable_commit_timestamps(
+/// Mark a table as enrolled, before it is: in-commit timestamps, which the
+/// fence reads, and the authority it belongs to, which every Sail writer
+/// refuses to commit over without that authority's fence.
+pub(super) async fn mark_enrolled(
     ctx: &SessionContext,
     config: Arc<PlanConfig>,
     table: &Name,
+    authority: &str,
 ) -> SparkResult<()> {
     let command = spec::CommandNode::AlterTable {
         table: spec::ObjectName::from(table.to_vec()),
         if_exists: false,
         operation: spec::AlterTableOperation::SetTableProperties {
-            properties: vec![(
-                IN_COMMIT_TIMESTAMPS_PROPERTY.to_string(),
-                "true".to_string(),
-            )],
+            properties: vec![
+                (
+                    IN_COMMIT_TIMESTAMPS_PROPERTY.to_string(),
+                    "true".to_string(),
+                ),
+                (
+                    ENROLLED_AUTHORITY_PROPERTY.to_string(),
+                    authority.to_string(),
+                ),
+            ],
         },
     };
     run_command(ctx, config, command, None).await

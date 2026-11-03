@@ -188,6 +188,33 @@ pub fn acquire(
     Ok((next, acquired))
 }
 
+/// `Renew`: the live owner extends its lease under its epoch. Unlike
+/// `acquire`, a renewal that arrives after the lease expired never takes the
+/// target back: it fails and changes nothing, so a run that lost its lease
+/// is fenced rather than re-admitted under a new epoch.
+pub fn renew(
+    guard: &TargetGuard,
+    owner: &str,
+    now: AuthorityMillis,
+    lease_ms: i64,
+) -> Result<TargetGuard, Outcome> {
+    let alive = guard.lease_deadline.is_some_and(|deadline| deadline > now);
+    let is_owner = guard.owner.as_deref() == Some(owner);
+    if !alive || !is_owner {
+        return Err(Outcome::Fenced {
+            reason: format!(
+                "the lease of {owner} is not live: owned by {} until {}, now {now}",
+                guard.owner.clone().unwrap_or_default(),
+                guard.lease_deadline.unwrap_or_default()
+            ),
+        });
+    }
+    let mut next = guard.clone();
+    next.lease_deadline = Some(now + lease_ms);
+    next.revision += 1;
+    Ok(next)
+}
+
 /// `Release`: a run that finished gives its lease back, so the next run need
 /// not wait for expiry. The next acquire still bumps the epoch, so nothing
 /// from this owner can ratify afterwards.
@@ -612,6 +639,31 @@ pub fn rebind_auxiliary(
     }
     let mut next = guard.clone();
     next.auxiliary = auxiliary;
+    next.revision += 1;
+    Ok(next)
+}
+
+/// `RebindSink`: a target table recreated outside the authority is adopted
+/// under an explicit reset only, before the reset's truncate: the guard then
+/// names the live table and its location, and the truncate is fenced against
+/// its head. Outside
+/// a reset the old identity stands, so an ordinary run refuses the table.
+pub fn rebind_sink(
+    guard: &TargetGuard,
+    token: &FenceToken,
+    now: AuthorityMillis,
+    physical_key: &str,
+    sink: SinkIdentity,
+) -> Result<TargetGuard, Outcome> {
+    check_fence(guard, token, now)?;
+    if guard.state != TargetState::Resetting {
+        return Err(Outcome::IdentityMismatch {
+            reason: "a replaced target is adopted only by a full refresh".into(),
+        });
+    }
+    let mut next = guard.clone();
+    next.physical_key = physical_key.to_string();
+    next.sink = sink;
     next.revision += 1;
     Ok(next)
 }

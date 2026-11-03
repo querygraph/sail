@@ -21,7 +21,7 @@ use tokio::runtime::Handle;
 use super::super::durable::{DurableOutcome, DurableRun, Stage, run_durable_flow};
 use super::super::run::FlowRun;
 use super::super::schema::Case;
-use super::super::write::{IN_COMMIT_TIMESTAMPS_PROPERTY, Scd1Write};
+use super::super::write::{IN_COMMIT_TIMESTAMPS_PROPERTY, Scd1Write, drop_table};
 use super::super::{ChangeArgs, ColumnSelection, ScdType, auxiliary};
 use super::fenced::{delta_version, table_dir, table_url};
 use super::run::{flow, flow_name, graph, source_name, warehouse};
@@ -136,6 +136,19 @@ impl Fixture {
         hook: Option<&(dyn Fn(Stage, u64) -> SparkResult<()> + Send + Sync)>,
         reset: bool,
     ) -> SparkResult<DurableOutcome> {
+        self.run_leased(source, control, owner, hook, reset, LEASE)
+            .await
+    }
+
+    async fn run_leased<S: Store + 'static>(
+        &self,
+        source: &DeterministicSource,
+        control: &Arc<Control<S>>,
+        owner: &str,
+        hook: Option<&(dyn Fn(Stage, u64) -> SparkResult<()> + Send + Sync)>,
+        reset: bool,
+        lease_ms: i64,
+    ) -> SparkResult<DurableOutcome> {
         let (graph, flow, relations, source_name, target) = (
             graph(),
             flow(),
@@ -170,10 +183,11 @@ impl Fixture {
                 run: &run,
                 control: control.clone(),
                 owner,
-                lease_ms: LEASE,
+                lease_ms,
                 lease_wait_ms: 0,
                 reset,
                 stage_hook: hook,
+                lease_lost: Default::default(),
             },
         )
         .await
@@ -271,6 +285,129 @@ async fn a_clean_run_completes_every_batch() -> TestResult {
     case.assert_exact().await?;
     assert_heads_match_the_logs(&case, &control).await?;
     assert_eq!(case.run(&source(), &control, "w1", None).await?.batches, 0);
+    finish(&case.ctx).await?;
+    Ok(())
+}
+
+/// A batch that outlives the lease: the hook holds the run at Prepared for
+/// longer than the lease while the authority's clock passes the deadline.
+/// With renewal the deadline moves and the merge is ratified; without it the
+/// run fences itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_long_batch_renews_its_lease() -> TestResult {
+    let case = setup().await?;
+    let source = source();
+    let clock = Arc::new(ManualClock::default());
+    let control = Arc::new(Control::new(UnfencedMemoryStore::new(), clock.clone()));
+    let lease_ms = 300;
+    let slow = {
+        let clock = clock.clone();
+        let control = control.clone();
+        move |stage: Stage, sequence: u64| {
+            if stage == Stage::Prepared && sequence == 1 {
+                // The clock passes the original deadline in steps shorter
+                // than the lease, as wall time would; each step waits for a
+                // renewal to move the deadline past it, as it would in time.
+                for _ in 0..4 {
+                    let now = clock.0.fetch_add(lease_ms / 3, Ordering::SeqCst) + lease_ms / 3;
+                    let waited = std::time::Instant::now();
+                    loop {
+                        let deadline = tokio::task::block_in_place(|| {
+                            Handle::current().block_on(control.guard(&target_key()))
+                        })
+                        .ok()
+                        .flatten()
+                        .and_then(|guard| guard.lease_deadline)
+                        .unwrap_or_default();
+                        if deadline >= now + lease_ms {
+                            break;
+                        }
+                        if waited.elapsed() > std::time::Duration::from_secs(10) {
+                            return Err(SparkError::internal("the lease was not renewed"));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+    let outcome = case
+        .run_leased(&source, &control, "w1", Some(&slow), false, lease_ms)
+        .await?;
+    assert_eq!(outcome.batches, 3);
+    case.assert_exact().await?;
+    assert_heads_match_the_logs(&case, &control).await?;
+    finish(&case.ctx).await?;
+    Ok(())
+}
+
+/// A target dropped and created again outside the pipeline: an ordinary run
+/// refuses it and names the repair; a full refresh adopts the new table under
+/// the reset, and the fenced truncate runs against its log.
+#[tokio::test]
+async fn a_recreated_target_needs_a_full_refresh_which_adopts_it() -> TestResult {
+    let case = setup().await?;
+    let control = Arc::new(Control::new(
+        UnfencedMemoryStore::new(),
+        Arc::new(ManualClock::default()),
+    ));
+    case.run(&source(), &control, "w1", None).await?;
+    let before = control.guard(&target_key()).await?.ok_or("no guard")?;
+    drop_table(&case.ctx, case.config.clone(), &target()).await?;
+    create_target_with(
+        &case.ctx,
+        case.config.clone(),
+        &target(),
+        "delta",
+        target_columns(),
+        vec![(IN_COMMIT_TIMESTAMPS_PROPERTY.into(), "true".into())],
+    )
+    .await?;
+    let refused = case.run(&source(), &control, "w1", None).await;
+    let message = refused
+        .err()
+        .ok_or("a replaced target must be refused")?
+        .to_string();
+    assert!(message.contains("run a full refresh"), "{message}");
+    let outcome = case.run_with(&source(), &control, "w1", None, true).await?;
+    assert_eq!((outcome.batches, outcome.reset), (3, Some(1)));
+    case.assert_exact().await?;
+    let guard = control.guard(&target_key()).await?.ok_or("no guard")?;
+    assert_ne!(guard.sink, before.sink, "the guard names the new table");
+    // The dropped table's directory may remain beside the new one, so the
+    // guard's own location is the one whose log the head must match.
+    let dir = url::Url::parse(&guard.physical_key)?
+        .to_file_path()
+        .map_err(|()| "the target is not a local path")?;
+    let head = control.head(&guard.sink).await?.ok_or("no head")?;
+    assert_eq!(head.version, delta_version(&dir)?);
+    assert_eq!(guard.active_intent, None);
+    finish(&case.ctx).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failed_batch_releases_the_lease_for_the_next_owner() -> TestResult {
+    let case = setup().await?;
+    let source = source();
+    let clock = Arc::new(ManualClock::default());
+    let control = Arc::new(Control::new(UnfencedMemoryStore::new(), clock.clone()));
+    let hook = crash_at(Stage::Prepared, 1);
+    let failed = case.run(&source, &control, "w1", Some(&hook)).await;
+    assert!(failed.is_err());
+    let guard = control
+        .guard(&TargetKey(target().join(".")))
+        .await?
+        .ok_or("no guard")?;
+    assert_eq!(guard.owner, None, "a failed batch hands the target back");
+    // The clock has not moved: a new owner recovers without waiting the
+    // lease out, and the harness waits 0 ms for one.
+    source.expire_before("p0", 2);
+    let recovered = case.run(&source, &control, "w2", None).await?;
+    assert_eq!(recovered.recovered, Some(1));
+    case.assert_exact().await?;
+    assert_heads_match_the_logs(&case, &control).await?;
     finish(&case.ctx).await?;
     Ok(())
 }
@@ -421,7 +558,7 @@ async fn a_recreated_table_is_not_adopted() -> TestResult {
         .await?;
     let refused = case.run(&source(), &control, "w1", None).await;
     let message = format!("{:?}", refused.err().ok_or("the run must stop")?);
-    assert!(message.contains("IdentityMismatch"), "{message}");
+    assert!(message.contains("run a full refresh"), "{message}");
     finish(&case.ctx).await?;
     Ok(())
 }

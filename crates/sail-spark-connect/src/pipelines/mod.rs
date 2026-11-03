@@ -15,6 +15,7 @@ mod selection;
 mod sql;
 mod streaming;
 mod topology;
+mod watermark;
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -9,7 +9,7 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
-use sail_common_datafusion::fenced_commit::FencedCommits;
+use sail_common_datafusion::fenced_commit::{FencedCommitRegistry, FencedCommits};
 use sail_plan::config::PlanConfig;
 use sail_sdp_control::control::{Control, RequestId};
 use sail_sdp_control::identity::{
@@ -23,6 +23,7 @@ use serde_json::json;
 use super::super::authority::{ControlCommits, effect_step_name};
 use super::super::merge::{auxiliary_merge, target_merge};
 use super::super::schema::Case;
+use super::super::write::mark_enrolled;
 use super::merge_execution::{
     VIEW, aux_name, create_seeded, create_seeded_with, id_key, minimal, minimal_columns, publish,
     target_columns, target_name, valued,
@@ -132,7 +133,13 @@ fn enrolled_properties() -> Vec<(String, String)> {
     vec![("delta.enableInCommitTimestamps".into(), "true".into())]
 }
 
+/// Tables seeded, then marked with the authority that fences them, which the
+/// in-process store names "in-process", as the run marks them at enrollment.
 async fn enrolled() -> Result<Enrolled, Box<dyn std::error::Error>> {
+    enrolled_with(true).await
+}
+
+async fn enrolled_with(marked: bool) -> Result<Enrolled, Box<dyn std::error::Error>> {
     let (ctx, config) = context()?;
     create_seeded_with(
         &ctx,
@@ -152,16 +159,30 @@ async fn enrolled() -> Result<Enrolled, Box<dyn std::error::Error>> {
         enrolled_properties(),
     )
     .await?;
+    if marked {
+        for name in [aux_name(), target_name()] {
+            mark_enrolled(&ctx, config.clone(), &name, "in-process").await?;
+        }
+    }
     let (sink_dir, auxiliary_dir) = (
         table_dir(&ctx, &target_name())?,
         table_dir(&ctx, &aux_name())?,
     );
     let clock = Arc::new(ManualClock::default());
     let control = Arc::new(Control::new(UnfencedMemoryStore::new(), clock.clone()));
+    // Enrolled under the tables' own identities, which the fence compares
+    // with the live table before refusing a write.
+    let identity = async |dir: &Path| -> Result<SinkIdentity, Box<dyn std::error::Error>> {
+        let url = url::Url::parse(&table_url(dir)?)?;
+        let (id, _) = sail_delta_lake::fenced::table_state(&ctx.task_ctx(), &url)
+            .await?
+            .ok_or("the table has no commit")?;
+        Ok(SinkIdentity(id))
+    };
     let (target, sink, auxiliary) = (
         TargetKey("t".into()),
-        SinkIdentity("delta:target".into()),
-        SinkIdentity("delta:auxiliary".into()),
+        identity(&sink_dir).await?,
+        identity(&auxiliary_dir).await?,
     );
     let flow = FlowKey("flow".into());
     control
@@ -384,6 +405,90 @@ async fn an_enrolled_table_refuses_an_unfenced_merge() -> TestResult {
     let message = format!("{:?}", refused.err().ok_or("the merge must be refused")?);
     assert!(message.contains("enrolled"), "{message}");
     assert_eq!(delta_version(&f.auxiliary_dir)?, version);
+    finish(&f.ctx).await?;
+    Ok(())
+}
+
+/// A write to an enrolled table from another session: the table names its
+/// authority, so a session that holds no authority is refused all the same.
+async fn append_by_path(
+    ctx: &SessionContext,
+    config: Arc<PlanConfig>,
+    dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    publish(ctx, minimal(&[(2, (Some(30), None))])?).await?;
+    let read = spec::QueryPlan::new(spec::QueryNode::Read {
+        read_type: spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
+            name: spec::ObjectName::from(vec![VIEW.to_string()]),
+            temporal: None,
+            sample: None,
+            options: vec![],
+        })),
+        is_streaming: false,
+    });
+    let write = spec::CommandNode::Write(spec::Write {
+        input: Box::new(read),
+        source: Some("delta".into()),
+        save_type: spec::SaveType::Path(table_url(dir)?),
+        mode: Some(spec::SaveMode::Append),
+        sort_columns: vec![],
+        partitioning_columns: vec![],
+        clustering_columns: vec![],
+        bucket_by: None,
+        options: vec![],
+    });
+    run_command(ctx, config, write, None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn another_session_refuses_a_write_to_an_enrolled_table() -> TestResult {
+    let f = enrolled().await?;
+    let version = delta_version(&f.auxiliary_dir)?;
+    let (other, config) = context()?;
+    let refused = append_by_path(&other, config, &f.auxiliary_dir).await;
+    let message = format!("{:?}", refused.err().ok_or("the write must be refused")?);
+    assert!(
+        message.contains("enrolled with AutoCDC authority in-process"),
+        "{message}"
+    );
+    assert_eq!(delta_version(&f.auxiliary_dir)?, version);
+    finish(&other).await?;
+    finish(&f.ctx).await?;
+    Ok(())
+}
+
+/// A table enrolled before it carried its authority is still covered on the
+/// server that holds the authority: every session shares the registry.
+#[tokio::test]
+async fn the_server_registry_refuses_a_session_without_the_authority() -> TestResult {
+    let f = enrolled_with(false).await?;
+    let version = delta_version(&f.auxiliary_dir)?;
+    let registry = Arc::new(FencedCommitRegistry::default());
+    registry.register(
+        "in-process",
+        Arc::new(ControlCommits::new(f.control.clone(), None)),
+    );
+    let (other, config) = context()?;
+    other
+        .state_ref()
+        .write()
+        .config_mut()
+        .set_extension(registry);
+    let refused = append_by_path(&other, config.clone(), &f.auxiliary_dir).await;
+    let message = format!("{:?}", refused.err().ok_or("the write must be refused")?);
+    assert!(
+        message.contains("refuses a write without a fence"),
+        "{message}"
+    );
+    assert_eq!(delta_version(&f.auxiliary_dir)?, version);
+    // Without the registry the same session would get through: the gap the
+    // registry and the table property close.
+    let (alone, config) = context()?;
+    append_by_path(&alone, config, &f.auxiliary_dir).await?;
+    assert_eq!(delta_version(&f.auxiliary_dir)?, version + 1);
+    finish(&alone).await?;
+    finish(&other).await?;
     finish(&f.ctx).await?;
     Ok(())
 }

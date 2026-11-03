@@ -124,6 +124,10 @@ impl<S: Store> Driver<S> {
         self.run(self.at(now).release(token))
     }
 
+    fn renew(&self, target: &TargetKey, owner: &str, now: i64, lease: i64) -> Result<i64> {
+        self.run(self.at(now).renew(target, owner, lease))
+    }
+
     fn seal_intent(&self, token: &FenceToken, now: i64, intent: Intent) -> Result<Intent> {
         self.run(self.at(now).seal_intent(token, &intent))
     }
@@ -463,6 +467,57 @@ fn enrollment_binds_identities_once<S: Store>(f: Fixture<S>) -> Result {
 
 /// Fault matrix: takeover after the auxiliary effect, and a stale commit
 /// racing the takeover.
+fn a_renewal_extends_a_live_lease_and_refuses_an_expired_one<S: Store>(f: Fixture<S>) -> Result {
+    let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
+    assert_eq!(
+        f.store.renew(&f.target, "w1", LEASE / 2, LEASE)?,
+        LEASE / 2 + LEASE
+    );
+    let guard = f.guard()?;
+    assert_eq!(guard.epoch, w1.token.epoch, "a renewal keeps the epoch");
+    // Another owner cannot renew, and neither can the owner once expired.
+    assert!(matches!(
+        f.store.renew(&f.target, "w2", LEASE / 2, LEASE),
+        Err(Outcome::Fenced { .. })
+    ));
+    assert!(matches!(
+        f.store.renew(&f.target, "w1", LEASE / 2 + LEASE + 1, LEASE),
+        Err(Outcome::Fenced { .. })
+    ));
+    let guard = f.guard()?;
+    assert_eq!(guard.lease_deadline, Some(LEASE / 2 + LEASE));
+    assert_eq!(
+        guard.epoch, w1.token.epoch,
+        "a refused renewal changes nothing"
+    );
+    Ok(())
+}
+
+fn a_replaced_target_is_adopted_only_under_a_reset<S: Store>(f: Fixture<S>) -> Result {
+    let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
+    let replaced = SinkIdentity("replaced-sink".into());
+    assert!(matches!(
+        f.store.run(
+            f.store
+                .at(1)
+                .rebind_sink(&w1.token, "file:///new", &replaced, 4)
+        ),
+        Err(Outcome::IdentityMismatch { .. })
+    ));
+    assert_eq!(f.guard()?.sink, f.sink);
+    let token = f.store.begin_reset(&w1.token, 2, f.reset(1))?;
+    f.store.run(
+        f.store
+            .at(3)
+            .rebind_sink(&token, "file:///new", &replaced, 4),
+    )?;
+    let guard = f.guard()?;
+    assert_eq!(guard.sink, replaced);
+    assert_eq!(guard.physical_key, "file:///new");
+    assert_eq!(f.head(&replaced), Some(4));
+    Ok(())
+}
+
 fn expired_owner_is_fenced_and_takeover_preserves_the_intent<S: Store>(f: Fixture<S>) -> Result {
     let w1 = f.store.acquire(&f.target, "w1", 0, LEASE)?;
     let id = f.seal(&w1.token, 1, 0)?;
@@ -1191,6 +1246,8 @@ scenarios!(
     batches_run_to_completion_and_take_the_sealed_end,
     enrollment_binds_identities_once,
     expired_owner_is_fenced_and_takeover_preserves_the_intent,
+    a_renewal_extends_a_live_lease_and_refuses_an_expired_one,
+    a_replaced_target_is_adopted_only_under_a_reset,
     ratification_retry_replays_the_receipt,
     a_new_request_id_cannot_repeat_an_effect,
     moved_head_is_a_conflict,

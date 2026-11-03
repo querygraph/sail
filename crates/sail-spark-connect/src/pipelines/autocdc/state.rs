@@ -197,7 +197,8 @@ fn write_arrow(path: &Path, snapshot: &Snapshot) -> SparkResult<()> {
 }
 
 /// Run a plan to its rows, with columns renamed to `prefix` and their
-/// position, so rows from any plan make a table with distinct names.
+/// position, so rows from any plan make a table with distinct names. Each
+/// column keeps the plan's nullability.
 pub(super) async fn collect(
     ctx: &SessionContext,
     plan: LogicalPlan,
@@ -214,7 +215,11 @@ pub(super) async fn collect(
             .iter()
             .enumerate()
             .map(|(index, field)| {
-                Field::new(format!("{prefix}{index}"), field.data_type().clone(), true)
+                Field::new(
+                    format!("{prefix}{index}"),
+                    field.data_type().clone(),
+                    field.is_nullable(),
+                )
             })
             .collect::<Vec<_>>(),
     ));

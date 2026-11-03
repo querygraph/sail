@@ -27,7 +27,7 @@ use sail_common_datafusion::datasource::{
     SourceInfo, create_sort_order, find_path_in_options,
 };
 use sail_common_datafusion::extension::SessionExtensionAccessor;
-use sail_common_datafusion::fenced_commit::FencedCommits;
+use sail_common_datafusion::fenced_commit::{FencedCommitRegistry, FencedCommits};
 use sail_common_datafusion::lakesource::{
     LakeSource, LakeSourceAlterTableOperation, LakeSourceCreateTableColumn,
     LakeSourceCreateTableInfo, LakeSourceCreateTableResult, LakeSourceMetadata, RowLevelOperation,
@@ -160,15 +160,41 @@ impl DataSource for DeltaLakeSource {
 async fn reject_enrolled_delta_alter(
     ctx: &datafusion::execution::TaskContext,
     path: &str,
+    lakehouse_table: Option<&LakehouseExecutionContext>,
 ) -> Result<()> {
-    let Ok(commits) = ctx.extension::<FencedCommits>() else {
+    // A table whose commits its catalog ratifies has a log that is read
+    // through the catalog, and is never enrolled in the fence: nothing here
+    // applies to it. Any other catalog table is a plain Delta table.
+    if lakehouse_table.is_some_and(|table| table.commit == CommitAuthority::DeltaRatifiedCommit) {
         return Ok(());
-    };
+    }
     // A metastore writes `file:/path`, and enrollment holds the parsed form.
     let table_url = format!("{}/", path.trim_end_matches('/'));
-    let table_url = Url::parse(&table_url).map_or(table_url, String::from);
-    if commits.0.is_enrolled(&table_url).await? {
-        return plan_err!("table {table_url} is enrolled and refuses a change without a fence");
+    let parsed = Url::parse(&table_url).ok();
+    let table_url = parsed.as_ref().map_or(table_url, Url::to_string);
+    let refused =
+        || plan_err!("table {table_url} is enrolled and refuses a change without a fence");
+    // The table itself names its authority, in any session on any server.
+    let Some(url) = &parsed else {
+        return Ok(());
+    };
+    if crate::fenced::enrolled_authority(ctx, url).await?.is_some() {
+        return refused();
+    }
+    // A table with no commit is nobody's; one with a log is matched by its
+    // identity, so a table created again at an enrolled location passes.
+    let Some((table_id, _)) = crate::fenced::table_state_in(ctx, url).await? else {
+        return Ok(());
+    };
+    if let Ok(registry) = ctx.extension::<FencedCommitRegistry>()
+        && registry.is_enrolled(&table_url, Some(&table_id)).await?
+    {
+        return refused();
+    }
+    if let Ok(commits) = ctx.extension::<FencedCommits>()
+        && commits.0.is_enrolled(&table_url, Some(&table_id)).await?
+    {
+        return refused();
     }
     Ok(())
 }
@@ -519,7 +545,7 @@ impl LakeSource for DeltaLakeSource {
         lakehouse_table: Option<LakehouseExecutionContext>,
     ) -> Result<sail_common_datafusion::lakesource::LakeSourceAlterTableResult> {
         reject_catalog_managed_delta_alter(lakehouse_table.as_ref(), &operation)?;
-        reject_enrolled_delta_alter(ctx, path).await?;
+        reject_enrolled_delta_alter(ctx, path, lakehouse_table.as_ref()).await?;
         let runtime_env = ctx.runtime_env();
         match operation {
             LakeSourceAlterTableOperation::AlterSnapshotReference { .. } => {
