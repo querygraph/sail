@@ -18,7 +18,7 @@ use crate::config::INCOMPATIBLE_VIEW_CHECK;
 use crate::error::{SparkError, SparkResult, StructuredSparkError};
 use crate::pipelines::analysis::GraphScope;
 use crate::pipelines::graph::{Flow, GraphDefinition, Name};
-use crate::service::reads_streaming_source;
+use crate::service::{contains_relation_extension, reads_streaming_source};
 use crate::session::SparkSession;
 use crate::spark::connect::OutputType;
 
@@ -237,6 +237,16 @@ impl FlowContext<'_> {
         });
         let streaming = scope.reads_streaming_input() || reads_streaming_source(&flow.query);
         let actual = scope.reads.into_inner()?;
+        // A native region is a batch source. A streaming flow would plan the
+        // extension again for every batch, which is not a stream of it; the
+        // flow is refused by name here, at analysis, before any batch runs.
+        let result = if streaming && contains_relation_extension(&flow.query) {
+            Err(PlanError::unsupported(
+                "relation extension cannot be read by a streaming flow; a native region is a batch source",
+            ))
+        } else {
+            result
+        };
         match result {
             Ok(plan) => Ok(Call {
                 result: CallResult::Resolved(Box::new(plan)),

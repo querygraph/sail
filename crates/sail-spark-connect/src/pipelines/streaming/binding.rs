@@ -25,6 +25,7 @@ use super::intent::BatchIntent;
 use super::source::SourceDescriptor;
 use crate::pipelines::analysis::GraphScope;
 use crate::pipelines::graph::{Flow, GraphDefinition, Name, quoted};
+use crate::service::reads_streaming_source;
 
 /// A recorded streaming source bound to this lowering, with its identity
 /// stated by the caller: the graph-local name the flow reads it by, the
@@ -87,9 +88,11 @@ pub enum BindingError {
     PivotInference,
     /// `Tail` resolves through a count query (`limit.rs`).
     Tail,
-    /// A Connect relation extension is planned by a native handler, which is
-    /// analysis; it is not admitted into a flow until a unit binds it as a source.
-    RelationExtension,
+    /// A Connect relation extension is a batch source: its native handler
+    /// plans it from its inputs when the flow is computed. One whose input
+    /// reads a stream is refused, because a native region is never a
+    /// streaming source.
+    StreamingRelationExtension,
     /// The `Stat*` nodes execute helper plans during resolution (`stat.rs`).
     StatHelper(&'static str),
     /// A read kind outside the initial subset.
@@ -141,7 +144,10 @@ impl fmt::Display for BindingError {
             }
             Self::PivotInference => write!(f, "pivot without explicit values is not admitted"),
             Self::Tail => write!(f, "tail is not admitted"),
-            Self::RelationExtension => write!(f, "relation extension is not admitted"),
+            Self::StreamingRelationExtension => write!(
+                f,
+                "relation extension cannot read a stream; a native region is a batch source"
+            ),
             Self::StatHelper(kind) => write!(f, "{kind} is not admitted"),
             Self::UnsupportedRead(kind) => write!(f, "{kind} read is not admitted"),
             Self::Unqualifiable(message) => write!(f, "{message}"),
@@ -453,7 +459,23 @@ impl Walker<'_> {
                 }
             }
             N::Tail { .. } => return Err(BindingError::Tail),
-            N::Extension { .. } => return Err(BindingError::RelationExtension),
+            N::Extension { inputs, .. } => {
+                // The handler plans the extension from its inputs, which the
+                // walker binds like any read. A stream beneath it, whether a
+                // bound streaming read (the scope decides those) or a source
+                // that streams by itself, would make the region a streaming
+                // source, which it never is.
+                let streaming_before = self.reads.streaming.len();
+                for input in inputs {
+                    self.walk(input, cte_scope)?;
+                }
+                if self.reads.streaming.len() > streaming_before
+                    || inputs.iter().any(reads_streaming_source)
+                {
+                    return Err(BindingError::StreamingRelationExtension);
+                }
+                return Ok(());
+            }
             N::Pivot(pivot) if pivot.values.is_empty() => return Err(BindingError::PivotInference),
             N::StatSummary { .. } => return Err(BindingError::StatHelper("summary")),
             N::StatDescribe { .. } => return Err(BindingError::StatHelper("describe")),

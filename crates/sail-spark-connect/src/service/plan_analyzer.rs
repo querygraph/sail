@@ -256,6 +256,37 @@ pub(crate) fn reads_streaming_source(plan: &spec::QueryPlan) -> bool {
     is_streaming_query_node(&plan.node, &HashMap::new(), false)
 }
 
+/// Whether a plan holds a Connect relation extension anywhere, in its query
+/// inputs or in a subquery of one of its expressions. A native region is a
+/// batch source; a streaming flow may not carry one, because the flow would
+/// plan it again for every batch.
+pub(crate) fn contains_relation_extension(plan: &spec::QueryPlan) -> bool {
+    use sail_common::spec::QueryChild;
+    if matches!(plan.node, spec::QueryNode::Extension { .. }) {
+        return true;
+    }
+    let mut found = false;
+    let _ = plan.visit_children(&mut |child| -> Result<(), ()> {
+        if found {
+            return Ok(());
+        }
+        found = match child {
+            QueryChild::Query(input) => contains_relation_extension(input),
+            QueryChild::Expression(expr) => {
+                let mut inner = false;
+                let _ = expr.visit_subqueries(&mut |query| -> Result<(), ()> {
+                    inner |= contains_relation_extension(query);
+                    Ok(())
+                });
+                inner
+            }
+            QueryChild::Window(_) => false,
+        };
+        Ok(())
+    });
+    found
+}
+
 fn is_streaming_query_node(
     node: &spec::QueryNode,
     cte_scope: &HashMap<spec::Identifier, bool>,
@@ -377,6 +408,35 @@ fn is_streaming_query_node(
 #[cfg(test)]
 mod streaming_tests {
     use sail_common::spec;
+
+    #[test]
+    fn a_relation_extension_is_found_at_any_depth() {
+        let read = |name: &str| {
+            spec::QueryPlan::new(spec::QueryNode::Read {
+                read_type: spec::ReadType::NamedTable(Box::new(spec::ReadNamedTable {
+                    name: spec::ObjectName::bare(name),
+                    temporal: None,
+                    sample: None,
+                    options: vec![],
+                })),
+                is_streaming: false,
+            })
+        };
+        let extension = spec::QueryPlan::new(spec::QueryNode::Extension {
+            payload_type_url: "type.googleapis.com/example.Graph".into(),
+            payload: vec![],
+            inputs: vec![read("nodes")],
+            is_envelope: true,
+        });
+        assert!(!super::contains_relation_extension(&read("nodes")));
+        assert!(super::contains_relation_extension(&extension));
+        let above = spec::QueryPlan::new(spec::QueryNode::Limit {
+            input: Box::new(extension),
+            skip: None,
+            limit: None,
+        });
+        assert!(super::contains_relation_extension(&above));
+    }
     use sail_sql_analyzer::source::SqlSource;
     use sail_sql_analyzer::statement::from_ast_statement_with_source;
 

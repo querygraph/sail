@@ -741,23 +741,35 @@ fn query_navigation_reports_the_first_expression_read_before_its_input() {
     );
 }
 
-/// A Connect relation extension is planned by a native handler, which is analysis a query
-/// function must not perform. It is refused whether it stands alone or wraps a stream, until
-/// a later unit binds it as a source.
+/// A Connect relation extension is a batch source: over batch inputs it is
+/// admitted and its inputs are bound like any read; over a stream it is
+/// refused by name, because a native region is never a streaming source.
 #[test]
-fn a_relation_extension_is_not_admitted_into_a_flow() -> TestResult {
+fn a_relation_extension_is_a_batch_source_and_never_a_streaming_one() -> TestResult {
     let sources = [source(&["c", "d", "clicks"])];
-    for inputs in [vec![], vec![read("clicks", true)]] {
-        let extension = spec::QueryPlan::new(spec::QueryNode::Extension {
+    let statics = [statik(&["c", "d", "nodes"])?];
+    let extension = |inputs: Vec<spec::QueryPlan>| {
+        spec::QueryPlan::new(spec::QueryNode::Extension {
             payload_type_url: "type.googleapis.com/example.Graph".into(),
             payload: vec![],
             inputs,
             is_envelope: true,
-        });
-        assert_eq!(
-            validate(extension, &sources, &[]),
-            Err(BindingError::RelationExtension)
-        );
-    }
+        })
+    };
+    let reads = validate(extension(vec![read("nodes", false)]), &sources, &statics)?;
+    assert_eq!(reads.statics, BTreeSet::from([name(&["c", "d", "nodes"])]));
+    assert!(validate(extension(vec![]), &sources, &statics).is_ok());
+    assert_eq!(
+        validate(extension(vec![read("clicks", true)]), &sources, &statics),
+        Err(BindingError::StreamingRelationExtension)
+    );
+    assert_eq!(
+        validate(
+            extension(vec![read("nodes", false), read("clicks", true)]),
+            &sources,
+            &statics
+        ),
+        Err(BindingError::StreamingRelationExtension)
+    );
     Ok(())
 }
