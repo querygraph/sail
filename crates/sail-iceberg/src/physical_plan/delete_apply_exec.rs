@@ -231,9 +231,9 @@ pub struct IcebergDeleteApplyExec {
     /// partition-scoped position deletes, to identify positions relevant to this file.
     data_file_path: String,
     /// Applicable position-delete file references.
-    positional_deletes: Vec<DeleteFileRef>,
+    positional_deletes: Vec<Arc<DeleteFileRef>>,
     /// Applicable equality-delete file references.
-    equality_deletes: Vec<DeleteFileRef>,
+    equality_deletes: Vec<Arc<DeleteFileRef>>,
     /// Table root URL for resolving delete-file paths via the object store.
     table_url: String,
     /// Iceberg schema used to map equality-delete `equality_ids` (field ids) to
@@ -262,8 +262,8 @@ impl IcebergDeleteApplyExec {
     pub fn new(
         input: Arc<dyn ExecutionPlan>,
         data_file_path: String,
-        positional_deletes: Vec<DeleteFileRef>,
-        equality_deletes: Vec<DeleteFileRef>,
+        positional_deletes: Vec<Arc<DeleteFileRef>>,
+        equality_deletes: Vec<Arc<DeleteFileRef>>,
         table_url: String,
         iceberg_schema: IcebergSchema,
     ) -> Self {
@@ -299,10 +299,10 @@ impl IcebergDeleteApplyExec {
     pub fn data_file_path(&self) -> &str {
         &self.data_file_path
     }
-    pub fn positional_deletes(&self) -> &[DeleteFileRef] {
+    pub fn positional_deletes(&self) -> &[Arc<DeleteFileRef>] {
         &self.positional_deletes
     }
-    pub fn equality_deletes(&self) -> &[DeleteFileRef] {
+    pub fn equality_deletes(&self) -> &[Arc<DeleteFileRef>] {
         &self.equality_deletes
     }
     pub fn table_url(&self) -> &str {
@@ -736,7 +736,7 @@ fn resolve_equality_key_fields(
 
 async fn load_equality_deletes(
     store_ctx: &StoreContext,
-    delete_files: &[DeleteFileRef],
+    delete_files: &[Arc<DeleteFileRef>],
     iceberg_schema: &IcebergSchema,
 ) -> Result<Vec<LoadedEqualityDelete>> {
     if delete_files.is_empty() {
@@ -1174,11 +1174,13 @@ mod tests {
             data_file_path.to_string(),
             vectors
                 .into_iter()
-                .map(|data_file| DeleteFileRef {
-                    data_file,
-                    data_sequence_number: 2,
-                    partition_spec_id: 0,
-                    is_unpartitioned_spec: true,
+                .map(|data_file| {
+                    Arc::new(DeleteFileRef {
+                        data_file,
+                        data_sequence_number: 2,
+                        partition_spec_id: 0,
+                        is_unpartitioned_spec: true,
+                    })
                 })
                 .collect(),
             vec![],

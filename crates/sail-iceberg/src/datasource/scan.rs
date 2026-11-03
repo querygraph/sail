@@ -698,7 +698,7 @@ impl IcebergScan {
             .map_err(|e| datafusion::common::DataFusionError::External(Box::new(e)))
     }
 
-    fn equality_scan(&self, deletes: &[DeleteFileRef]) -> Result<Self> {
+    fn equality_scan(&self, deletes: &[Arc<DeleteFileRef>]) -> Result<Self> {
         let mut read_scan = self.clone();
         read_scan.schema = crate::equality_schema::equality_read_schema(
             &self.schema,

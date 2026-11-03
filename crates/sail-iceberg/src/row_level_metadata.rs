@@ -42,7 +42,7 @@ impl RowLevelFileMetadata {
     pub fn encode(
         file: &DataFile,
         deletion_vector_snapshot: Option<i64>,
-        positional_deletes: &[DeleteFileRef],
+        positional_deletes: &[Arc<DeleteFileRef>],
     ) -> Result<String> {
         let deletion_vector = deletion_vector_snapshot
             .map(|snapshot_id| {

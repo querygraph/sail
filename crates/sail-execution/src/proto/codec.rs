@@ -1937,10 +1937,12 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                     serde_json::from_str(&positional_deletes_json).map_err(|e| {
                         plan_datafusion_err!("failed to decode positional delete refs: {e}")
                     })?;
+                let positional_deletes = positional_deletes.into_iter().map(Arc::new).collect();
                 let equality_deletes: Vec<sail_iceberg::spec::delete_index::DeleteFileRef> =
                     serde_json::from_str(&equality_deletes_json).map_err(|e| {
                         plan_datafusion_err!("failed to decode equality delete refs: {e}")
                     })?;
+                let equality_deletes = equality_deletes.into_iter().map(Arc::new).collect();
                 let iceberg_schema: sail_iceberg::spec::Schema =
                     serde_json::from_str(&iceberg_schema_json).map_err(|e| {
                         plan_datafusion_err!("failed to decode Iceberg schema: {e}")
@@ -3361,11 +3363,25 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 proto_converter,
                 delete_apply.input().clone(),
             )?;
-            let positional_deletes_json = serde_json::to_string(delete_apply.positional_deletes())
-                .map_err(|e| {
+            // The descriptors are shared in memory; they are serialized through
+            // borrowed views, so the wire format is the plain list it was.
+            let positional_deletes: Vec<&sail_iceberg::spec::delete_index::DeleteFileRef> =
+                delete_apply
+                    .positional_deletes()
+                    .iter()
+                    .map(Arc::as_ref)
+                    .collect();
+            let positional_deletes_json =
+                serde_json::to_string(&positional_deletes).map_err(|e| {
                     plan_datafusion_err!("failed to encode positional delete refs: {e}")
                 })?;
-            let equality_deletes_json = serde_json::to_string(delete_apply.equality_deletes())
+            let equality_deletes: Vec<&sail_iceberg::spec::delete_index::DeleteFileRef> =
+                delete_apply
+                    .equality_deletes()
+                    .iter()
+                    .map(Arc::as_ref)
+                    .collect();
+            let equality_deletes_json = serde_json::to_string(&equality_deletes)
                 .map_err(|e| plan_datafusion_err!("failed to encode equality delete refs: {e}"))?;
             let iceberg_schema_json = serde_json::to_string(delete_apply.iceberg_schema())
                 .map_err(|e| plan_datafusion_err!("failed to encode Iceberg schema: {e}"))?;
