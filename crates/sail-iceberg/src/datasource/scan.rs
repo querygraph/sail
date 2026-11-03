@@ -1101,23 +1101,23 @@ impl IcebergScan {
             )));
         }
         let (_, parquet_pushdown_filters) = self.separate_filters(&planned.residual_filters());
+        // The planned scan is shared, so each data file is cloned once, into
+        // the clean list or its dirty unit; the statistics read the tasks.
         let mut clean_files = Vec::new();
         let mut dirty_units = Vec::new();
-        let mut all_data_files = Vec::new();
         for task in &planned.tasks {
-            let file = task.data_file.clone();
-            all_data_files.push(file.clone());
             if task.deletes.is_empty() {
-                clean_files.push(file);
+                clean_files.push(task.data_file.clone());
             } else {
                 dirty_units.push((
-                    file,
+                    task.data_file.clone(),
                     task.deletes.positional.clone(),
                     task.deletes.equality.clone(),
                 ));
             }
         }
-        let mut table_stats = self.aggregate_statistics(&all_data_files);
+        let mut table_stats =
+            self.aggregate_statistics(planned.tasks.iter().map(|task| &task.data_file));
         table_stats.column_statistics = table_stats
             .column_statistics
             .into_iter()
@@ -1127,9 +1127,11 @@ impl IcebergScan {
         // Object-store URL shared by all branches.
         let object_store_url = self.object_store_url()?;
 
+        // Without dirty units every file is clean, so the clean list is the
+        // whole scan.
         if dirty_units.is_empty()
             && parquet_pushdown_filters.is_empty()
-            && let Some(scan) = self.constant_projection_scan(&all_data_files, projection, limit)?
+            && let Some(scan) = self.constant_projection_scan(&clean_files, projection, limit)?
         {
             return Ok(scan);
         }
@@ -1144,8 +1146,8 @@ impl IcebergScan {
         if dirty_units.is_empty() {
             // Fast path: no deletes apply. Emit the single-DataSourceExec plan that
             // is identical to the pre-delete-integration behavior.
-            let nan_free = self.nan_free(&all_data_files);
-            let partitioned_files = self.create_partitioned_files(&store_ctx, all_data_files)?;
+            let nan_free = self.nan_free(&clean_files);
+            let partitioned_files = self.create_partitioned_files(&store_ctx, clean_files)?;
             let file_groups = self.create_file_groups(partitioned_files);
             let parquet_source = self.build_parquet_source(session, nan_free, reader_factory);
             let expanded_projection =
