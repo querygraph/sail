@@ -5,14 +5,15 @@
 //! the source's history. The innermost operator runs first, and its result
 //! stands in for it in the plan, so an operator above it reads that result.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::{Field, Schema};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, DFSchemaRef, NullEquality};
-use datafusion::logical_expr::{Distinct, Expr, JoinType, LogicalPlan, LogicalPlanBuilder};
-use datafusion::prelude::{SessionContext, col};
+use datafusion::logical_expr::{Distinct, Expr, JoinType, LogicalPlan, LogicalPlanBuilder, cast};
+use datafusion::prelude::{SessionContext, col, lit};
 
 use super::state::{Snapshot, StateKeys, collect};
 use crate::error::{SparkError, SparkResult};
@@ -21,17 +22,34 @@ use crate::pipelines::append::{SOURCE_ALIAS, reads_a_stream};
 const SEEN_ALIAS: &str = "__autocdc_seen";
 const ROWS_ALIAS: &str = "__autocdc_rows";
 
+/// A `dropDuplicatesWithinWatermark` in the query: its keys, the event time
+/// and delay of its watermark, and this batch's watermark candidate, the
+/// latest event time the batch brings to the watermark less the delay.
+#[derive(Debug, Clone)]
+pub(super) struct Within {
+    pub keys: Vec<String>,
+    pub event_time: String,
+    pub delay_micros: i64,
+    pub candidate: Option<i64>,
+}
+
 /// The plan with each stateful operator over streams run against its state.
 pub(super) async fn with_state(
     ctx: &SessionContext,
     mut plan: LogicalPlan,
     state: &StateKeys,
     origin: bool,
+    within: Option<&Within>,
 ) -> SparkResult<LogicalPlan> {
+    // A resolved plan names its columns `#n` and restores the user's names
+    // in an enclosing projection; the aliases there map them back.
+    let names = user_names(&plan)?;
     let mut index = 0;
     while let Some(node) = innermost(&plan)? {
         let replacement = match &node {
-            LogicalPlan::Distinct(_) => deduplicate(ctx, &node, state, origin, index).await?,
+            LogicalPlan::Distinct(_) => {
+                deduplicate(ctx, &node, state, origin, index, within, &names).await?
+            }
             LogicalPlan::Join(_) => join(ctx, &node, state, origin, index).await?,
             _ => return Err(SparkError::internal("not a stateful operator")),
         };
@@ -164,6 +182,8 @@ async fn deduplicate(
     state: &StateKeys,
     origin: bool,
     index: usize,
+    within: Option<&Within>,
+    names: &HashMap<String, String>,
 ) -> SparkResult<LogicalPlan> {
     let schema = node.schema().clone();
     let keys: Vec<usize> = match node {
@@ -180,6 +200,28 @@ async fn deduplicate(
             .collect::<SparkResult<_>>()?,
         _ => return Err(SparkError::internal("not a deduplication")),
     };
+    let user = |position: usize| -> &str {
+        let name = schema.field(position).name();
+        names.get(name).map_or(name.as_str(), String::as_str)
+    };
+    if let Some(within) = within
+        && within.keys.len() == keys.len()
+        && within
+            .keys
+            .iter()
+            .all(|key| keys.iter().any(|k| user(*k).eq_ignore_ascii_case(key)))
+    {
+        let event_time = (0..schema.fields().len())
+            .find(|position| user(*position).eq_ignore_ascii_case(&within.event_time))
+            .ok_or_else(|| {
+                SparkError::invalid(format!(
+                    "the watermark column {} is not among the deduplicated columns",
+                    within.event_time
+                ))
+            })?;
+        return deduplicate_within(ctx, node, state, origin, index, &keys, event_time, within)
+            .await;
+    }
     let operator = format!("{index}-dedup");
     let seen = load(state, &operator, origin, &schema, &keys, "k")?;
     let column = |key: usize| {
@@ -216,6 +258,155 @@ async fn deduplicate(
         },
     )?;
     as_schema(&fresh, ROWS_ALIAS, &schema)
+}
+
+/// `dropDuplicatesWithinWatermark`, as Spark runs it: a key is kept until
+/// the watermark passes the first row's event time plus the delay, and a row
+/// of a kept key is dropped. The state is the kept keys with their expiry
+/// and the watermark, rewritten each batch because eviction shrinks it.
+async fn deduplicate_within(
+    ctx: &SessionContext,
+    node: &LogicalPlan,
+    state: &StateKeys,
+    origin: bool,
+    index: usize,
+    keys: &[usize],
+    event_time: usize,
+    within: &Within,
+) -> SparkResult<LogicalPlan> {
+    let schema = node.schema().clone();
+    let operator = format!("{index}-dedup-within");
+    let mut columns: Vec<usize> = keys.to_vec();
+    let expires_at = keys.len();
+    // The expiry column is typed by the state schema, not by the input.
+    columns.push(usize::MAX);
+    let kept = match state.load_appended(&operator)? {
+        Some(snapshot) => snapshot,
+        None if origin => Snapshot::empty(Arc::new(Schema::new(
+            keys.iter()
+                .enumerate()
+                .map(|(position, key)| {
+                    Field::new(
+                        format!("k{position}"),
+                        schema.field(*key).data_type().clone(),
+                        true,
+                    )
+                })
+                .chain([Field::new(
+                    format!("k{expires_at}"),
+                    datafusion::arrow::datatypes::DataType::Int64,
+                    true,
+                )])
+                .collect::<Vec<_>>(),
+        ))),
+        None => return Err(missing(&operator)),
+    };
+    drop(columns);
+    // Spark evicts with the watermark as it stood before the batch; the
+    // batch's own rows advance it for the next one. It starts at 0 and never
+    // moves back.
+    let eviction = kept.watermark;
+    let watermark = within.candidate.unwrap_or(0).max(kept.watermark);
+    let live = LogicalPlanBuilder::from(kept.plan(SEEN_ALIAS)?)
+        .filter(col(Column::new(Some(SEEN_ALIAS), format!("k{expires_at}"))).gt(lit(eviction)))?
+        .build()?;
+    let live = rows_named(ctx, live, "k").await?;
+    let column = |key: usize| {
+        let (qualifier, field) = schema.qualified_field(key);
+        Column::new(qualifier.cloned(), field.name())
+    };
+    let DataType::Timestamp(_, timezone) = schema.field(event_time).data_type() else {
+        return Err(SparkError::invalid(format!(
+            "the watermark column {} is not a timestamp",
+            within.event_time
+        )));
+    };
+    let micros = DataType::Timestamp(TimeUnit::Microsecond, timezone.clone());
+    let expires =
+        cast(cast(col(column(event_time)), micros), DataType::Int64) + lit(within.delay_micros);
+    let fresh = LogicalPlanBuilder::from(node.clone())
+        .join_detailed(
+            live.plan(SEEN_ALIAS)?,
+            JoinType::LeftAnti,
+            (
+                keys.iter().map(|key| column(*key)).collect::<Vec<_>>(),
+                (0..keys.len())
+                    .map(|position| Column::new(Some(SEEN_ALIAS), format!("k{position}")))
+                    .collect::<Vec<_>>(),
+            ),
+            None,
+            NullEquality::NullEqualsNull,
+        )?
+        .project(
+            (0..schema.fields().len())
+                .map(|position| col(column(position)))
+                .chain([expires.alias("__autocdc_expires")]),
+        )?
+        .build()?;
+    let fresh = rows(ctx, fresh).await?;
+    let added = LogicalPlanBuilder::from(fresh.plan(ROWS_ALIAS)?)
+        .project(
+            keys.iter()
+                .enumerate()
+                .map(|(position, key)| {
+                    col(Column::new(Some(ROWS_ALIAS), format!("c{key}")))
+                        .alias(format!("k{position}"))
+                })
+                .chain([col(Column::new(
+                    Some(ROWS_ALIAS),
+                    format!("c{}", schema.fields().len()),
+                ))
+                .alias(format!("k{expires_at}"))]),
+        )?
+        .build()?;
+    let all = LogicalPlanBuilder::from(live.plan(SEEN_ALIAS)?)
+        .union(added)?
+        .build()?;
+    let (all_schema, all_rows) = collect(ctx, all, "k").await?;
+    state.rewrite(
+        &operator,
+        &Snapshot {
+            schema: all_schema,
+            batches: all_rows,
+            watermark,
+        },
+    )?;
+    as_schema(&fresh, ROWS_ALIAS, &schema)
+}
+
+/// The user's name of each `#n` column, from the aliases of the plan's
+/// projections.
+fn user_names(plan: &LogicalPlan) -> SparkResult<HashMap<String, String>> {
+    let mut names = HashMap::new();
+    plan.apply(|node| {
+        if let LogicalPlan::Projection(projection) = node {
+            for expr in &projection.expr {
+                if let Expr::Alias(alias) = expr
+                    && let Expr::Column(column) = alias.expr.as_ref()
+                {
+                    names
+                        .entry(column.name.clone())
+                        .or_insert_with(|| alias.name.clone());
+                }
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    Ok(names)
+}
+
+/// `rows`, with the columns named by `prefix` and position.
+async fn rows_named(
+    ctx: &SessionContext,
+    plan: LogicalPlan,
+    prefix: &str,
+) -> SparkResult<Snapshot> {
+    let (schema, batches) = collect(ctx, plan, prefix).await?;
+    Ok(Snapshot {
+        schema,
+        batches,
+        watermark: 0,
+    })
 }
 
 /// An inner join of two streams, as Spark runs one without a watermark: both

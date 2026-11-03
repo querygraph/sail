@@ -29,7 +29,7 @@ use sha2::{Digest, Sha256};
 
 use super::carry::{carried, occurrences};
 use super::state::{Snapshot, StateKeys, collect};
-use super::stateful::with_state;
+use super::stateful::{Within, with_state};
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
 use crate::pipelines::append::{
@@ -42,7 +42,9 @@ use crate::pipelines::streaming::source::{
     BoundedSource, Cursor, Incarnation, Partition, PartitionId, Range, ScanError, SourceDescriptor,
     SourceError,
 };
-use crate::pipelines::watermark::{Windowed, event_micros, max_event, windowed_aggregate};
+use crate::pipelines::watermark::{
+    Windowed, WithinWatermark, event_micros, max_event, windowed_aggregate, within_watermark,
+};
 
 /// Where a watermarked aggregate keeps each stream's open rows.
 const WINDOW_STATE: &str = "window";
@@ -651,10 +653,39 @@ impl FlowSource {
                 )
                 .await;
         }
+        let streams = self.leaf_streams(ctx, config, &batch.ranges).await?;
         let (plan, _) = self
-            .query_plan(ctx, config, scope, graph, flow, &batch.ranges)
+            .resolve_query(ctx, config, scope, graph, &flow.query, streams.clone())
             .await?;
-        let plan = with_state(ctx, plan, state, origin).await?;
+        // A deduplication within a watermark evicts by the query's watermark,
+        // which follows the rows of this batch that reach it.
+        let within = match within_query(scope, graph, flow)? {
+            Some(within) => {
+                let (marked, _) = self
+                    .resolve_query(ctx, config, scope, graph, &within.watermark.input, streams)
+                    .await?;
+                let delay_ms = within.watermark.delay_micros / 1000;
+                let next = max_event(ctx, &marked, &within.watermark.event_time)
+                    .await?
+                    .map(|latest| (latest.div_euclid(1000) - delay_ms) * 1000);
+                let mut watermarks = self.watermarks.lock().map_err(lock_error)?;
+                let candidate = match (watermarks.get(&0).copied(), next) {
+                    (Some(previous), Some(next)) => Some(previous.max(next)),
+                    (previous, next) => previous.or(next),
+                };
+                if let Some(candidate) = candidate {
+                    watermarks.insert(0, candidate);
+                }
+                Some(Within {
+                    keys: within.keys,
+                    event_time: within.watermark.event_time,
+                    delay_micros: within.watermark.delay_micros,
+                    candidate,
+                })
+            }
+            None => None,
+        };
+        let plan = with_state(ctx, plan, state, origin, within.as_ref()).await?;
         check_stateless(&plan, false)?;
         Ok(plan)
     }
@@ -870,21 +901,6 @@ impl FlowSource {
         Ok((through, before))
     }
 
-    /// The flow's query over `ranges`, with what each stream resolved to.
-    async fn query_plan(
-        &self,
-        ctx: &SessionContext,
-        config: &Arc<PlanConfig>,
-        scope: &GraphScope<'_>,
-        graph: &GraphDefinition,
-        flow: &Flow,
-        ranges: &[Range],
-    ) -> SparkResult<(LogicalPlan, BTreeMap<String, LogicalPlan>)> {
-        let streams = self.leaf_streams(ctx, config, ranges).await?;
-        self.resolve_query(ctx, config, scope, graph, &flow.query, streams)
-            .await
-    }
-
     /// Each leaf's rows in `ranges`.
     async fn leaf_streams(
         &self,
@@ -981,6 +997,27 @@ impl FlowSource {
         };
         Ok((plan, streams))
     }
+}
+
+/// The deduplication within a watermark of the flow's query, or of a view it
+/// reads.
+fn within_query(
+    scope: &GraphScope<'_>,
+    graph: &GraphDefinition,
+    flow: &Flow,
+) -> SparkResult<Option<WithinWatermark>> {
+    let _ = scope;
+    if let Some(within) = within_watermark(&flow.query)? {
+        return Ok(Some(within));
+    }
+    for output in &graph.outputs {
+        if let Some(view) = view_flow(graph, &output.name)
+            && let Some(within) = within_watermark(&view.query)?
+        {
+            return Ok(Some(within));
+        }
+    }
+    Ok(None)
 }
 
 /// The watermarked aggregate of the flow's query, or of a view it reads.

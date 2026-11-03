@@ -100,7 +100,10 @@ impl StateKeys {
                 ))
             })?;
             match &mut snapshot {
-                Some(snapshot) => snapshot.batches.extend(loaded.batches),
+                Some(snapshot) => {
+                    snapshot.batches.extend(loaded.batches);
+                    snapshot.watermark = snapshot.watermark.max(loaded.watermark);
+                }
                 None => snapshot = Some(loaded),
             }
         }
@@ -128,6 +131,29 @@ impl StateKeys {
             format!("{}.manifest", self.end),
         ];
         keep.extend(segments);
+        self.prune(operator, &keep)
+    }
+
+    /// Replace an operator's appended state with `rows`, as one segment,
+    /// when eviction has shrunk it. The start digest's segments stay for a
+    /// replay.
+    pub fn rewrite(&self, operator: &str, rows: &Snapshot) -> SparkResult<()> {
+        let before = self.manifest(operator, &self.start)?.unwrap_or_default();
+        let segment = format!("{}.segment", self.end);
+        write_arrow(&self.dir.join(operator).join(&segment), rows)?;
+        let manifest = self
+            .dir
+            .join(operator)
+            .join(format!("{}.manifest", self.end));
+        let bytes = serde_json::to_vec(&vec![segment.clone()])
+            .map_err(|e| SparkError::internal(format!("encode AutoCDC state manifest: {e}")))?;
+        write_atomically(&manifest, &bytes)?;
+        let mut keep = vec![
+            format!("{}.manifest", self.start),
+            format!("{}.manifest", self.end),
+            segment,
+        ];
+        keep.extend(before);
         self.prune(operator, &keep)
     }
 

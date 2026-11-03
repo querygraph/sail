@@ -46,7 +46,10 @@ pub(super) struct Watermark {
 }
 
 /// The watermarks under `plan`, through row-wise transformations and unions.
-fn find_watermarks(plan: &spec::QueryPlan, found: &mut Vec<Watermark>) -> SparkResult<()> {
+pub(super) fn find_watermarks(
+    plan: &spec::QueryPlan,
+    found: &mut Vec<Watermark>,
+) -> SparkResult<()> {
     match &plan.node {
         spec::QueryNode::WithWatermark(watermark) => {
             let delay_micros = duration_micros(&watermark.delay_threshold).ok_or_else(|| {
@@ -294,4 +297,54 @@ pub(super) async fn max_event(
         }
     }
     Ok(value)
+}
+
+/// A `dropDuplicatesWithinWatermark` in a query, with the watermark beneath
+/// it. Spark keeps each key until the watermark passes the first row's event
+/// time plus the delay, and drops duplicates of a key it still keeps.
+#[derive(Debug, Clone)]
+pub(super) struct WithinWatermark {
+    pub keys: Vec<String>,
+    pub watermark: Watermark,
+}
+
+/// The deduplication within a watermark of `query`, through the nodes
+/// around it. `None` when the query has none.
+pub(super) fn within_watermark(query: &spec::QueryPlan) -> SparkResult<Option<WithinWatermark>> {
+    let next = match &query.node {
+        spec::QueryNode::Deduplicate(deduplicate) if deduplicate.within_watermark => {
+            let mut watermarks = vec![];
+            find_watermarks(&deduplicate.input, &mut watermarks)?;
+            let [watermark] = watermarks.as_slice() else {
+                return Err(SparkError::unsupported(
+                    "dropDuplicatesWithinWatermark over other than one watermark",
+                ));
+            };
+            if deduplicate.all_columns_as_keys {
+                return Err(SparkError::unsupported(
+                    "dropDuplicatesWithinWatermark over every column",
+                ));
+            }
+            return Ok(Some(WithinWatermark {
+                keys: deduplicate
+                    .column_names
+                    .iter()
+                    .map(|name| name.clone().into())
+                    .collect(),
+                watermark: watermark.clone(),
+            }));
+        }
+        spec::QueryNode::Deduplicate(deduplicate) => &deduplicate.input,
+        spec::QueryNode::Project {
+            input: Some(input), ..
+        }
+        | spec::QueryNode::Filter { input, .. }
+        | spec::QueryNode::Sort { input, .. }
+        | spec::QueryNode::TableAlias { input, .. }
+        | spec::QueryNode::WithColumns { input, .. }
+        | spec::QueryNode::WithColumnsRenamed { input, .. }
+        | spec::QueryNode::Drop { input, .. } => input,
+        _ => return Ok(None),
+    };
+    within_watermark(next)
 }

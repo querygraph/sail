@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov and Sail Contributors" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="The manual for Sail Declarative Pipelines, Sail’s implementation of Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines tool, with batch, streaming tables, AutoCDC and Apache Iggy." />
+  <title>Catalogs</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-010.html" accesskey="n" rel="next">Streaming tables</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-008.html" accesskey="p" rel="previous">Sources and formats</a>
+</span>
+</div>
+</nav>
+<h1 data-number="8" id="catalogs"><span
+class="header-section-number">8</span> Catalogs</h1>
+<p>A pipeline’s datasets are tables and views in a catalog. Sail’s
+catalogs are configured on the server; the pipeline names the catalog
+and database its datasets belong to.</p>
+<h2 data-number="8.1" id="the-memory-catalog"><span
+class="header-section-number">8.1</span> The memory catalog</h2>
+<p>By default a Sail server has one catalog, named <code>sail</code>, of
+type <code>memory</code>, with a database <code>default</code>. It keeps
+table metadata in memory and table data in the warehouse directory,
+<code>spark-warehouse</code> under the server’s working directory unless
+<code>spark.sql.warehouse.dir</code> says otherwise.</p>
+<p>A memory catalog belongs to a session: each Spark Connect session
+starts with its own, empty one. The tables a
+<code>spark-pipelines run</code> creates are visible to the run’s
+session, and their files stay in the warehouse, but another session does
+not see them in its catalog. For a pipeline whose results are read by
+other sessions, there are two choices:</p>
+<ul>
+<li><strong>Share the memory catalog.</strong> With
+<code>SAIL_CATALOG__SHARED_MEMORY=true</code>, every session on the
+server shares one memory catalog, as sessions of one Spark application
+share Spark’s. Another session’s inserts and overwrites are visible at
+once, without a refresh. The catalog still lives only as long as the
+server.</li>
+<li><strong>Use a metastore.</strong> A Hive metastore keeps the catalog
+across servers and restarts.</li>
+</ul>
+<p><code>catalog.shared_memory</code> is off by default because an
+existing Sail deployment may rely on a fresh catalog per session.</p>
+<h2 data-number="8.2" id="configuration"><span
+class="header-section-number">8.2</span> Configuration</h2>
+<p>Catalogs are configured with environment variables, or the matching
+keys in Sail’s configuration file:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Meaning</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SAIL_CATALOG__LIST</code></td>
+<td>The catalogs, as a list of <code>{name=..., type=..., ...}</code>
+entries.</td>
+<td>one memory catalog named <code>sail</code></td>
+</tr>
+<tr>
+<td><code>SAIL_CATALOG__DEFAULT_CATALOG</code></td>
+<td>The catalog a session starts in.</td>
+<td>the first of the list</td>
+</tr>
+<tr>
+<td><code>SAIL_CATALOG__DEFAULT_DATABASE</code></td>
+<td>The database a session starts in.</td>
+<td><code>["default"]</code></td>
+</tr>
+<tr>
+<td><code>SAIL_CATALOG__SHARED_MEMORY</code></td>
+<td>Share memory catalogs across sessions.</td>
+<td><code>false</code></td>
+</tr>
+</tbody>
+</table>
+<p>The list uses a TOML-like syntax. The default is:</p>
+<pre class="text"><code>SAIL_CATALOG__LIST=&#39;[{name=&quot;sail&quot;, type=&quot;memory&quot;, initial_database=[&quot;default&quot;], initial_database_comment=&quot;default database&quot;}]&#39;</code></pre>
+<p>A server with two memory catalogs:</p>
+<pre class="text"><code>SAIL_CATALOG__LIST=&#39;[{name=&quot;sail&quot;, type=&quot;memory&quot;, initial_database=[&quot;default&quot;]}, {name=&quot;other&quot;, type=&quot;memory&quot;, initial_database=[&quot;default&quot;]}]&#39;
+SAIL_CATALOG__DEFAULT_CATALOG=sail</code></pre>
+<p>A server whose catalog is a Hive metastore:</p>
+<pre class="text"><code>SAIL_CATALOG__LIST=&#39;[{name=&quot;sail&quot;, type=&quot;hms&quot;, uris=[&quot;127.0.0.1:9083&quot;]}]&#39;</code></pre>
+<p>The other catalog types, <code>unity</code>, <code>glue</code> and
+<code>iceberg_rest</code>, are configured with their own fields;
+AutoCDC’s chapter on catalogs covers Unity and Iceberg as targets.</p>
+<h2 data-number="8.3" id="naming-datasets"><span
+class="header-section-number">8.3</span> Naming datasets</h2>
+<p>A dataset name has up to three parts:
+<code>catalog.database.table</code>. The spec’s <code>catalog</code> and
+<code>database</code> complete shorter names, and a SQL file’s
+<code>USE CATALOG</code>, <code>SET CATALOG</code> and
+<code>USE SCHEMA</code> change them for that file. A pipeline may define
+datasets in several databases and in several catalogs:</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">MATERIALIZED</span> <span class="kw">VIEW</span> <span class="fu">first</span>.mv1 <span class="kw">AS</span> <span class="kw">SELECT</span> <span class="dv">1</span> <span class="kw">AS</span> one;</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">MATERIALIZED</span> <span class="kw">VIEW</span> other.<span class="dt">second</span>.mv2 <span class="kw">AS</span> <span class="kw">SELECT</span> <span class="op">*</span> <span class="kw">FROM</span> <span class="fu">first</span>.mv1;</span></code></pre></div>
+<p>Names are resolved against the pipeline before the catalog: a dataset
+the pipeline defines shadows a catalog table of the same name.</p>
+<p>A catalog that does not exist is <code>CATALOG_NOT_FOUND</code>. A
+database the pipeline writes to must exist; the run does not create
+it.</p>
+<h2 data-number="8.4" id="hive-metastore"><span
+class="header-section-number">8.4</span> Hive metastore</h2>
+<p>With a <code>hms</code> catalog, Sail creates the pipeline’s tables
+in the metastore and keeps their data under the metastore’s warehouse.
+Tables Sail creates are external tables marked
+<code>external.table.purge</code>, so <code>DROP TABLE</code> and
+<code>DROP DATABASE ... CASCADE</code> delete their data, as Spark’s do.
+A <code>file:/path</code> location is read as an absolute path.</p>
+<p>Every behavior in this manual was run against a Hive 4.0.1 metastore
+as well as the memory catalog; the only differences are the metastore’s
+own: it cannot replace a table in place, so a full refresh of an AutoCDC
+target there drops and recreates it.</p>
+<h2 data-number="8.5" id="seeing-another-sessions-writes"><span
+class="header-section-number">8.5</span> Seeing another session’s
+writes</h2>
+<p>Sail serves table reads from the files in the table’s directory. When
+sessions share a catalog, a write from one session is visible to a read
+from another at once. Two caches can delay that:</p>
+<ul>
+<li><code>REFRESH TABLE t</code> is never needed for visibility in the
+default configuration. It clears every file-listing and statistics cache
+entry, since those caches are not keyed by table.</li>
+<li>If the optional file-listing cache is enabled
+(<code>execution.file_listing_cache.type</code>), a listing is reused
+for <code>execution.file_listing_cache.ttl</code> seconds, 1800 by
+default, and a write from another session is seen after that or after
+<code>REFRESH TABLE</code>. <code>TRUNCATE TABLE</code> clears its own
+directory’s entry.</li>
+</ul>
+<h2 data-number="8.6" id="views-and-comments"><span
+class="header-section-number">8.6</span> Views and comments</h2>
+<p>A materialized view and a streaming table are published as tables,
+with the <code>COMMENT</code> and <code>TBLPROPERTIES</code> of their
+definitions and the declared columns in order. A persisted view is
+published with its SQL text; <code>SHOW CREATE TABLE</code> shows it. A
+temporary view is never published.</p>
+</body>
+</html>

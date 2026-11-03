@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov and Sail Contributors" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="The manual for Sail Declarative Pipelines, Sail’s implementation of Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines tool, with batch, streaming tables, AutoCDC and Apache Iggy." />
+  <title>AutoCDC</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-012.html" accesskey="n" rel="next">Apache Iggy as a source</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-010.html" accesskey="p" rel="previous">Streaming tables</a>
+</span>
+</div>
+</nav>
+<h1 data-number="10" id="autocdc"><span
+class="header-section-number">10</span> AutoCDC</h1>
+<p>AutoCDC applies a feed of changes to a table. Each change row carries
+the key of the row it changes, a sequencing value that orders changes to
+the same key, and, if the feed has deletes, a marker that says the row
+is gone. Sail keeps the latest row per key, which Spark calls SCD type
+1.</p>
+<p>This chapter covers what you write, what you see in the target, how
+runs and refreshes behave, which queries may stand between the source
+and the target, and what an operator needs to know about the state Sail
+keeps.</p>
+<h2 data-number="10.1" id="defining-a-flow"><span
+class="header-section-number">10.1</span> Defining a flow</h2>
+<p>An AutoCDC flow is defined in Python with
+<code>create_auto_cdc_flow</code>. Spark 4.2.1 has no SQL form for it,
+and neither has Sail: <code>CREATE FLOW ... AS INSERT INTO</code> is an
+append flow, not AutoCDC.</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> pyspark <span class="im">import</span> pipelines <span class="im">as</span> dp</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> pyspark.sql <span class="im">import</span> functions <span class="im">as</span> sf</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="at">@dp.temporary_view</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> changes():</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> (</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>        spark.readStream.<span class="bu">format</span>(<span class="st">&quot;json&quot;</span>)</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>        .schema(<span class="st">&quot;id INT, name STRING, seq BIGINT, is_delete BOOLEAN&quot;</span>)</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>        .load(<span class="st">&quot;/data/landing&quot;</span>)</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>dp.create_streaming_table(<span class="st">&quot;customers&quot;</span>, <span class="bu">format</span><span class="op">=</span><span class="st">&quot;delta&quot;</span>)</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a>dp.create_auto_cdc_flow(</span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>    target<span class="op">=</span><span class="st">&quot;customers&quot;</span>,</span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a>    source<span class="op">=</span><span class="st">&quot;changes&quot;</span>,</span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a>    keys<span class="op">=</span>[<span class="st">&quot;id&quot;</span>],</span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a>    sequence_by<span class="op">=</span><span class="st">&quot;seq&quot;</span>,</span>
+<span id="cb1-19"><a href="#cb1-19" aria-hidden="true" tabindex="-1"></a>    apply_as_deletes<span class="op">=</span>sf.expr(<span class="st">&quot;is_delete&quot;</span>),</span>
+<span id="cb1-20"><a href="#cb1-20" aria-hidden="true" tabindex="-1"></a>    except_column_list<span class="op">=</span>[<span class="st">&quot;is_delete&quot;</span>],</span>
+<span id="cb1-21"><a href="#cb1-21" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<p>The arguments:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th style="text-align: left;">Argument</th>
+<th style="text-align: left;">Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>target</code></td>
+<td style="text-align: left;">A streaming table declared with
+<code>create_streaming_table</code>. Give it a format:
+<code>delta</code> or <code>iceberg</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>source</code></td>
+<td style="text-align: left;">A streaming view, or a table read as a
+stream, that yields the change rows.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>keys</code></td>
+<td style="text-align: left;">The columns that identify a row. Several
+keys are allowed.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>sequence_by</code></td>
+<td style="text-align: left;">The column that orders changes to one key.
+A later value wins.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>apply_as_deletes</code></td>
+<td style="text-align: left;">An expression; a change row for which it
+is true deletes the key. Optional.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>column_list</code></td>
+<td style="text-align: left;">Keep only these columns in the target.
+Optional.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>except_column_list</code></td>
+<td style="text-align: left;">Keep every column but these; usually the
+delete marker. Optional.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>stored_as_scd_type</code></td>
+<td style="text-align: left;">Only <code>1</code>. SCD type 2 is refused
+with <code>AUTOCDC_SCD2_NOT_SUPPORTED</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>name</code></td>
+<td style="text-align: left;">The flow’s name; the target’s name when
+omitted.</td>
+</tr>
+</tbody>
+</table>
+<p>The key and sequence columns must exist in the source, and a column
+cannot be both excluded and a key. These are checked when the pipeline
+is defined, with the same conditions Spark raises.</p>
+<h2 data-number="10.2" id="what-the-target-holds"><span
+class="header-section-number">10.2</span> What the target holds</h2>
+<p>After a run the target holds one row per key: the row with the
+highest sequence value seen, with the columns the flow keeps. One more
+column, <code>__spark_autocdc_metadata</code>, is a struct of
+<code>deleteSequence</code> and <code>upsertSequence</code>; Spark adds
+it too.</p>
+<pre class="text"><code>+---+-----+---+--------------------------+
+|id |name |seq|__spark_autocdc_metadata  |
++---+-----+---+--------------------------+
+|1  |bob  |3  |{NULL, 3}                 |
++---+-----+---+--------------------------+</code></pre>
+<p>Ordering follows the sequence value, not arrival:</p>
+<ul>
+<li>A change whose sequence is lower than the one already applied to its
+key changes nothing, in this run or a later one.</li>
+<li>Two changes to one key with the same sequence value are a tie. Spark
+leaves the result undefined; Sail keeps the last one it read.</li>
+<li>A delete removes the row. A later upsert with a higher sequence
+brings the key back; an upsert with a lower sequence than the delete is
+ignored, because the delete is remembered.</li>
+</ul>
+<p>Deletes are remembered in an auxiliary table beside the target, named
+<code>__spark_autocdc_aux_state_&lt;target&gt;</code>. You can read it;
+do not write it. Dropping it forgets the deletes it held, so an older
+upsert for a deleted key would then land; Spark behaves the same way
+after the table is dropped.</p>
+<h2 data-number="10.3" id="runs"><span
+class="header-section-number">10.3</span> Runs</h2>
+<p>A run reads what the source holds when the run starts and applies it
+in batches of at most 10,000 rows per source partition. The run ends
+when it has applied everything up to that point; new data that arrived
+during the run waits for the next run. This is the behaviour of Spark’s
+<code>AvailableNow</code> trigger.</p>
+<p>Progress lives under the pipeline’s storage root:</p>
+<pre class="text"><code>&lt;storage&gt;/_checkpoints/&lt;target&gt;/&lt;flow&gt;/&lt;n&gt;/</code></pre>
+<p><code>n</code> counts full refreshes. A later run continues from the
+recorded progress, so a file read in one run is never read again, and a
+source file deleted after it was read is not missed unless you ask for a
+full refresh.</p>
+<h3 data-number="10.3.1" id="full-refresh"><span
+class="header-section-number">10.3.1</span> Full refresh</h3>
+<p><code>spark-pipelines run --full-refresh customers</code> (or
+<code>--full-refresh-all</code>) rebuilds the target from the source’s
+beginning:</p>
+<ol type="1">
+<li>The target’s rows are removed.</li>
+<li>The auxiliary table is dropped and created empty, so remembered
+deletes are forgotten, as Spark does.</li>
+<li>Any operator state (see below) starts empty.</li>
+<li>Progress moves to a new checkpoint directory,
+<code>&lt;n+1&gt;</code>.</li>
+</ol>
+<p>A source that no longer holds its beginning refuses a full refresh
+before anything is removed, for instance a Delta source whose first
+versions were vacuumed, or an Iggy topic whose retention moved on.</p>
+<p>A target with the Spark table property
+<code>pipelines.reset.allowed</code> set to <code>false</code> is not
+rebuilt; the run becomes an ordinary one, as in Spark.</p>
+<h3 data-number="10.3.2" id="selective-refresh"><span
+class="header-section-number">10.3.2</span> Selective refresh</h3>
+<p><code>--refresh customers</code> runs only the flows into that
+target; other tables keep their contents.</p>
+<h2 data-number="10.4"
+id="queries-between-the-source-and-the-target"><span
+class="header-section-number">10.4</span> Queries between the source and
+the target</h2>
+<p>The flow’s source can be more than a read: a view that filters,
+projects, joins, aggregates or deduplicates streams. Spark runs these as
+a stream with a state store; Sail keeps the equivalent state between
+batches and runs, under the checkpoint directory. These forms are
+supported:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th style="text-align: left;">Query</th>
+<th style="text-align: left;">Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">Filters, projections, added or renamed
+columns</td>
+<td style="text-align: left;">Stateless.</td>
+</tr>
+<tr>
+<td
+style="text-align: left;"><code>withWatermark(...).groupBy(window(...), ...)</code></td>
+<td style="text-align: left;">A window is emitted once, when the
+watermark passes its end. Tumbling and sliding windows, with or without
+a start time. One stream or several.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>dropDuplicates()</code> and
+<code>dropDuplicates([cols])</code></td>
+<td style="text-align: left;">A key seen in any earlier batch or run is
+dropped.</td>
+</tr>
+<tr>
+<td style="text-align: left;">Stream joined with a table</td>
+<td style="text-align: left;">Stateless; the table is read at each
+batch.</td>
+</tr>
+<tr>
+<td style="text-align: left;">Two streams joined (inner)</td>
+<td style="text-align: left;">Both sides are kept. A pair is emitted
+once, when its later row arrives.</td>
+</tr>
+</tbody>
+</table>
+<p>Spark’s watermark rule is followed exactly: the watermark is the
+latest event time seen, in whole milliseconds, less the delay, and it
+never moves back. A row is late only when its window has already ended
+by the watermark; a row behind the watermark whose window is still open
+still counts. With several watermarked streams the query’s watermark is
+the smallest, and a stream that has produced nothing yet counts as zero.
+After a restart each stream’s watermark starts again, as in Spark, so a
+window closes only when every stream has moved in the new run.</p>
+<p>These are refused, with Spark’s error where Spark has one:</p>
+<ul>
+<li>An aggregate over a stream without a watermark:
+<code>STREAMING_OUTPUT_MODE.UNSUPPORTED_OPERATION</code>.</li>
+<li><code>dropDuplicatesWithinWatermark</code>.</li>
+<li>A left join whose right side is a stream, a right join whose left
+side is a stream, and a full join over any stream. Window functions,
+sorts and limits over a stream.</li>
+<li>A union of a stream with a table.</li>
+</ul>
+<p>A changed query over existing state is refused: if the columns or
+types that a deduplication or window keeps are not the ones in the
+state, the run stops with a message that names the flow and asks for a
+full refresh.</p>
+<h2 data-number="10.5" id="targets"><span
+class="header-section-number">10.5</span> Targets</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th style="text-align: left;">Target</th>
+<th style="text-align: left;">How Sail writes it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">Delta, by path or in the memory, Hive or
+second catalog</td>
+<td style="text-align: left;">Fenced: every write goes through the
+control store described below. The table refuses
+<code>ALTER TABLE</code> and any write that does not come from the
+pipeline.</td>
+</tr>
+<tr>
+<td style="text-align: left;">Delta managed by Unity Catalog</td>
+<td style="text-align: left;">Plain: Unity orders the commits. See the
+catalogs chapter.</td>
+</tr>
+<tr>
+<td style="text-align: left;">Iceberg</td>
+<td style="text-align: left;">Plain: Iceberg orders the commits. New
+columns arrive by <code>ALTER TABLE ... ADD COLUMNS</code>, which Sail
+issues; a full refresh drops and recreates the table.</td>
+</tr>
+</tbody>
+</table>
+<p>A target created before the first run is adopted on that run. A
+target you drop and create again while enrolled is refused by the next
+ordinary run, with a message that says to run a full refresh; the full
+refresh adopts the new table.</p>
+<h3 data-number="10.5.1" id="schema-evolution"><span
+class="header-section-number">10.5.1</span> Schema evolution</h3>
+<p>A new source column is added to the target before the next batch.
+Nested fields are added inside their struct, and for arrays of structs
+inside the element. A column whose type changed is refused with Spark’s
+<code>DATATYPE_MISMATCH</code>; a full refresh, which recreates the
+target, takes the new type.</p>
+<h2 data-number="10.6" id="what-an-operator-sees"><span
+class="header-section-number">10.6</span> What an operator sees</h2>
+<h3 data-number="10.6.1" id="the-control-store"><span
+class="header-section-number">10.6.1</span> The control store</h3>
+<p>For a fenced Delta target, Sail records every batch before its first
+effect and every write’s receipt in a small database:</p>
+<pre class="text"><code>&lt;state root&gt;/_control/authority.db</code></pre>
+<p>The state root is the warehouse directory. For a remote warehouse,
+such as <code>s3://bucket/warehouse</code>, it is a local directory
+instead, named by <code>SAIL_AUTOCDC_STATE_DIR</code> or, when that is
+unset, <code>~/.sail/autocdc/&lt;sha256 of the warehouse URL&gt;</code>.
+One machine owns a remote warehouse’s flows. The warehouse carries a
+marker file, <code>_autocdc_state_owner</code>, naming that state
+directory by an id the directory keeps. A machine that finds the marker
+but not the directory, or another directory, stops with a message that
+says what to restore, so a flow never starts over against tables that
+have history. Removing the marker and running a full refresh is the way
+to adopt the warehouse on a new machine.</p>
+<h3 data-number="10.6.2" id="leases-and-recovery"><span
+class="header-section-number">10.6.2</span> Leases and recovery</h3>
+<p>A run holds a lease on each target for as long as it runs, renewed
+every five seconds, with a fifteen-second term. If the process dies, the
+next run waits for the lease to lapse, at most about seventeen seconds,
+then resumes the unfinished batch from the recorded state and repeats
+only the writes that have no receipt. Nothing is written twice. A run
+that fails for an ordinary reason releases the lease at once, so the
+next run, often the full refresh the error asked for, does not wait.</p>
+<p>Two sessions cannot run the same flow at once: the second waits on
+the lease, then recovers whatever the first left unfinished, and the
+first can no longer write.</p>
+<p>Process death is tested, including kills at every stage of a batch.
+Loss of power, and restoring the state directory from a backup, are not
+qualified.</p>
+<h3 data-number="10.6.3" id="enrolled-tables"><span
+class="header-section-number">10.6.3</span> Enrolled tables</h3>
+<p>An enrolled Delta table carries the property
+<code>sail.autocdc.authority</code>. Any Sail session, on any server,
+refuses to write such a table unless the write comes from the pipeline
+that enrolled it:</p>
+<pre class="text"><code>table file:///.../customers/ is enrolled with AutoCDC authority ... and refuses a write without its fence</code></pre>
+<p><code>ALTER TABLE</code> is refused the same way, whether the table
+is named through a catalog or by its path
+(<code>ALTER TABLE delta.</code>/path/to/customers<code>...</code>). To
+change the table yourself, drop it and run a full refresh, which
+recreates it; a table created again at the same location is not the
+enrolled one, and nothing refuses writes to it until the refresh adopts
+it.</p>
+<h2 data-number="10.7" id="limits-in-this-release"><span
+class="header-section-number">10.7</span> Limits in this release</h2>
+<ul>
+<li>SCD type 2 is refused.</li>
+<li>A join of two streams keeps every row of both sides for good; Spark
+evicts join state only with watermarks on both sides, which Sail does
+not do yet.</li>
+<li><code>dropDuplicates</code> on some columns keeps an arbitrary row
+among the duplicates within one batch, as Spark does within one
+microbatch.</li>
+<li>Iceberg and Unity targets are not fenced. Two pipelines writing one
+such target at once each keep their own progress; Spark has the same
+exposure.</li>
+<li>On an Iceberg target, Spark’s own connector refuses three
+nested-type changes during a full refresh or evolution that Sail
+completes.</li>
+</ul>
+</body>
+</html>

@@ -1,42 +1,48 @@
 {
   "$schema": "https://firstpair.org/schemas/book.build.schema.json",
   "schemaVersion": 1,
-  "bookRoot": "docs/books/sail-declarative-pipelines",
-  "manuscript": "docs/books/sail-declarative-pipelines/sail-declarative-pipelines.md",
-  "metadata": "docs/books/sail-declarative-pipelines/metadata.yaml",
-  "cover": "docs/books/sail-declarative-pipelines/cover.md",
-  "css": "docs/books/sail-declarative-pipelines/reader.css",
+  "bookRoot": "docs/books/sail-declarative-pipelines-manual",
+  "manuscript": "docs/books/sail-declarative-pipelines-manual/build/sail-declarative-pipelines-manual.md",
+  "metadata": "docs/books/sail-declarative-pipelines-manual/metadata.yaml",
+  "cover": "docs/books/sail-declarative-pipelines-manual/cover.md",
+  "css": "docs/books/sail-declarative-pipelines-manual/reader.css",
   "stem": "sail-declarative-pipelines",
   "title": "Sail Declarative Pipelines",
-  "subtitle": "Spark 4.2.1 Declarative Pipelines on Sail: Technical Report, Milestone 1",
-  "author": "Alexy Khrabrov ∈ LakeSail Team",
+  "subtitle": "Spark Declarative Pipelines on Sail, the manual",
+  "author": "Alexy Khrabrov and Sail Contributors",
   "version": { "source": "literal", "value": "1.0.0" },
   "edition": "full",
-  "dist": "docs/books/sail-declarative-pipelines/dist",
-  "buildDir": "docs/books/sail-declarative-pipelines/build",
+  "dist": "docs/books/sail-declarative-pipelines-manual/dist",
+  "buildDir": "docs/books/sail-declarative-pipelines-manual/build/firstpair",
   "cleanDist": true,
   "primaryFormat": "typst",
   "mobi": false,
-  "headboardImage": "docs/books/sail-declarative-pipelines/cover/sail-declarative-pipelines-cover.png",
+  "headboardImage": "docs/books/sail-declarative-pipelines-manual/art/sail-sdp-headboard.png",
+  "sourceFiles": [
+    "docs/books/sail-declarative-pipelines-manual/chapters",
+    "docs/books/sail-declarative-pipelines-manual/metadata.yaml",
+    "docs/books/sail-declarative-pipelines-manual/cover.md"
+  ],
   "pandoc": {
     "reader": "markdown+smart",
     "toc": true,
     "tocDepth": 2,
     "numberSections": true,
-    "resourcePaths": ["docs/books/sail-declarative-pipelines", "."]
+    "resourcePaths": ["docs/books/sail-declarative-pipelines-manual", "."]
   },
   "pdf": {
-    "coverImage": "docs/books/sail-declarative-pipelines/cover/sail-declarative-pipelines-cover.png",
+    "coverImage": "docs/books/sail-declarative-pipelines-manual/art/sail-sdp-cover.png",
     "coverWidth": "8.5in",
     "coverHeight": "11in",
     "coverFit": "contain",
-    "includeInHeader": ["docs/books/sail-declarative-pipelines/pdf-layout.typ"],
+    "includeInHeader": ["docs/books/sail-declarative-pipelines-manual/pdf-layout.typ"],
     "variables": { "papersize": "us-letter", "fontsize": "10pt", "page-numbering": "1" }
   },
   "epub": {
-    "coverImage": "docs/books/sail-declarative-pipelines/cover/sail-declarative-pipelines-cover.png",
+    "coverImage": "docs/books/sail-declarative-pipelines-manual/art/sail-sdp-cover.png",
     "titlePage": true,
     "imprint": { "publisher": "First Pair Press", "publisherUrl": "https://firstpair.press" }
   },
-  "html": { "splitLevel": 1 }
+  "html": { "splitLevel": 1 },
+  "hooks": { "prepare": "docs/books/sail-declarative-pipelines-manual/prepare.sh" }
 }

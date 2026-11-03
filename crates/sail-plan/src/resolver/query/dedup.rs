@@ -23,7 +23,10 @@ impl PlanResolver<'_> {
             .resolve_query_plan_with_hidden_fields(*input, state)
             .await?;
         let schema = input.schema();
-        if within_watermark {
+        // A pipeline keeps the watermark in its own flow state and evicts the
+        // keys it has seen by it; the plan here is the same deduplication.
+        // No other streaming path applies a watermark.
+        if within_watermark && self.relation_scope.is_none() {
             return Err(PlanError::todo("deduplicate within watermark"));
         }
         if !column_names.is_empty() && !all_columns_as_keys {

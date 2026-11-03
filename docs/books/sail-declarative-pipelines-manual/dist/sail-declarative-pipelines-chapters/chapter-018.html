@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov and Sail Contributors" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="The manual for Sail Declarative Pipelines, Sail’s implementation of Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines tool, with batch, streaming tables, AutoCDC and Apache Iggy." />
+  <title>Appendix: error conditions</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-017.html" accesskey="p" rel="previous">Appendix: configuration</a>
+</span>
+</div>
+</nav>
+<h1 data-number="17" id="appendix-error-conditions"><span
+class="header-section-number">17</span> Appendix: error conditions</h1>
+<p>The conditions a pipeline can raise, with Spark’s names. The client
+exposes a condition through <code>getCondition()</code> on the
+exception, and the message carries it in brackets.</p>
+<h2 data-number="17.1" id="registration-1"><span
+class="header-section-number">17.1</span> Registration</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Condition</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR</code></td>
+<td>A statement of a SQL file could not be registered; the file
+registers nothing. The message names the file and statement.</td>
+</tr>
+<tr>
+<td><code>PIPELINE_DUPLICATE_IDENTIFIERS.OUTPUT</code></td>
+<td>Two datasets have the same name.</td>
+</tr>
+<tr>
+<td><code>PIPELINE_DUPLICATE_IDENTIFIERS.FLOW</code></td>
+<td>Two flows have the same name.</td>
+</tr>
+<tr>
+<td><code>PIPELINE_DATASET_WITHOUT_FLOW</code></td>
+<td>A streaming table has no query and no flow.</td>
+</tr>
+<tr>
+<td><code>MULTIPART_FLOW_NAME_NOT_SUPPORTED</code></td>
+<td><code>CREATE FLOW a.f</code>.</td>
+</tr>
+<tr>
+<td><code>FLOW_TARGET_NOT_DEFINED</code></td>
+<td>A flow’s target is not a dataset of the pipeline.</td>
+</tr>
+<tr>
+<td><code>FLOW_NAME_CONFLICTS_WITH_TABLE</code></td>
+<td>A flow and a table share a name.</td>
+</tr>
+<tr>
+<td><code>INVALID_FLOW_QUERY_TYPE</code></td>
+<td>A sink’s flow has a batch query.</td>
+</tr>
+<tr>
+<td><code>UNSUPPORTED_PIPELINE_SPARK_SQL_COMMAND</code></td>
+<td>A statement a SQL file may not contain, such as a bare
+<code>USE</code>.</td>
+</tr>
+<tr>
+<td><code>INVALID_STATEMENT_OR_CLAUSE</code></td>
+<td><code>INSERT ... IF NOT EXISTS</code> under a flow.</td>
+</tr>
+<tr>
+<td><code>PARSE_SYNTAX_ERROR</code></td>
+<td>A statement that does not parse.</td>
+</tr>
+<tr>
+<td><code>INVALID_TEMP_OBJ_QUALIFIER</code></td>
+<td>A temporary view qualified with something other than
+<code>session</code> or <code>system.session</code>.</td>
+</tr>
+<tr>
+<td><code>TEMP_VIEW_NAME_TOO_MANY_NAME_PARTS</code></td>
+<td>A temporary view with a three-part name.</td>
+</tr>
+<tr>
+<td><code>REQUIRES_SINGLE_PART_NAMESPACE</code></td>
+<td>A namespace with more than one part where one is required.</td>
+</tr>
+<tr>
+<td><code>DEFINE_FLOW_ONCE_OPTION_NOT_SUPPORTED</code></td>
+<td><code>append_flow(once=...)</code>.</td>
+</tr>
+<tr>
+<td><code>UNSUPPORTED_FEATURE.CREATE_PIPELINE_DATASET_QUERY_EXECUTION</code></td>
+<td><code>CREATE MATERIALIZED VIEW</code> or
+<code>CREATE STREAMING TABLE</code> run as an ordinary query.</td>
+</tr>
+<tr>
+<td><code>UNSUPPORTED_FEATURE.CREATE_FLOW_QUERY_EXECUTION</code></td>
+<td><code>CREATE FLOW</code> run as an ordinary query.</td>
+</tr>
+<tr>
+<td><code>ATTEMPT_ANALYSIS_IN_PIPELINE_QUERY_FUNCTION</code></td>
+<td>A query function asked the server to analyze or run a plan.</td>
+</tr>
+<tr>
+<td><code>PIPELINE_SPEC_UNEXPECTED_FIELD</code></td>
+<td>An unknown field in the spec.</td>
+</tr>
+<tr>
+<td><code>PIPELINE_STORAGE_ROOT_INVALID</code></td>
+<td>A storage root without a scheme.</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="17.2" id="analysis"><span
+class="header-section-number">17.2</span> Analysis</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Condition</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>UNRESOLVED_COLUMN</code>,
+<code>UNRESOLVED_TABLE_OR_VIEW</code>,
+<code>TABLE_OR_VIEW_NOT_FOUND</code></td>
+<td>A query refers to something that does not exist.</td>
+</tr>
+<tr>
+<td><code>AMBIGUOUS_REFERENCE</code></td>
+<td>A query reads a column that a view repeats.</td>
+</tr>
+<tr>
+<td><code>INVALID_TEMP_OBJ_REFERENCE</code></td>
+<td>A persisted view reads a temporary view.</td>
+</tr>
+<tr>
+<td><code>CREATE_PERMANENT_VIEW_WITHOUT_ALIAS</code></td>
+<td>A persisted view has an unnamed column.</td>
+</tr>
+<tr>
+<td><code>MATERIALIZED_VIEW_WITH_MULTIPLE_QUERIES</code></td>
+<td>A materialized view has more than one flow.</td>
+</tr>
+<tr>
+<td><code>DUPLICATE_FLOW_SQL_CONF</code></td>
+<td>A flow and a view it reads set one key to different values.</td>
+</tr>
+<tr>
+<td><code>CANNOT_MERGE_INCOMPATIBLE_DATA_TYPE</code></td>
+<td>A streaming table’s flows, or a flow and the table, disagree on a
+column’s type.</td>
+</tr>
+<tr>
+<td><code>USER_SPECIFIED_AND_INFERRED_SCHEMA_NOT_COMPATIBLE</code></td>
+<td>A declared schema does not match the query.</td>
+</tr>
+<tr>
+<td><code>COLUMN_NOT_DEFINED_IN_TABLE</code></td>
+<td>A partition or cluster column is not in the query.</td>
+</tr>
+<tr>
+<td><code>ALL_PARTITION_COLUMNS_NOT_ALLOWED</code></td>
+<td>Every column is a partition column.</td>
+</tr>
+<tr>
+<td><code>SPECIFY_CLUSTER_BY_WITH_PARTITIONED_BY_IS_NOT_ALLOWED</code></td>
+<td>Both <code>cluster_by</code> and <code>partition_cols</code>.</td>
+</tr>
+<tr>
+<td><code>CANNOT_UPDATE_PARTITION_COLUMNS</code></td>
+<td>A refresh would change an existing table’s partition columns.</td>
+</tr>
+<tr>
+<td><code>UNABLE_TO_INFER_PIPELINE_TABLE_SCHEMA</code></td>
+<td>A dataset’s schema could not be determined.</td>
+</tr>
+<tr>
+<td><code>STREAMING_OUTPUT_MODE.UNSUPPORTED_OPERATION</code></td>
+<td>A streaming query shape append mode does not allow, such as an
+aggregate without a watermark.</td>
+</tr>
+<tr>
+<td><code>CATALOG_NOT_FOUND</code></td>
+<td><code>SET CATALOG</code> or a name names a catalog that does not
+exist.</td>
+</tr>
+<tr>
+<td><code>DATA_SOURCE_NOT_FOUND</code></td>
+<td>A <code>format</code> no source provides.</td>
+</tr>
+<tr>
+<td><code>PATH_NOT_FOUND</code></td>
+<td>A file path that does not exist.</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="17.3" id="execution"><span
+class="header-section-number">17.3</span> Execution</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Condition</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TABLE_MATERIALIZATION_FAILED</code></td>
+<td>A table could not be created or altered.</td>
+</tr>
+<tr>
+<td><code>RUN_EMPTY_PIPELINE</code></td>
+<td>A run with no dataset to refresh.</td>
+</tr>
+<tr>
+<td><code>SPARK_CONNECT_ILLEGAL_STATE.EXECUTION_STATE_EXECUTE_HOLDER_ALREADY_EXISTS_GRAPH</code></td>
+<td>A second run on a graph whose run is in progress.</td>
+</tr>
+<tr>
+<td><code>STREAM_FAILED</code></td>
+<td>A streaming source failed; the message says why (for a Delta source,
+one of the <code>DELTA_*</code> conditions of the sources chapter).</td>
+</tr>
+<tr>
+<td><code>INVALID_HANDLE.SESSION_CLOSED</code></td>
+<td>A request on a released session.</td>
+</tr>
+<tr>
+<td><code>DIVIDE_BY_ZERO</code>, <code>REMAINDER_BY_ZERO</code>,
+<code>CAST_INVALID_INPUT</code>,
+<code>NUMERIC_VALUE_OUT_OF_RANGE</code></td>
+<td>ANSI arithmetic and casts, as in Spark.</td>
+</tr>
+</tbody>
+</table>
+<p>AutoCDC’s conditions (<code>AUTOCDC_*</code>) and Iggy’s are listed
+in their chapters.</p>
+</body>
+</html>

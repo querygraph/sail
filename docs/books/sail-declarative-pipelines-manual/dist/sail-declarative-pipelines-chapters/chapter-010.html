@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov and Sail Contributors" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="The manual for Sail Declarative Pipelines, Sail’s implementation of Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines tool, with batch, streaming tables, AutoCDC and Apache Iggy." />
+  <title>Streaming tables</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-011.html" accesskey="n" rel="next">AutoCDC</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-009.html" accesskey="p" rel="previous">Catalogs</a>
+</span>
+</div>
+</nav>
+<h1 data-number="9" id="streaming-tables"><span
+class="header-section-number">9</span> Streaming tables</h1>
+<p>A streaming table is filled incrementally. Each run reads what its
+sources received since the last run, in one bounded batch, and appends
+the result. There is no long-running stream: a run is Spark’s
+<code>availableNow</code> trigger, executed to completion, and the next
+run picks up where it left off.</p>
+<h2 data-number="9.1" id="sources"><span
+class="header-section-number">9.1</span> Sources</h2>
+<p>A flow of a streaming table reads one or more streaming sources:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Source</th>
+<th>How it is read</th>
+<th>Progress kept</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A table in the catalog, <code>spark.readStream.table("t")</code> or
+<code>STREAM t</code></td>
+<td>The table’s files. A run reads the files that were not read
+before.</td>
+<td>The set of files read.</td>
+</tr>
+<tr>
+<td>A directory of files,
+<code>spark.readStream.format("json").schema(...).load(path)</code></td>
+<td>Files in the directory, in <code>json</code>, <code>csv</code>,
+<code>parquet</code> or <code>orc</code>.</td>
+<td>The set of files read.</td>
+</tr>
+<tr>
+<td>A Delta table,
+<code>spark.readStream.format("delta").load(path)</code></td>
+<td>The table’s snapshot on the first run, then each new commit.</td>
+<td>The Delta version reached.</td>
+</tr>
+<tr>
+<td>An Apache Iggy topic,
+<code>spark.readStream.format("iggy")</code></td>
+<td>The topic’s messages.</td>
+<td>The offset per partition.</td>
+</tr>
+<tr>
+<td>Another streaming table or a temporary view over a stream</td>
+<td>As the dataset’s own source.</td>
+<td>Per flow.</td>
+</tr>
+</tbody>
+</table>
+<p>A file source needs a schema; a table source has one. A directory
+with no files on the first run is refused, since nothing says what its
+rows look like. Files whose names start with <code>.</code> or
+<code>_</code> are ignored, as Spark ignores them.</p>
+<p>Reading a materialized view with <code>STREAM</code> is allowed and
+reads the files the view’s last refresh wrote.</p>
+<h2 data-number="9.2" id="what-a-run-reads"><span
+class="header-section-number">9.2</span> What a run reads</h2>
+<p>A streaming table’s flow is given a batch of what is new: the files
+not yet read, the Delta commits after the last version, the Iggy
+messages after the last offset. The batch is written to the table, and
+only then is the progress recorded. If a run is interrupted after the
+batch was recorded as pending but before it was written, the next run
+replays exactly that batch.</p>
+<p>This gives <strong>at-least-once</strong> delivery: a batch is never
+lost, and a batch whose write finished but whose record did not can be
+written twice. For a plain file table that means duplicate rows after a
+crash at that moment; for a Delta target the second write is a second
+commit of the same rows.</p>
+<p>Overwriting a source table does not re-read its old rows: the files
+are new, so they are read, and the files that disappeared are
+forgotten.</p>
+<h2 data-number="9.3" id="checkpoints"><span
+class="header-section-number">9.3</span> Checkpoints</h2>
+<p>Progress lives under the pipeline’s storage root, one directory per
+flow:</p>
+<pre class="text"><code>&lt;storage&gt;/_checkpoints/&lt;catalog&gt;/&lt;database&gt;/&lt;table&gt;/&lt;flow&gt;/&lt;version&gt;/state.json</code></pre>
+<p><code>version</code> is <code>0</code> for the first run and goes up
+by one at each full refresh. An ordinary run continues the latest
+version. <code>state.json</code> records the batches completed, what was
+read, the batch in progress if any, and the watermark of a windowed
+aggregate. Deleting the directory makes the next run start over, reading
+every source from its origin into a table that still holds the old rows;
+use a full refresh instead.</p>
+<h2 data-number="9.4" id="what-the-query-may-do"><span
+class="header-section-number">9.4</span> What the query may do</h2>
+<p>The query of a streaming table transforms its stream row by row:
+projections, filters, column expressions, and joins with batch tables.
+Spark’s rules for append-mode streaming apply, and some shapes are
+refused up front rather than run wrongly:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Shape</th>
+<th>Allowed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Join of a stream with a batch table (inner, left with the stream on
+the left, right with the stream on the right)</td>
+<td>yes; the batch side is read at each run</td>
+</tr>
+<tr>
+<td>Join of two streams</td>
+<td>no</td>
+</tr>
+<tr>
+<td>Full outer join involving a stream</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>GROUP BY</code> over a stream without a watermark</td>
+<td>no: <code>streaming aggregations without watermark</code></td>
+</tr>
+<tr>
+<td><code>GROUP BY window(...)</code> with a watermark on the read</td>
+<td>yes, see below</td>
+</tr>
+<tr>
+<td><code>DISTINCT</code> over a stream</td>
+<td>no</td>
+</tr>
+<tr>
+<td>Window functions, <code>ORDER BY</code>, <code>LIMIT</code> over a
+stream</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>UNION</code> of a stream with a batch query</td>
+<td>no, as in Spark</td>
+</tr>
+</tbody>
+</table>
+<p>The refusals are reported when the run starts, before anything is
+written.</p>
+<h2 data-number="9.5" id="windowed-aggregates"><span
+class="header-section-number">9.5</span> Windowed aggregates</h2>
+<p>A streaming table may aggregate over a tumbling window with a
+watermark:</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="at">@dp.table</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> counts():</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> (</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>        spark.readStream.table(<span class="st">&quot;events&quot;</span>)</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>        .withWatermark(<span class="st">&quot;ts&quot;</span>, <span class="st">&quot;1 second&quot;</span>)</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>        .groupBy(F.window(<span class="st">&quot;ts&quot;</span>, <span class="st">&quot;2 seconds&quot;</span>))</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>        .count()</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    )</span></code></pre></div>
+<p>Rows are held until the watermark passes the end of their window,
+then aggregated once and appended. Between runs the open windows’ rows
+are kept under the checkpoint. The rules are Spark’s:</p>
+<ul>
+<li>The watermark is the latest event time seen minus the delay, in
+whole milliseconds. It starts at 0 and never moves back.</li>
+<li>A row is late, and dropped, only when its window has already ended
+by the watermark the batch started with. A row behind the watermark
+whose window is still open is counted.</li>
+<li>A window is written once, when it closes. A later run never updates
+it.</li>
+</ul>
+<p>At milestone 1 the window must be tumbling (size and slide equal),
+with no start offset, and the watermark must be placed directly on the
+streaming read, with one watermark per query. Sliding windows, several
+watermarks, deduplication and stream-stream joins are supported for
+AutoCDC flows (see that chapter), not yet for append flows.</p>
+<h2 data-number="9.6" id="several-flows-into-one-table"><span
+class="header-section-number">9.6</span> Several flows into one
+table</h2>
+<p>A streaming table may be the target of several append flows. Each
+keeps its own checkpoint, and each run reads each flow’s sources
+independently:</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> STREAMING <span class="kw">TABLE</span> all_activity;</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> FLOW from_orders <span class="kw">AS</span> <span class="kw">INSERT</span> <span class="kw">INTO</span> all_activity <span class="kw">BY</span> NAME <span class="kw">SELECT</span> <span class="op">..</span>. <span class="kw">FROM</span> STREAM orders;</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> FLOW from_clicks <span class="kw">AS</span> <span class="kw">INSERT</span> <span class="kw">INTO</span> all_activity <span class="kw">BY</span> NAME <span class="kw">SELECT</span> <span class="op">..</span>. <span class="kw">FROM</span> STREAM clicks;</span></code></pre></div>
+<h2 data-number="9.7" id="schema-changes"><span
+class="header-section-number">9.7</span> Schema changes</h2>
+<p>A streaming table’s schema is the union of what its flows produce,
+merged with what the table already has. A new column in a flow’s query
+is added to the table; later rows have it, earlier rows read it as null.
+A column that a flow stops producing stays in the table and is written
+as null. A column whose type changes incompatibly fails the run
+(<code>CANNOT_MERGE_INCOMPATIBLE_DATA_TYPE</code>). A declared schema is
+exact: the query must produce it.</p>
+</body>
+</html>

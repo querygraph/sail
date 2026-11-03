@@ -697,6 +697,20 @@ def test_an_aggregate_above_a_deduplication_still_needs_a_watermark(stateful):
         run(lambda frame: frame.dropDuplicates(["id"]).groupBy("id").agg(sf.max("seq").alias("seq")))
 
 
+def test_a_deduplication_within_the_watermark_forgets_a_key_once_it_expires(stateful):
+    send, run = stateful
+    transform = lambda frame: frame.withWatermark("ts", "1 hour").dropDuplicatesWithinWatermark(["id"])  # noqa: E731
+    send("a", (1, "a", 1, T0))
+    assert run(transform) == [(1, 1)]
+    # A duplicate within the delay of the first row is dropped; the row at
+    # 03:00 moves the watermark to 02:00, past the key's expiry at 01:00.
+    send("b", (1, "b", 2, "2024-01-01T00:30:00Z"), (2, "b", 1, "2024-01-01T03:00:00Z"))
+    assert run(transform) == [(1, 1), (2, 1)]
+    # The key is forgotten, so its next row is new again.
+    send("c", (1, "c", 3, "2024-01-01T03:00:00Z"))
+    assert run(transform) == [(1, 3), (2, 1)]
+
+
 def test_an_aggregate_without_a_watermark_is_refused(stateful):
     send, run = stateful
     send("a", (1, "a", 1, T0))

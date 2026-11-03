@@ -1,0 +1,931 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov ∈ LakeSail Team" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="How Sail implements Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines CLI, with batch, streaming, Apache Iggy and AutoCDC, and how it was verified against Spark." />
+  <title>Components</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-006.html" accesskey="n" rel="next">Verification methodology</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-004.html" accesskey="p" rel="previous">Architecture</a>
+</span>
+</div>
+</nav>
+<h1 data-number="4" id="components"><span
+class="header-section-number">4</span> Components</h1>
+<h2 data-number="4.1" id="graph-registration-and-identifiers"><span
+class="header-section-number">4.1</span> Graph registration and
+identifiers</h2>
+<p><code>handle_command</code> in <code>mod.rs</code> dispatches each
+command against the session’s <code>SparkSession</code>.</p>
+<p><strong>Graph IDs.</strong> <code>CreateDataflowGraph</code> creates
+a <code>PipelineGraph</code> and stores it under a fresh
+<code>uuid::Uuid::new_v4()</code>. The ID is session-owned and
+ephemeral. Nothing persistent is keyed by it; checkpoints and control
+records use qualified dataset and flow names (§3, DESIGN.md §1). The
+command also sets the session’s default catalog and database from the
+request, if given.</p>
+<p><strong>Names.</strong> <code>graph.rs</code> parses every name with
+Sail’s SQL object-name parser, so a quoted identifier such as
+<code>`a.b`</code> stays one part. Names are then lowercased with ASCII
+rules. <code>GraphDefinition::qualify</code> turns one or two parts into
+<code>catalog.database.table</code>. A one-part name with an unset
+database is rejected with an analysis error, not a panic. Four or more
+parts give <code>REQUIRES_SINGLE_PART_NAMESPACE</code>. Temporary views
+and sinks must be single-part
+(<code>TEMP_VIEW_NAME_TOO_MANY_NAME_PARTS</code>). The response carries
+a <code>ResolvedIdentifier</code> with catalog, namespace and table.</p>
+<p><strong>Flows.</strong> <code>define_flow</code> checks identifier
+arity first. A multipart flow name that differs from its target raises a
+raw <code>MULTIPART_FLOW_NAME_NOT_SUPPORTED</code>. A flow targeting a
+temporary view or sink stays unqualified. The flow’s SQL config is the
+graph defaults overlaid by the flow’s own settings; this overlay is not
+itself a conflict. Any <code>DefineFlow.once</code>, even
+<code>false</code>, is rejected with
+<code>DEFINE_FLOW_ONCE_OPTION_NOT_SUPPORTED</code> (0A000) before graph
+lookup, as Spark’s Connect handler does. AutoCDC flow details are
+validated at definition time by <code>autocdc::definition</code>.</p>
+<p><strong>Idle check and run entry.</strong> Every definition command
+first calls <code>ensure_idle</code>, which refuses changes while a run
+is active. <code>start</code> validates registration and refuses a
+second run on the same graph with
+<code>SPARK_CONNECT_ILLEGAL_STATE.EXECUTION_STATE_EXECUTE_HOLDER_ALREADY_EXISTS_GRAPH</code>
+(XXSC0). Spark retains the execution entry after a run, so a refresh
+registers a new graph.</p>
+<p><strong>StartRun preconditions.</strong> Selection options are
+validated before the execution entry is reserved, so a bad option can be
+corrected on the same graph. Storage must be present, and
+<code>validate_storage_root</code> requires an absolute path with a URI
+scheme, else <code>PIPELINE_STORAGE_ROOT_INVALID</code> (42K03).</p>
+<p><strong>Query functions.</strong> PySpark marks definition requests
+with a <code>PipelineAnalysisContext</code> user-context extension.
+<code>query_function_guard.rs</code> reads it. Inside a query function
+only <code>spark.sql()</code> may reach the server. AnalyzePlan is
+rejected, and so is a DDL-string schema, because parsing it would be an
+analysis RPC (§3, CF-0569). Side-effecting statements in any definition
+request are rejected.</p>
+<p><strong>Direct dataset statements.</strong> Outside a pipeline,
+<code>CREATE MATERIALIZED VIEW</code> or
+<code>CREATE STREAMING TABLE</code> gives
+<code>UNSUPPORTED_FEATURE.CREATE_PIPELINE_DATASET_QUERY_EXECUTION</code>,
+and <code>CREATE FLOW</code> gives
+<code>CREATE_FLOW_QUERY_EXECUTION</code>. Sail rejects before the INSERT
+child runs; Spark writes the child first. That is a documented
+difference.</p>
+<p><strong>Identifier policy.</strong> Sail keeps its Unicode
+unquoted-identifier policy. It accepts dotted and hyphenated table names
+such as <code>output.with.dot</code> and <code>hyphen-mv</code>, which
+Spark’s session catalog refuses with
+<code>INVALID_SCHEMA_OR_RELATION_NAME</code>. This is engine-wide, not
+pipeline-specific. Temporary views accept <code>v</code>,
+<code>SESSION.v</code> and <code>SYSTEM.SESSION.v</code>; any other
+qualifier is <code>INVALID_TEMP_OBJ_QUALIFIER</code>.</p>
+<h2 data-number="4.2" id="sql-pipeline-files"><span
+class="header-section-number">4.2</span> SQL pipeline files</h2>
+<p>A SQL pipeline file arrives as one
+<code>DefineSqlGraphElements</code> command with the file text and
+path.</p>
+<p><strong>Parsing and lowering.</strong>
+<code>sail-sql-analyzer/src/pipeline.rs</code> lowers pipeline
+statements using the ordinary SQL grammar, in an explicit entry point
+that never executes DDL. <code>sql::prepare</code> parses the whole file
+into statements with their lexer spans, then lowers each statement.
+Lowering stops at the first failure, but preparation itself owns no
+graph state.</p>
+<p><strong>Source slices.</strong> A persisted view stores its original
+query text, as Spark’s <code>originalText</code> does. Sail takes it as
+a slice of the source using lexer spans: from the first query token to
+the last, with interior whitespace, comments, hints and quoted text
+exact. There is no regex and no reconstructed SQL. Spans are byte
+offsets, because the Chumsky lexer advances by
+<code>char::len_utf8()</code>; this was pinned for multibyte literals
+and Unicode identifiers (SQL-SOURCE-DESIGN.md).</p>
+<p><strong>Preparation outside the lock.</strong>
+<code>SET CATALOG</code> takes an expression. Lowering produces a
+<code>SetCurrentCatalogExpression</code> command, and preparation
+resolves it through <code>PlanResolver::resolve_catalog_name</code>,
+which may need catalog access. That is asynchronous. So
+<code>sql::register</code> checks the graph is idle, drops the lock,
+awaits preparation, then takes the lock again to commit. The blocking
+mutex is never held across an await and was not replaced by a Tokio
+mutex (§3). Catalog folding uses the session SQL config, not file
+<code>SET</code> or graph defaults, as Spark does. Three constant
+policies are kept distinct: bare <code>SET CATALOG</code> optimizes
+first, a wrapped <code>IDENTIFIER</code> evaluates during analysis, and
+the SDP bare directive runs analysis checks before evaluating
+(CATALOG-EXPRESSION-DESIGN.md).</p>
+<p><strong>File atomicity.</strong> <code>PreparedSql::commit</code>
+clones the current graph into a draft, registers each statement in
+order, and replaces the graph only if every statement succeeds. After
+the file, the draft’s catalog, database and SQL config are reset to the
+graph’s values, so <code>USE</code> and <code>SET</code> are local to
+the file. A failure produces
+<code>PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR</code> (42000) with
+the offending statement text and <code>file:line</code>. Spark keeps
+definitions registered before the failing statement. Sail registers
+none. The standard client aborts the run in both cases, and four Sail
+tests pin the all-or-nothing behavior.</p>
+<p><strong>Directives.</strong> Only <code>USE SCHEMA</code> and
+<code>USE CATALOG</code> are pipeline directives. A bare
+<code>USE x</code> is rejected as unsupported, as Spark 4.2.1 does; this
+was measured on Spark (§3).</p>
+<p><strong>Statement checks.</strong> Several rules follow measured
+Spark behavior:</p>
+<ul>
+<li>Column constraints give <code>_LEGACY_ERROR_TEMP_0035</code>,
+checked before other dataset restrictions, with no SQLSTATE and no file
+name.</li>
+<li><code>INSERT ... IF NOT EXISTS</code> is
+<code>INVALID_STATEMENT_OR_CLAUSE</code>.</li>
+<li>Flow INSERT checks run in the order partition, columns, overwrite,
+by-name.</li>
+<li>CTAS and RTAS are rejected with Spark’s node names.</li>
+<li>An invalid partition transform gives Spark’s “Invalid partitioning
+transform”.</li>
+<li>Declared column names on a view are ignored, and the view comment is
+kept.</li>
+<li><code>REPLACE WHERE</code> and <code>BY NAME</code> go through
+<code>TruncateIf</code> and <code>ByName</code>. Ordinary
+<code>REPLACE USING</code> execution stays unsupported, with no append
+approximation.</li>
+</ul>
+<p><strong>Parser diagnostics.</strong> Syntax errors come from a
+generic variant-level hook in the parser with structured diagnostics and
+UTF-16 column positions. The renderer prints nothing rather than guess
+when the expected set is empty or end of input is expected. Post-parse
+filters, token regexes and a global map from parser strings to Spark
+errors were rejected (SQL-SYNTAX-DIAGNOSTICS-DESIGN.md).</p>
+<p><strong>IDENTIFIER and parameters.</strong> Literal
+<code>IDENTIFIER('...')</code> strings normalize to named reads and
+become graph dependencies. A computed target is resolved late, through a
+live catalog lookup, and is never a graph dependency. SQL parameters
+freeze input identity at registration
+(DYNAMIC-REFERENCE-BINDING-DESIGN.md).</p>
+<h2 data-number="4.3" id="analysis-and-validation-order"><span
+class="header-section-number">4.3</span> Analysis and validation
+order</h2>
+<p><code>analysis::analyze</code> resolves every flow before anything is
+written. There is no eager analysis at <code>DefineFlow</code>.</p>
+<p><strong>GraphScope.</strong> Each flow is resolved by Sail’s ordinary
+<code>PlanResolver</code> with a request-local
+<code>RelationScope</code>, <code>GraphScope</code>. All declared
+outputs are known before analysis begins, so an unresolved local name
+never falls through to a stale table from an earlier run. Views resolve
+to their analyzed plans. Tables and materialized views resolve to
+<em>virtual tables</em>: an empty input with the output’s schema.
+Analysis never needs to read a producer’s data.
+<code>RelationScope</code> was extended in
+<code>sail-plan/src/resolver/scope.rs</code> to keep the requested read
+mode, observe external source reads and their options, and resolve
+late-bound IDENTIFIER targets in a separate phase.</p>
+<p><strong>Fixpoint loop.</strong> Analysis iterates over outputs until
+every output is resolved or no progress is made. A flow can be
+<code>Resolved</code>, <code>Pending</code> (waiting on an unresolved
+input) or <code>Failed</code>. If a round makes no progress, the pending
+flows become failures with “Failed to read dataset ‘…’. Dataset is
+defined in the pipeline but could not be resolved.” Failures are
+reported through an <code>UnresolvedPipeline</code> wrapper with typed
+direct and downstream maps; the client sees an AnalysisException.
+Failure events are emitted with the downstream group first, then the
+direct group, each sorted. Scala’s map order is unspecified, so Sail’s
+sort is a disclosed divergence.</p>
+<p><strong>Lazy virtual schemas.</strong> A virtual table is constructed
+with its flows’ plans, not its schema. An unread output must not fail
+inference ahead of another unresolved query. There is no fallback schema
+and no collapsed error (CF-0553, CF-0559).</p>
+<p><strong>Validation order.</strong> After all flows resolve,
+validation follows Spark’s order (CF-0082, CF-0091):</p>
+<ol type="1">
+<li>user-specified schemas;</li>
+<li>topology;</li>
+<li>CDC multiflow, then materialized-view multiflow;</li>
+<li><code>INVALID_TEMP_OBJ_REFERENCE</code> (a persisted view reading a
+temporary view);</li>
+<li>reset policy;</li>
+<li>streamingness, and temporary-view CDC;</li>
+<li>the phase-9 raw schema merge.</li>
+</ol>
+<p>The no-flow check covers tables and views only; sinks are excluded,
+as in Spark. Among destinations with several flows, any non-streaming
+flow gives <code>MATERIALIZED_VIEW_WITH_MULTIPLE_QUERIES</code>. The
+phase-9 merge error is a SparkException
+<code>CANNOT_MERGE_INCOMPATIBLE_DATA_TYPE</code> (42825), with left and
+right in Spark’s order. A table with any failed producer is never
+installed.</p>
+<p><strong>Repeated columns.</strong> A query that produces the same
+column twice passes analysis and a dry run; its flow fails at run time
+with <code>AMBIGUOUS_REFERENCE</code>. Analysis renames repeats
+internally (<code>__sail_duplicate_column_&lt;i&gt;</code>) so the plan
+has a schema, and records the column. A view that repeats a column is
+still refused during analysis, where Spark accepts <code>SELECT *</code>
+over it and refuses a reference. That is a known difference
+(batch-gaps).</p>
+<p><strong>Streaming read schema.</strong> A streaming read of a graph
+dataset exposes the schema of Spark’s <code>MemoryStream</code> encoder,
+not the input schema. <code>schema_stream.rs</code> is the single
+definition of that contract: field metadata dropped at every depth,
+intervals widened to their families, TIME widened to TIME(6), and CHAR
+and VARCHAR refused during the consumer’s analysis. Both lanes use the
+same function (CF-0566, measured on Spark).</p>
+<p><strong>Output.</strong> Analysis exports an
+<code>AnalyzedGraph</code>: topological order, dependencies, schemas,
+persisted-view publications (<code>CreateViewOptions</code>), accepted
+configurations by flow, and repeated columns. It never exports plans or
+providers. <code>topology.rs</code> orders datasets with the vendored
+Grust kernel and reports a cycle between datasets, with a flow standing
+for its target.</p>
+<h2 data-number="4.4" id="flow-configuration-fusion"><span
+class="header-section-number">4.4</span> Flow configuration fusion</h2>
+<p>Spark analyzes each flow under a private clone of the session SQL
+config. FLOW-CONFIGURATION-DESIGN.md records the exact behavior Sail
+reproduces:</p>
+<ol type="1">
+<li>The flow’s declared map is the graph defaults overlaid by its own
+settings.</li>
+<li>The first semantic pass applies the declared map, and each upstream
+<em>view</em> read during input substitution contributes its own
+resolved map, in Catalyst’s traversal order. Tables contribute
+nothing.</li>
+<li>Only after that pass succeeds, the flow’s map and its inputs’ maps
+are unioned. A key with different values is
+<code>DUPLICATE_FLOW_SQL_CONF</code>. Sail reports the smallest
+conflicting key (CF-0282).</li>
+<li>If the union differs from the declared map, the query is resolved
+again under the union. That second map is the flow’s accepted
+configuration. A view’s accepted map includes its upstream union, so
+consumers inherit it transitively.</li>
+</ol>
+<p>The <code>config/</code> module splits this into
+<code>trace.rs</code> (an ordered trace of graph inputs before native
+resolution), <code>merge.rs</code> (pure merge with provenance per flow)
+and <code>resolve.rs</code> (the two passes). Shortcuts were measured
+and rejected: a semantic first pass used only to discover reads can fail
+before reaching the input whose setting makes the query resolvable, and
+nested projections and scalar subqueries need Catalyst’s input
+substitution order. CTEs bind in definition order, so even an unused CTE
+definition can contribute settings.</p>
+<p>Per-flow config is applied as a <code>PlanConfig</code> override
+(<code>plan_config_with_overrides</code>). The shared session is never
+mutated (CF-0128, CF-0131). The thirteen public differential probes all
+match Spark’s error-condition and success-row outcomes.</p>
+<h2 data-number="4.5" id="materialization-and-catalog-publication"><span
+class="header-section-number">4.5</span> Materialization and catalog
+publication</h2>
+<p>A real run materializes metadata, then publishes views, then runs
+flows. A failed write may leave tables behind, as in Spark, which does
+not preflight publication as one atomic step (DESIGN.md §3).</p>
+<p><strong>Tables.</strong> <code>materialize::tables</code> creates or
+updates the metadata of every selected table before any flow runs,
+matching Spark’s <code>DatasetManager</code>. Rules
+(METADATA-TABLE-MATERIALIZATION-DESIGN.md):</p>
+<ul>
+<li>Inferred schemas become nullable; declared schemas stay exact.</li>
+<li>An ordinary refresh of an existing table merges with the existing
+schema on the left, without truncation.</li>
+<li>Materialized views keep replace and truncate.</li>
+<li>A full refresh of a streaming table is refused before any effect
+unless <code>pipelines.reset.allowed=false</code>, which downgrades it
+to an ordinary refresh as in
+<code>DatasetManager.constructFullRefreshSet</code>. The whole-graph
+check is labelled a temporary Sail policy.</li>
+<li>Partition columns in file tables move last.</li>
+<li>A missing partition column still creates the table; each flow
+attempt then fails with <code>COLUMN_NOT_DEFINED_IN_TABLE</code>, and
+independent flows run. Such failures are <em>deferred</em> and reported
+per output at attempt time.</li>
+<li>A fully refreshed AutoCDC target’s auxiliary table is dropped with
+<code>DROP TABLE IF EXISTS</code>, as Spark does.</li>
+</ul>
+<p><strong>Views.</strong> <code>materialize::views</code> publishes
+every persisted view from its analyzed definition, regardless of table
+selection; an excluded upstream table need not exist yet. Spark’s
+<code>verifyAutoGeneratedAliasesNotExists</code> is reproduced: a
+persisted view must name each expression column. A persisted view is
+never silently materialized as a table.</p>
+<p><strong>Through providers.</strong> Outputs are published through the
+existing catalog provider operations. The public <code>execute()</code>
+path rejects Table and Sink outputs before any catalog write;
+metadata-only materialization uses a private native entry point
+(CF-0440).</p>
+<p><strong>Caches.</strong> <code>REFRESH TABLE</code> and
+<code>spark.catalog.refreshTable</code> clear every file-listing and
+statistics cache entry, since those caches are not keyed by table.
+<code>TRUNCATE</code> invalidates the list-files cache.</p>
+<h2 data-number="4.6" id="batch-execution"><span
+class="header-section-number">4.6</span> Batch execution</h2>
+<p><code>execution::execute</code> walks the analyzed order. It runs one
+flow at a time.</p>
+<p><strong>Events.</strong> For each runnable output, each flow is first
+reported <code>Flow &lt;name&gt; is QUEUED.</code> or
+<code>Flow '&lt;name&gt;' is EXCLUDED.</code> by the selection. Each
+attempt emits <code>PLANNING</code> (materialized views only),
+<code>STARTING</code>, <code>RUNNING</code>, then
+<code>has COMPLETED.</code> or <code>has FAILED.</code> with the error.
+The texts follow Spark’s <code>FlowProgressEventLogger</code>. The run
+ends with <code>Run is COMPLETED.</code></p>
+<p><strong>Failure propagation.</strong> A failed flow marks its target
+failed. An output that reads a failed output, directly or through views,
+is skipped with
+<code>Flow '&lt;name&gt;' SKIPPED due to upstream failure(s).</code>
+Independent flows still run. The first failure becomes the run’s
+error.</p>
+<p><strong>Retries.</strong> The retry count is
+<code>spark.sql.pipelines.maxFlowRetryAttempts</code> from the flow’s
+accepted config, default 2, as in <code>TriggeredGraphExecution</code>.
+A materialized view retry truncates the target first, because a failed
+attempt may have left files. A streaming flow that exhausts its retries
+emits Spark’s “has FAILED more than N times and will not be restarted”
+message. A flow whose streaming sources changed is not retried and asks
+for a full refresh.</p>
+<p><strong>Reanalysis.</strong> Each attempt resolves its inputs afresh
+through <code>reanalysis::resolve_inputs</code>, under the flow’s
+accepted config. Views are traversed through their flows; only tables
+stop reanalysis. Each table command resolves its own upstream map; the
+earlier run-wide plan cache was removed. Producer queries are not
+inlined, and persisted views were resolved once during analysis
+(BATCH-PROVIDER-MIGRATION-DESIGN.md).</p>
+<p><strong>Write commands.</strong> A materialized view becomes an
+ordinary Sail write command resolved with the graph scope and run
+through <code>JobService</code>. Tables and sinks go to the append path.
+A <code>memory</code> sink writes Parquet under the storage root and is
+exposed as a temporary view named after the flow, which is how a session
+reads Spark’s memory sink.</p>
+<p><strong>Writes through <code>spark.sql()</code>.</strong> A write
+returns no rows. CTAS returns an empty result, as Delta on Spark does.
+The write is recognized by its single UInt64 <code>count</code>
+column.</p>
+<h2 data-number="4.7" id="errors-and-spark-fidelity"><span
+class="header-section-number">4.7</span> Errors and Spark fidelity</h2>
+<p>The client tests compare error class, condition, SQLSTATE and
+parameters, so error fidelity is a large part of the work
+(EXECUTION-ERROR-DESIGN.md).</p>
+<ul>
+<li><code>StructuredSparkError</code> lives in
+<code>sail-common-datafusion</code>, with a structured
+<code>CommonErrorCause</code> carried through serde and
+<code>RemoteError</code>, so a worker error reaches the client with its
+class intact. There is no new error framework. Connect prefix matching
+and pipeline-only repairs were rejected.</li>
+<li>Catalog analysis failures get the registration wrapper (42000).
+Execution, arithmetic and ANSI cast failures stay raw.</li>
+<li>Division and remainder by zero are typed UDFs guarded as
+<code>dividend / spark_zero_divisor(divisor)</code>, raising
+<code>DIVIDE_BY_ZERO</code> or <code>REMAINDER_BY_ZERO</code>. Lowering
+never evaluates.</li>
+<li>A legacy string-to-float cast goes through TryCast; one
+<code>SparkStringToDecimal</code> UDF serves ANSI, legacy and
+<code>TRY_CAST</code>; an ANSI string-to-numeric or boolean cast
+captures the failing value only on the failure path.</li>
+<li>Which row’s error surfaces must match Spark (CF-0355).</li>
+<li>Unresolved-column and ambiguity errors are fixed in general Sail,
+not translated in the pipeline layer.</li>
+<li><code>CATALOG_NOT_FOUND</code> is raised only at explicit catalog
+loads.</li>
+<li>A missing data source gives Spark’s
+<code>DATA_SOURCE_NOT_FOUND</code> text. On Spark the client sees it
+wrapped in <code>TableMaterializationException</code> inside an
+<code>UnknownException</code>; that class difference is disclosed.</li>
+<li>A released session returns
+<code>[INVALID_HANDLE.SESSION_CLOSED]</code> on every RPC, with Spark’s
+text, class and parameters.</li>
+<li>An unknown commit outcome stays nonretryable. A commit failure
+followed by a cleanup failure gives a typed
+<code>DataFusionError::Collection</code> that keeps both.</li>
+</ul>
+<p>Fixing these in general Sail moved some non-pipeline behavior. Under
+ANSI, a string cast now lowers to a guarded function, which first broke
+decorrelation of correlated scalar subqueries in 56 tests. That
+regression was found only by comparing against upstream and was fixed
+(chapter 5). TPC-H and TPC-DS plan snapshots changed in 38 places, all
+plan text, with operator counts kept except 8 fewer projections.</p>
+<h2 data-number="4.8" id="streaming"><span
+class="header-section-number">4.8</span> Streaming</h2>
+<p><strong>Model.</strong> Streaming runs as bounded AvailableNow
+microbatches over ordinary Sail batch plans. A run captures a frontier
+once, reads to it in one or more batches, and stops. Extending Sail’s
+continuous <code>StreamSource</code> path is deferred (§13).</p>
+<p><strong>Admission.</strong> <code>streaming/admission.rs</code>,
+<code>binding.rs</code> and <code>lower.rs</code> decide what an append
+flow may run. A batch intent is the only authority. Rejection is
+exhaustive and happens before resolution. Joins follow Spark’s
+<code>UnsupportedOperationChecker</code>, with no stream-stream joins in
+the append path. Any non-immutable function makes a plan non-replayable.
+Mixed read modes and dynamic Python UDTFs are refused. A streaming read
+of a source that cannot be read is refused, never treated as success. A
+union of streaming and batch inputs is refused, as Spark does, since
+<code>609a6c251</code>.</p>
+<p><strong>Append flows and checkpoints.</strong> <code>append.rs</code>
+runs a streaming table or sink fed by streaming reads. Progress lives
+under
+<code>&lt;storage&gt;/_checkpoints/&lt;catalog&gt;/&lt;db&gt;/&lt;table&gt;/&lt;flow&gt;/&lt;n&gt;</code>,
+and a full refresh starts directory <code>n + 1</code>. A batch’s files
+are recorded before it is written and marked read after it, so a crash
+between the two replays exactly that batch. For a plain file table that
+is at-least-once: there is no idempotent commit, so a replay can
+duplicate rows.</p>
+<ul>
+<li><strong>Files.</strong> A streaming read of a file-backed table sees
+files this flow has not read, as Spark’s file stream source does.
+Replaced or deleted files are not revisited, so
+<code>INSERT OVERWRITE</code> on a source adds only its new rows. Batch
+reads in the same flow see the latest data.</li>
+<li><strong>Delta.</strong> A Delta source is read from its log
+(<code>sail-delta-lake/src/stream.rs</code>), with a version as
+progress. A fresh flow starts from a snapshot of the latest version, or
+from <code>startingVersion</code> or <code>startingTimestamp</code>.
+After that it tails <code>Add</code> actions. Rules measured on Spark
+4.2.1 with Delta 4.4.1: a commit that removes data fails the read unless
+<code>skipChangeCommits</code>, <code>ignoreChanges</code> or
+<code>ignoreDeletes</code> allows it; commits without data change, such
+as <code>OPTIMIZE</code>, contribute nothing; later commits must be
+readable with the latest schema. Rate-limit options are validated but
+have no effect, since one run reads to the end of the log.</li>
+<li><strong>Bounded sources.</strong> A <code>BoundedSource</code> is
+read as exact ranges from each partition’s cursor, a bounded number of
+rows at a time, so one run writes several batches up to the frontier it
+captured.</li>
+<li><strong>Windows.</strong> The only stateful append query is a
+tumbling-window aggregate with a watermark. Open windows are held under
+the checkpoint until the watermark passes their end, then aggregated
+once. The shared windowing code (<code>Windowed</code> with
+<code>slide_micros</code>, <code>offset</code> and a list of watermarks;
+<code>event_window</code>) is used by AutoCDC too. The append path
+refuses sliding windows, more than one watermark, and a watermark not
+directly on a streaming read.</li>
+</ul>
+<p><strong>BoundedSource.</strong> The trait lives in
+<code>sail-common-datafusion/src/streaming/bounded.rs</code>. It was
+moved there unchanged from the Connect module so adapters in lower
+crates can implement it without a dependency cycle. It is
+protocol-neutral. An adapter describes partitions with immutable
+<em>incarnations</em> and opaque <em>cursors</em>, plans a range end in
+its own terms, and scans exactly <code>[start, end)</code> or fails
+closed. Generic code stores, compares for equality and serializes
+cursors; it never parses them or does arithmetic on them.
+<code>ScanError</code> covers retention gaps, recreated partitions,
+non-consecutive positions, missing partitions and foreign cursors.
+<code>SourceError</code> separates deterministic refusals from
+<code>Unavailable</code>, the one class a control loop may retry with
+the identical intent.</p>
+<p><strong>Iggy.</strong> <code>sail-iggy-bounded</code> implements
+<code>BoundedSource</code> for one Apache Iggy stream and topic, against
+the Iggy SDK at a pinned revision. Its rules come from behavior recorded
+on the pinned broker: a poll past retained data silently resumes at the
+first retained offset, and a recreated partition reuses its ID with
+offsets from zero. Neither is a broker error, so every read checks the
+offsets and incarnation it got back. The first-offset check is the only
+gap detector; a gap or an incarnation change fails closed. Reads never
+acknowledge: AutoCommit is off and no consumer position is stored, so a
+failed read can be repeated unchanged. Any message that does not decode
+fails the whole range. The <code>iggy</code> format gives planning a
+schema only and refuses batch scans. Decoding and the archival envelope
+are ported from the private <code>sail-iggy</code> reader at
+<code>5816b9b</code>; the mirror’s private SessionContext and planner,
+its <code>RepartitionExec</code> stripping and its version-as-offset
+comparisons were not ported (STREAMING-REUSE.md, §13). Spark has no Iggy
+source, so these tests state Sail’s own contract.</p>
+<h2 data-number="4.9" id="autocdc"><span
+class="header-section-number">4.9</span> AutoCDC</h2>
+<p>AutoCDC applies a change feed to a target table. Each row carries
+keys, a sequencing value and possibly a delete marker. SCD Type 1 keeps
+the latest row per key.</p>
+<p><strong>Definition.</strong> <code>autocdc/mod.rs</code> ports the
+<code>ChangeArgs</code> contract, the
+<code>PipelinesHandler.buildAutoCdcFlow</code> checks, the schema
+validators of <code>AutoCdcMergeFlow</code> and the AutoCDC graph
+validations. SCD2 is rejected faithfully with
+<code>AUTOCDC_SCD2_NOT_SUPPORTED</code>. The flow’s query is a streaming
+read of its source, resolved against the graph, so a dry run analyzes it
+like Spark’s <code>AutoCdcFlow</code>. Name parsing is CDC-only,
+lowercasing follows Java <code>Locale.ROOT</code> rules (ported from JDK
+17 tables), and key lookup reproduces Scala’s map order (§14).</p>
+<p><strong>Admission.</strong> <code>autocdc::admitted</code> accepts a
+graph only if every AutoCDC flow is SCD1 into a Table output. Otherwise
+execution refuses with “incremental pipeline execution” before any
+write. <code>CdcRun::prepare</code> then creates missing targets, opens
+the control store and resolves each flow’s sources. AutoCDC targets are
+removed from the plain batch selection, because their writes go through
+the authority.</p>
+<p><strong>The SCD1 processor.</strong> The pure components follow
+Spark’s <code>Scd1BatchProcessor</code> and
+<code>Scd1ForeachBatchHandler</code>:</p>
+<ol type="1">
+<li><code>microbatch.rs</code>: validate the original rows (orderable
+sequencing type, no null sequencing value, no null key) before anything
+else, so an invalid row cannot disappear because another row with the
+same key wins.</li>
+<li><code>dedup.rs</code>: keep the latest event per key with
+<code>max_by(struct, sequencing)</code>, using Sail’s
+<code>MaxByFunction</code>. A tie keeps the last row; Spark leaves ties
+undefined.</li>
+<li><code>reconcile.rs</code>: reconcile the batch against the auxiliary
+state.</li>
+<li><code>merge.rs</code>: two <code>MERGE INTO</code> commands through
+Sail’s MERGE resolver. The first merges keys and the sequence into the
+auxiliary table <code>__spark_autocdc_aux_state_&lt;target&gt;</code>,
+which keeps tombstones: a matched tombstone advances on a strictly newer
+delete and is removed by an upsert at or above its sequence. The second
+merges the reconciled rows into the target: a newer delete deletes, a
+newer upsert updates every non-key column, an unmatched non-delete
+inserts.</li>
+</ol>
+<p>The auxiliary table records the SCD type and the key column names as
+reserved properties. Key drift is kept distinct from sequence evolution.
+Spark’s <code>createAuxiliaryTableIfNotExists</code> is reproduced in
+<code>write.rs</code>.</p>
+<p><strong>State between batches.</strong> Spark’s state store keeps
+operator state across microbatches. Sail now does the same for stateful
+queries before the merge (<code>stateful.rs</code>,
+<code>state.rs</code>), replacing an earlier evaluation-by-difference
+approach:</p>
+<ul>
+<li>A <strong>watermarked aggregate</strong> keeps the rows of windows
+still open and the watermark. Sliding windows and window start times are
+covered.</li>
+<li>A <strong>deduplication</strong> keeps the keys it has seen.</li>
+<li>An <strong>inner join of two streams</strong> keeps both sides; a
+pair is emitted once, when its later row arrives.</li>
+</ul>
+<p>The query watermark is the minimum over the streams, with a stream
+that has no rows counting as 0. Only the query watermark survives a
+restart, as in Spark. Join and deduplication state is append-only: each
+batch writes one segment, plus a manifest that lists every segment, so a
+batch’s cost does not grow with the state. Snapshots are named by the
+progress they follow, so a replayed batch reads the snapshot it started
+from. Writes go to a sibling file and are renamed.</p>
+<p><strong>Flow sources.</strong> <code>flow_source.rs</code> turns a
+flow’s query into one bounded source. Each streaming read under the
+query, including reads through views, is a leaf. Supported leaves
+include files (listed in first-seen order in a list that only grows),
+Delta table logs, Spark’s rate source, and registered bounded sources
+such as Iggy. The batch’s rows are archived before its first effect, so
+a replay never re-evaluates the query.</p>
+<p><strong>The control store.</strong> CDC-CONTROL-STORE-DESIGN.md is
+the specification, written by the batch lane and built by the CDC lane.
+The central decision: one transactional SQL authority writes the target
+guard, the catalog-ratified sink head and the effect receipt <em>in a
+single transaction</em>. A lease in one system followed by a Delta
+commit in another cannot fence a stale writer. Rejected alternatives
+were a separate compare-and-set or transaction ID as the fence, a Delta
+control table, an advisory lock with a local file, a
+<code>PutMode::Create</code> JSON store, and Delta DomainMetadata or
+table properties.</p>
+<p><code>sail-sdp-control</code> holds it:</p>
+<ul>
+<li><code>identity.rs</code>, <code>records.rs</code>,
+<code>digest.rs</code>: identities, fence tokens (authority incarnation,
+target key, reset generation, owner epoch, owner ID), the durable
+records, and canonical SHA-256 request digests.</li>
+<li><code>transitions.rs</code>: pure guarded transitions with typed
+outcomes (<code>Conflict</code>, <code>Fenced</code>,
+<code>IdentityMismatch</code>, <code>PreparedMismatch</code>,
+<code>SourceUnavailable</code>, <code>StateUnknown</code>,
+<code>EvidenceUnavailable</code> and others). None of them authorizes a
+rerun.</li>
+<li><code>control.rs</code>: the operations (enroll, acquire and renew,
+seal intent, prepare, ratify data or no-op, lookup, complete batch,
+begin and finalize reset, acknowledgments), each one transaction over
+the <code>Store</code> seam. The body has no network or object-store I/O
+and reruns on a fresh snapshot after a lost write race. A failed commit
+that is not a lost race is reported as unknown, never as absent.</li>
+<li><code>memory.rs</code>: an in-process store for model tests that
+states it is not an authority.</li>
+<li><code>turso_store.rs</code>: the Turso adapter, one
+<code>BEGIN CONCURRENT</code> transaction per operation on a database in
+MVCC mode. Its stated qualification excludes power loss, a file shared
+by live processes, and restore or fork. One authority process owns a
+database file.</li>
+</ul>
+<p>At run time <code>CdcRun</code> opens the authority at
+<code>&lt;state root&gt;/_control/authority.db</code>. For a remote
+warehouse the state root is local: <code>SAIL_AUTOCDC_STATE_DIR</code>
+or <code>~/.sail/autocdc/&lt;sha256 of the warehouse URL&gt;</code>,
+with a marker <code>_autocdc_state_owner</code> written in the
+warehouse. A warehouse that has the marker but no local state stops the
+run instead of starting over against tables with history. The lease is
+60 seconds and is renewed each batch. The microbatch bound is 10,000
+rows per partition.</p>
+<p><strong>Fenced and plain targets.</strong> A Delta target whose log
+the authority can watch, and that is not catalog-managed, is fenced:
+<code>DeltaCommitExec</code> calls the authority to ratify the staged
+entry (<code>autocdc/authority.rs</code>,
+<code>sail-delta-lake/src/fenced.rs</code>). The existing Delta commit
+and ratification path is kept; there is no second CDC writer. An Iceberg
+table, or a Delta table whose catalog ratifies commits, already orders
+its commits and takes the plain path.</p>
+<p><strong>The two-table protocol.</strong> <code>durable.rs</code> runs
+each batch through these states:</p>
+<pre><code>IntentSealed -&gt; Prepared -&gt; AuxConfirmed -&gt; TargetConfirmed
+             -&gt; ProgressCommitted -&gt; AckPending -&gt; AckConfirmed</code></pre>
+<p>A batch is sealed with its source range before its first effect. Its
+reconciled rows are archived, and an archive with another digest stops
+the run, never reruns it. Each merge is a fenced effect with a stable
+<code>(intent, step)</code> identity, so a retry under a new request ID
+returns the original receipt, never a second effect. Completion checks
+both receipts and advances progress to the sealed end in one
+transaction, then queues the source acknowledgment. The auxiliary and
+target heads are not claimed to be one atomic snapshot. One target-wide
+slot spans flows and pipelines, so no other CDC flow or mutation
+interleaves with an unfinished batch.</p>
+<p><strong>Initialization and reset.</strong> Target enrollment and
+auxiliary-table creation use a short Initialization intent in the same
+slot, with fenced receipts but no progress. A full refresh drops the
+auxiliary table, as Spark does, and the authority, not directory
+listing, reserves the next checkpoint number <code>n</code>.
+<code>reset.allowed=false</code> keeps Spark’s downgrade to an ordinary
+refresh. Enrolled tables refuse <code>ALTER</code>. Checkpoints are laid
+out as
+<code>warehouse/_checkpoints/&lt;destination&gt;/&lt;flow&gt;/&lt;n&gt;</code>,
+mirroring Spark.</p>
+<p><strong>Crash recovery.</strong> A successor resumes an unfinished
+batch from what the authority recorded and repeats only effects that
+have no receipt. A recovery run waits out a dead owner’s lease rather
+than failing. The durable run exposes crash points (for example, after
+<code>BeginReset</code>, after truncating the target, during
+initialization) for tests. The gate’s <code>crash.py</code> seeds kill
+the process (SIGKILL) at such points; on the CDC gate every recovery was
+exact. Only process death is qualified. Power loss and restore are an
+accepted limit (user decision 19).</p>
+<p><strong>Two runs.</strong> <code>durable.rs</code> runs a fenced
+Delta target under the control store.
+<code>run.rs::run_plain_flow</code> runs a target whose catalog or
+format already orders its commits (Iceberg, catalog-managed Delta such
+as Unity). There the checkpoint is the progress, as in Spark, and a
+replayed batch’s merge is safe because rows win by sequence. A plain
+reset drops and recreates the target and its auxiliary table.</p>
+<h2 data-number="4.10"
+id="session-lifecycle-shutdown-and-effect-ownership"><span
+class="header-section-number">4.10</span> Session lifecycle, shutdown
+and effect ownership</h2>
+<p>A pipeline run writes checkpoints and tables under prefixes that
+session cleanup deletes. The baseline had races where a deleted
+checkpoint object could reappear. The runtime baseline in
+SESSION-CLEANUP-LIFECYCLE-DESIGN.md observed it directly: a held
+multipart completion republished a deleted checkpoint object after its
+caller was canceled and joined.</p>
+<p><strong>Session states.</strong> Lifecycle policy lives in
+<code>sail-session</code>, with states Creating, Running, Deleting,
+DeletionFailed, Deleted and Failed. There is no resurrection. A deleted
+session keeps a tombstone; releasing a never-seen session is a no-op, as
+Spark’s ReleaseSession handler does.</p>
+<p><strong>One cleanup record.</strong>
+<code>session_manager/actor/cleanup.rs</code> defines a single record
+that owns the end of a session. Explicit deletion, idle deletion,
+session failure and manager shutdown all share it, so a session cannot
+be cleaned up twice. The outcome is published by the driver and observed
+outside the actor. RPC callers are observers only. A dropped driver
+reports interruption, never success. A failed cleanup keeps its
+resources reachable.</p>
+<p><strong>Manager shutdown.</strong> The manager goes Open, then
+Closing, then terminal (<code>shutdown.rs</code>). Closing seals session
+admission but keeps the actor answering driver lookups, which the
+gateway needs while it stops. <code>serve.rs</code> starts manager
+shutdown at the same time as transport draining, not after it: an active
+response can wait on a job that only the manager can stop. The actor
+system is always joined, and neither the transport failure nor the
+cleanup failure hides the other.</p>
+<p><strong>Local stop.</strong> Stop seals admission, requests
+cancellation of every job before awaiting any, and returns a result that
+can fail. Effects are joined before the namespace is deleted. Stop
+failures are sticky.</p>
+<p><strong>Effect ownership.</strong> Several primitives in
+<code>sail-common-datafusion</code> and <code>sail-execution</code> make
+effects visible to stop:</p>
+<ul>
+<li><code>TaskResourceScope</code> (<code>task_resources.rs</code>) owns
+resource supervisors for one execution scope. <code>seal</code> blocks
+new supervisors without canceling; <code>cancel</code> latches; Drop
+only requests cancellation. A supervisor reports success only after
+completion or cleanup is confirmed.</li>
+<li><code>managed_stream.rs</code> gives the consumer an exclusive poll
+lease, with no forwarding task and no prefetch.</li>
+<li><code>OwnedObjectStore</code> (<code>owned_store.rs</code>) attaches
+storage operations to an existing owner.
+<code>checkpoint_effects.rs</code> routes checkpoint writers through it,
+so stopping a job waits for its PUTs and multipart uploads. One
+multipart supervisor owns create, parts, complete and abort; there is no
+blind abort after complete was polled.</li>
+<li>A move-only preparation lease admits planning before any resolver or
+provider work (PRE-PLANNING-OWNERSHIP-DESIGN.md).</li>
+</ul>
+<p><strong>Settled failures.</strong> A job failure already delivered to
+its query, with its resources drained, is logged at shutdown and does
+not fail cleanup. An unknown commit outcome, or resources that did not
+drain, still fail shutdown (CF-0606, <code>b1f41c6bf</code>).</p>
+<p><strong>Interrupting a run.</strong> Interrupting a run, or releasing
+its session during the run, stops the flows. Spark cancels the operation
+but lets the flows finish. Sail stops them because nothing else could
+stop such a run, and shutdown needs the flows stopped. This is a strict
+expected failure.</p>
+<p><strong>Not done.</strong> Fallible actor and gateway results need
+the common actor framework. Non-checkpoint table writers are not routed
+through the effect owner. Cluster worker effects are not qualified.</p>
+<h2 data-number="4.11" id="cluster-mode"><span
+class="header-section-number">4.11</span> Cluster mode</h2>
+<p>The pipeline suite also runs with Sail’s local-cluster mode (driver
+plus workers). Racy tests found real defects:</p>
+<ul>
+<li><strong>Driver limit.</strong> A session released while workers
+start could hang ReleaseSession indefinitely: a worker could stick in
+its own shutdown while its heartbeat ran on, and the driver joined it
+forever. A stopping driver now gives up on its workers after 30 seconds
+and aborts what remains (<code>a4dfce84a</code>). Stop retries for
+unreachable workers were added.</li>
+<li><strong>Worker limit.</strong> The worker’s gRPC graceful stop is
+what held it. It is bounded at 5 seconds, then aborted
+(<code>2e73a0b87</code>).</li>
+<li><strong>Canceled jobs.</strong> A job canceled by a stopping driver
+ends its output with an error, never a clean end. A refused retry
+reports the failure that caused it.</li>
+<li><strong>Checkpoint cleanup.</strong> Clustered cleanup cannot
+confirm that remote writers stopped. It returns an explicit
+unconfirmed-cleanup failure and keeps the prefix.
+<code>ClusterJobRunner.stop</code> returning Ok does not authorize
+deletion. Releasing a cluster session that used checkpoints therefore
+fails, keeps the files, and the server exits 1 (user decision 2).</li>
+</ul>
+<p>The remaining cluster issue is open: a canceled job’s stage-0 Flight
+<code>do_get</code> stream stays open after its tasks are aborted, which
+holds the worker’s graceful stop until the 5-second abort (found in 2 of
+3 firings).</p>
+<h2 data-number="4.12" id="orc"><span
+class="header-section-number">4.12</span> ORC</h2>
+<p>ORC was needed because Spark’s pipeline suites read and write it. All
+ORC semantics live in Sail’s shared data-source path
+(<code>sail-data-source/src/formats/orc/</code>); LakeCat needs no ORC
+API.</p>
+<p><strong>Dependency.</strong> Sail uses orc-rust 0.9.0 core directly
+with a small adapter and <code>default-features=false</code>, not the
+<code>datafusion-orc</code> adapter, and without upgrading Sail’s prost
+for it. The crate is vendored at <code>vendor/orc-rust</code> as a
+locally patched upstream package; <code>SOURCE.json</code> records the
+upstream tag and each patch (bounded compression blocks, validated
+footer ranges, a decoded-output budget, validated schema trees, and
+writer admission).</p>
+<p><strong>Reading.</strong> A stripe belongs to the half-open byte
+range containing its start. Tail and footer budgets are 64 MiB each, and
+schema depth is limited to 64. Unsupported Hive and forced-positional
+read modes are rejected at the read boundary. Source-read case
+sensitivity has a seam that applies to ORC only
+(ORC-SOURCE-DESIGN.md).</p>
+<p><strong>Writing.</strong> One stateful native
+<code>ArrowWriter</code> per file, with one footer, and a retained
+abortable upload handle. There is no per-batch concatenation, no
+<code>Vec</code> buffering, no text serializer and no gzip wrapper.
+Unsupported schemas are rejected before any byte is written; the native
+builder writes magic bytes before constructing encoders, so the check
+must come first (ORC-WRITER-DESIGN.md). TIMESTAMP, TIMESTAMP_NTZ,
+DECIMAL, ARRAY, MAP and STRUCT are written, and native encoder memory is
+reserved per slice. Compression precedence is <code>compression</code>,
+then <code>orc.compress</code>, then the session codec; the default is
+zstd, as in Spark. <code>test_orc_write.py</code>: 74 passed on Sail and
+on Spark; its negative control failed 45.</p>
+<p><strong>Timestamps.</strong> TIMESTAMP is stored as
+<code>TIMESTAMP_INSTANT</code>. Spark’s stored kind depends on the
+writer JVM’s time zone, which a Sail worker cannot know. An instant
+inside ORC-763’s window, about one second before the epoch, fails the
+write. Spark writes it and reads back a value one second off (user
+decision 3).</p>
+<p><strong>Withdrawn.</strong> A candidate applied graph and flow ORC
+overrides as one blanket snapshot. Spark applies them phase by phase, so
+settings are resolved per phase.</p>
+<p><strong>Limits.</strong> No hybrid-calendar rebase before the
+Gregorian cutover. Spark on a non-UTC JVM reads Sail’s instants before
+1883-11-19 with local-mean-time drift. Memory reservations are estimates
+and do not bound the heap. Not run on real object stores.</p>
+<h2 data-number="4.13" id="time-type"><span
+class="header-section-number">4.13</span> TIME type</h2>
+<p>Spark 4.2.1 has a <code>TIME(p)</code> type with precision 0–6.
+Pipelines need it for schemas and the streaming-read contract. It is a
+shared type-system change, not a pipeline patch (TIME-SEMANTICS.md).</p>
+<ul>
+<li><code>spec::DataType::Time { precision }</code>, default 6, stored
+as Arrow <code>Time64(Nanosecond)</code>, with the declared precision in
+hidden <code>SAIL::spark::time</code> field metadata.</li>
+<li>Schema merge accepts equal precisions with merged nullability and
+rejects different precisions recursively. No widening.</li>
+<li>A cast to a different precision <code>q</code> truncates to
+<code>10^(9-q)</code> nanoseconds, even when widening. A same-precision
+cast keeps the bits. The rule recurses into arrays, struct fields and
+map keys and values. The transform runs before Sail’s positional rename
+and leaf casts, and is carried through the worker codec.</li>
+<li>Connect accepts every precision 0–6 and preserves nanoseconds in
+non-null literals.</li>
+</ul>
+<p>Eight shared TIME checks pass unchanged on Spark 4.2.1 and on Sail;
+the previous Sail binary passed one. Remaining shared work: SQL type and
+literal lowering, TIME string parsing, configuration admission and
+field-aware schema converters.</p>
+<h2 data-number="4.14" id="catalogs"><span
+class="header-section-number">4.14</span> Catalogs</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Catalog</th>
+<th>Coverage and notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Memory</td>
+<td>Default. Fixtures expect a fresh catalog per session.</td>
+</tr>
+<tr>
+<td>Shared memory</td>
+<td><code>catalog.shared_memory</code>, off by default. When on, what
+one session creates is visible to others, as in Spark; temporary views
+stay per session. Turning it on by default broke 104 tests. The CLI
+tests run with it on in every gate.</td>
+</tr>
+<tr>
+<td>Second catalog</td>
+<td>A server with two memory catalogs
+(<code>run-second-catalog.sh</code>). Both SqlPipelineSuite
+catalog-crossing cases are ported. 13 passed.</td>
+</tr>
+<tr>
+<td>Hive metastore</td>
+<td>Standalone Hive 4.0.1 with embedded Derby, no Docker
+(<code>run-hive-metastore.sh</code>, downloads pinned by SHA-1). 69
+passed, 2 xfailed.</td>
+</tr>
+<tr>
+<td>Unity Catalog</td>
+<td>v0.4.0 built from source and run locally, via
+<code>PYSAIL_UNITY_CATALOG_URL</code>. 230 passed on the CDC gate,
+including AutoCDC into Unity.</td>
+</tr>
+<tr>
+<td>Iceberg</td>
+<td>86 passed on the CDC gate. AutoCDC into Iceberg takes the plain
+commit path.</td>
+</tr>
+</tbody>
+</table>
+<p>The Hive profile found four product defects that the memory catalog
+could not show:</p>
+<ol type="1">
+<li><code>file:/path</code> was read as relative to the server’s working
+directory, for every catalog. It is now absolute.</li>
+<li>Every Hive table read back as external, so a materialized view could
+not refresh. Owned tables now carry <code>external.table.purge</code>,
+and DROP deletes their data, as does DROP DATABASE.</li>
+<li>Listing tables failed on Hive 4.0.1, which removed
+<code>get_table_objects_by_name</code>. The newer request form is tried
+first, with the old call as fallback.</li>
+<li>Hive names map entries <code>keys</code> and <code>values</code>.
+Nested write validation now compares map entries by position, as Spark
+does.</li>
+</ol>
+<p>Hive cannot REPLACE, so a fenced reset overwrites by path and a plain
+reset drops and creates. When Unity refuses PURGE, the drop falls back
+to a non-PURGE drop.</p>
+</body>
+</html>

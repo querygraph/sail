@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov ∈ LakeSail Team" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="How Sail implements Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines CLI, with batch, streaming, Apache Iggy and AutoCDC, and how it was verified against Spark." />
+  <title>Architecture</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-005.html" accesskey="n" rel="next">Components</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-003.html" accesskey="p" rel="previous">Background: Spark Declarative Pipelines in 4.2.1</a>
+</span>
+</div>
+</nav>
+<h1 data-number="3" id="architecture"><span
+class="header-section-number">3</span> Architecture</h1>
+<h2 data-number="3.1" id="where-sdp-lives"><span
+class="header-section-number">3.1</span> Where SDP lives</h2>
+<p>SDP starts as a <code>pipelines</code> module inside
+<code>sail-spark-connect</code>. It is to be extracted into its own
+crate only when a second frontend needs it. The planner does not depend
+on Spark protobufs; requests are converted to Sail’s <code>spec</code>
+types at the boundary (SAIL-SDP-DESIGN-DECISIONS.md §2).</p>
+<p>The work reuses Sail’s existing pieces: <code>PlanResolver</code>,
+<code>RelationScope</code>, the catalog manager and providers,
+<code>JobService</code>, task contexts and the actor model. It does not
+add a second scheduler or a new error framework. Sail’s job scheduler
+still orders stages and tasks; the pipeline layer only orders flows.</p>
+<h2 data-number="3.2" id="crates-touched"><span
+class="header-section-number">3.2</span> Crates touched</h2>
+<p>The diff from <code>0ba425c03</code> to <code>fb3a6ab03</code> is 801
+files, +143,358 / −2,229 lines. By changed-file count:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Area</th>
+<th>Files</th>
+<th>What changed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sail-spark-connect</code></td>
+<td>154</td>
+<td>The <code>pipelines</code> module: registration, SQL, analysis,
+materialization, execution, streaming, AutoCDC.</td>
+</tr>
+<tr>
+<td><code>python/pysail</code></td>
+<td>113</td>
+<td>Pipelines test suite (about 70 files), ORC, TIME, catalog and Delta
+tests.</td>
+</tr>
+<tr>
+<td><code>sail-data-source</code></td>
+<td>91</td>
+<td>ORC reader and writer; listing changes.</td>
+</tr>
+<tr>
+<td><code>sail-plan</code></td>
+<td>83</td>
+<td>Relation scopes, catalog expressions, casts, error diagnostics.</td>
+</tr>
+<tr>
+<td><code>vendor/orc-rust</code></td>
+<td>77</td>
+<td>Locally patched orc-rust 0.9.0.</td>
+</tr>
+<tr>
+<td><code>sail-execution</code></td>
+<td>54</td>
+<td>Local job runner ownership, checkpoint effects, cluster stop,
+codecs.</td>
+</tr>
+<tr>
+<td><code>sail-common-datafusion</code></td>
+<td>41</td>
+<td><code>BoundedSource</code>, task resource scopes, managed streams,
+schema merge, structured errors.</td>
+</tr>
+<tr>
+<td><code>sail-sql-analyzer</code></td>
+<td>26</td>
+<td>Pipeline statement lowering and source slices.</td>
+</tr>
+<tr>
+<td><code>sail-session</code></td>
+<td>18</td>
+<td>Session lifecycle, cleanup records, shutdown, shared memory
+catalog.</td>
+</tr>
+<tr>
+<td><code>sail-delta-lake</code></td>
+<td>14</td>
+<td>Delta streaming source, fenced commits.</td>
+</tr>
+<tr>
+<td><code>sail-sdp-control</code></td>
+<td>12</td>
+<td>New: the CDC control model and Turso adapter.</td>
+</tr>
+<tr>
+<td><code>sail-iggy-bounded</code></td>
+<td>11</td>
+<td>New: Iggy as a bounded source.</td>
+</tr>
+<tr>
+<td><code>sail-sql-parser</code></td>
+<td>12</td>
+<td>Parser diagnostics and pipeline syntax.</td>
+</tr>
+<tr>
+<td>Others</td>
+<td>small</td>
+<td><code>sail-catalog-hms</code>, <code>sail-catalog</code>,
+<code>sail-function</code>, <code>sail-object-store</code>,
+<code>sail-iceberg</code> and more.</td>
+</tr>
+</tbody>
+</table>
+<p>Two small Grust kernels are vendored:
+<code>vendor/grust-topology</code> (dense topological ordering with
+cycle witnesses) and <code>vendor/grust-columns</code>. No Grust or
+LakeCat service crate is imported, and there is no dependency on
+<code>lakecat-sail</code>, which would create a cycle (§2).</p>
+<h2 data-number="3.3" id="the-pipelines-module"><span
+class="header-section-number">3.3</span> The <code>pipelines</code>
+module</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Module</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mod.rs</code></td>
+<td>Dispatches the six pipeline commands and drives the
+<code>StartRun</code> event stream.</td>
+</tr>
+<tr>
+<td><code>graph.rs</code></td>
+<td><code>PipelineGraph</code>, <code>GraphDefinition</code>,
+<code>Output</code>, <code>Flow</code>; name parsing and qualification;
+registration and graph validation.</td>
+</tr>
+<tr>
+<td><code>sql.rs</code></td>
+<td>Prepares and commits a SQL file: parse, lower, resolve catalog
+expressions, register atomically.</td>
+</tr>
+<tr>
+<td><code>query_function_guard.rs</code></td>
+<td>Limits on eager work during definition; only
+<code>spark.sql()</code> is allowed inside a query function.</td>
+</tr>
+<tr>
+<td><code>analysis.rs</code>, <code>analysis/failure.rs</code></td>
+<td>Whole-graph analysis through <code>GraphScope</code>;
+unresolved-flow reporting.</td>
+</tr>
+<tr>
+<td><code>config/</code></td>
+<td>Flow configuration tracing, merging and resolution.</td>
+</tr>
+<tr>
+<td><code>schema*.rs</code></td>
+<td>Declared schemas, schema merge, the streaming-read schema
+contract.</td>
+</tr>
+<tr>
+<td><code>topology.rs</code></td>
+<td>Run order and cycle detection over the vendored topology
+kernel.</td>
+</tr>
+<tr>
+<td><code>selection.rs</code></td>
+<td>Refresh and full-refresh selection from <code>StartRun</code>.</td>
+</tr>
+<tr>
+<td><code>materialize.rs</code></td>
+<td>Table metadata materialization and persisted-view publication.</td>
+</tr>
+<tr>
+<td><code>reanalysis.rs</code></td>
+<td>Per-command input resolution, stopping at tables.</td>
+</tr>
+<tr>
+<td><code>execution.rs</code></td>
+<td>Batch execution, retries, events, sinks.</td>
+</tr>
+<tr>
+<td><code>append.rs</code></td>
+<td>Triggered append flows: checkpoints, file, Delta and bounded
+sources, tumbling windows.</td>
+</tr>
+<tr>
+<td><code>streaming/</code></td>
+<td>Admission, binding, lowering and the bounded-source glue.</td>
+</tr>
+<tr>
+<td><code>autocdc/</code></td>
+<td>AutoCDC definition, validation, the SCD1 processor, stateful
+operators, the durable fenced run.</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="3.4" id="run-phases"><span
+class="header-section-number">3.4</span> Run phases</h2>
+<p><code>StartRun</code> runs four phases. A dry run stops after
+analysis.</p>
+<pre><code> client (pyspark.pipelines / spark-pipelines)
+   |
+   | CreateDataflowGraph, DefineOutput, DefineFlow,
+   | DefineSqlGraphElements                     (registration)
+   v
+ +--------------------------------------------------------------+
+ | PipelineGraph (session-owned, keyed by a UUID graph ID)      |
+ |   outputs[], flows[]; no DDL, no catalog writes              |
+ +--------------------------------------------------------------+
+   |
+   | StartRun: selection checks, storage root check, start()
+   v
+ +--------------------------------------------------------------+
+ | 1. ANALYSIS  analysis::analyze                               |
+ |    resolve every flow through GraphScope (no writes)         |
+ |    config fusion, validation in Spark&#39;s order, topology      |
+ |    -&gt; AnalyzedGraph {order, dependencies, schemas,           |
+ |                      publications, accepted_confs}           |
+ +--------------------------------------------------------------+
+   |                         dry run: stop here, &quot;Run is COMPLETED.&quot;
+   v
+ +--------------------------------------------------------------+
+ | 2. ADMISSION  AutoCDC graphs: autocdc::admitted,             |
+ |    CdcRun::prepare (targets, sources, control store)         |
+ +--------------------------------------------------------------+
+   v
+ +--------------------------------------------------------------+
+ | 3. MATERIALIZATION  materialize::tables, materialize::views  |
+ |    create/merge table metadata, then publish persisted views |
+ +--------------------------------------------------------------+
+   v
+ +--------------------------------------------------------------+
+ | 4. EXECUTION  in topological order, one flow at a time       |
+ |    materialized view -&gt; reanalysis + batch write (retries)   |
+ |    table / sink      -&gt; append::run (microbatches, ckpt)     |
+ |    AutoCDC table     -&gt; CdcRun::run_flow (fenced SCD1)       |
+ +--------------------------------------------------------------+
+   |
+   v  PipelineEventResult messages ... &quot;Run is COMPLETED.&quot;
+ client</code></pre>
+<p>The event channel is drained while the run future is polled. A
+<code>watch</code> channel on the graph carries cancellation. When it
+fires, the run future is dropped and the stream ends with “pipeline run
+cancelled”.</p>
+</body>
+</html>

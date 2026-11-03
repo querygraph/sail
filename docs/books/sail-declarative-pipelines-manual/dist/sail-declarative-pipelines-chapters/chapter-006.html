@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov and Sail Contributors" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="The manual for Sail Declarative Pipelines, Sail’s implementation of Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines tool, with batch, streaming tables, AutoCDC and Apache Iggy." />
+  <title>SQL pipeline files</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-007.html" accesskey="n" rel="next">Running</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-005.html" accesskey="p" rel="previous">Python datasets</a>
+</span>
+</div>
+</nav>
+<h1 data-number="5" id="sql-pipeline-files"><span
+class="header-section-number">5</span> SQL pipeline files</h1>
+<p>A <code>.sql</code> file in a project defines datasets and flows with
+SQL statements. The file is parsed whole, then its statements are
+registered in order. Registration never runs a query: it records what
+each dataset is and which query fills it, and the run does the rest.</p>
+<h2 data-number="5.1" id="datasets"><span
+class="header-section-number">5.1</span> Datasets</h2>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">MATERIALIZED</span> <span class="kw">VIEW</span> daily_revenue</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="kw">COMMENT</span> <span class="st">&#39;Revenue and order count per day&#39;</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="kw">AS</span> <span class="kw">SELECT</span> <span class="dt">day</span>, <span class="fu">round</span>(<span class="fu">sum</span>(amount), <span class="dv">2</span>) <span class="kw">AS</span> revenue, <span class="fu">count</span>(<span class="op">*</span>) <span class="kw">AS</span> orders</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="kw">FROM</span> orders</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="kw">GROUP</span> <span class="kw">BY</span> <span class="dt">day</span>;</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> STREAMING <span class="kw">TABLE</span> orders</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="kw">COMMENT</span> <span class="st">&#39;Orders, read incrementally from demo.orders_raw&#39;</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="kw">AS</span> <span class="kw">SELECT</span> <span class="op">*</span> <span class="kw">FROM</span> STREAM demo.orders_raw;</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">TEMPORARY</span> <span class="kw">VIEW</span> large_orders</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a><span class="kw">AS</span> <span class="kw">SELECT</span> <span class="op">*</span> <span class="kw">FROM</span> orders <span class="kw">WHERE</span> amount <span class="op">&gt;=</span> <span class="dv">100</span>;</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">VIEW</span> revenue_report</span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a><span class="kw">COMMENT</span> <span class="st">&#39;Revenue per day, for reporting&#39;</span></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a><span class="kw">AS</span> <span class="kw">SELECT</span> <span class="dt">day</span>, revenue <span class="kw">FROM</span> daily_revenue;</span></code></pre></div>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Statement</th>
+<th>What it defines</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CREATE MATERIALIZED VIEW name AS query</code></td>
+<td>A materialized view: a table recomputed by every run.</td>
+</tr>
+<tr>
+<td><code>CREATE STREAMING TABLE name AS query</code></td>
+<td>A streaming table whose query reads at least one <code>STREAM</code>
+source.</td>
+</tr>
+<tr>
+<td><code>CREATE STREAMING TABLE name;</code></td>
+<td>A streaming table with no query of its own, filled by flows.</td>
+</tr>
+<tr>
+<td><code>CREATE TEMPORARY VIEW name AS query</code></td>
+<td>A private view other datasets read; never published.</td>
+</tr>
+<tr>
+<td><code>CREATE VIEW name AS query</code></td>
+<td>A persisted view, published to the catalog with its SQL text.</td>
+</tr>
+</tbody>
+</table>
+<p>A materialized view and a streaming table accept, between the name
+and <code>AS</code>:</p>
+<ul>
+<li><code>COMMENT 'text'</code>, published as the table’s comment;</li>
+<li><code>PARTITIONED BY (col, ...)</code>, identity partitioning on
+columns of the query;</li>
+<li><code>TBLPROPERTIES ('key' = 'value', ...)</code>;</li>
+<li>a declared column list,
+<code>(id INT COMMENT 'the id', value STRING)</code>, published in that
+order with those comments. The query’s output must match it.</li>
+</ul>
+<p>Two things are refused at registration: a <code>LOCATION</code>, and
+a partitioning transform other than a column
+(<code>PARTITIONED BY (year(x))</code> is an “Invalid partitioning
+transform”).</p>
+<h2 data-number="5.2" id="reading-a-stream"><span
+class="header-section-number">5.2</span> Reading a stream</h2>
+<p>A streaming table’s query reads its sources with <code>STREAM</code>,
+in either spelling:</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> STREAMING <span class="kw">TABLE</span> st <span class="kw">AS</span> <span class="kw">SELECT</span> <span class="op">*</span> <span class="kw">FROM</span> STREAM(src);</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> STREAMING <span class="kw">TABLE</span> st <span class="kw">AS</span> <span class="kw">SELECT</span> <span class="op">*</span> <span class="kw">FROM</span> STREAM src;</span></code></pre></div>
+<p><code>STREAM</code> marks the read as incremental: each run reads
+what was added to <code>src</code> since the last run. The source may be
+a table in the catalog or another dataset of the pipeline, including a
+temporary view over a streaming read. A materialized view may not read a
+<code>STREAM</code>
+(<code>SQL streaming reads cannot back materialized views</code>), and a
+persisted view may not either.</p>
+<h2 data-number="5.3" id="flows"><span
+class="header-section-number">5.3</span> Flows</h2>
+<p>A flow adds rows to a streaming table from a query of its own. Its
+statement is <code>CREATE FLOW</code> with an
+<code>INSERT INTO ... BY NAME</code>:</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> STREAMING <span class="kw">TABLE</span> all_events;</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> FLOW from_orders <span class="kw">AS</span> <span class="kw">INSERT</span> <span class="kw">INTO</span> all_events <span class="kw">BY</span> NAME</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> customer_id <span class="kw">AS</span> <span class="fu">user</span>, <span class="st">&#39;order&#39;</span> <span class="kw">AS</span> kind <span class="kw">FROM</span> STREAM orders;</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> FLOW from_clicks <span class="kw">COMMENT</span> <span class="st">&#39;click events&#39;</span> <span class="kw">AS</span> <span class="kw">INSERT</span> <span class="kw">INTO</span> all_events <span class="kw">BY</span> NAME</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> <span class="fu">user</span>, <span class="st">&#39;click&#39;</span> <span class="kw">AS</span> kind <span class="kw">FROM</span> STREAM clicks;</span></code></pre></div>
+<ul>
+<li><code>BY NAME</code> is required: a flow matches the target’s
+columns by name, not position.</li>
+<li>A flow has a one-part name. <code>CREATE FLOW a.f</code> is refused
+(<code>MULTIPART_FLOW_NAME_NOT_SUPPORTED</code>).</li>
+<li>The target must be a streaming table defined in the pipeline
+(<code>FLOW_TARGET_NOT_DEFINED</code> otherwise), and a flow may not
+share a name with a table
+(<code>FLOW_NAME_CONFLICTS_WITH_TABLE</code>).</li>
+<li>Only <code>INSERT INTO</code> is a flow.
+<code>CREATE FLOW f AS SELECT 1</code>, <code>INSERT OVERWRITE</code>,
+<code>INSERT ... IF NOT EXISTS</code>, <code>CREATE TABLE AS</code> and
+<code>EXPLAIN</code> under a flow are refused.</li>
+<li>A <code>WITH</code> clause goes inside the <code>INSERT</code>:
+<code>INSERT INTO t BY NAME WITH s AS (...) SELECT * FROM s</code>.</li>
+</ul>
+<p>The <code>AUTO CDC</code> form of a flow is described in the AutoCDC
+chapter.</p>
+<h2 data-number="5.4" id="directives"><span
+class="header-section-number">5.4</span> Directives</h2>
+<p>Three statements change how the names in the rest of the file are
+resolved. They apply to the file they are in and are reset at the next
+file.</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">USE</span> CATALOG sail;</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="kw">USE</span> <span class="kw">SCHEMA</span> demo;</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="kw">SET</span> CATALOG sail;</span></code></pre></div>
+<ul>
+<li><code>USE SCHEMA name</code> sets the database that unqualified
+names belong to.</li>
+<li><code>USE CATALOG name</code> and <code>SET CATALOG name</code> set
+the catalog. <code>SET CATALOG</code> takes an expression, as in Spark;
+a catalog that does not exist is <code>CATALOG_NOT_FOUND</code>.</li>
+<li>A bare <code>USE name</code> is not a pipeline directive and is
+refused (<code>UNSUPPORTED_PIPELINE_SPARK_SQL_COMMAND</code>).</li>
+</ul>
+<p><code>SET key = value</code> sets a Spark SQL configuration for the
+flows defined after it in the same file. The value is captured per flow;
+it is not a session setting.</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode sql"><code class="sourceCode sql"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SET</span> spark.sql.pipelines.maxFlowRetryAttempts <span class="op">=</span> <span class="dv">0</span>;</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> STREAMING <span class="kw">TABLE</span> st <span class="kw">AS</span> <span class="kw">SELECT</span> <span class="op">*</span> <span class="kw">FROM</span> STREAM src;</span></code></pre></div>
+<h2 data-number="5.5" id="order-and-references"><span
+class="header-section-number">5.5</span> Order and references</h2>
+<p>Statements may refer to datasets defined later in the same file or in
+another file. The graph is resolved as a whole, so this is fine:</p>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">MATERIALIZED</span> <span class="kw">VIEW</span> b <span class="kw">AS</span> <span class="kw">SELECT</span> <span class="op">*</span> <span class="kw">FROM</span> a;</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">MATERIALIZED</span> <span class="kw">VIEW</span> a <span class="kw">AS</span> <span class="kw">SELECT</span> <span class="op">*</span> <span class="kw">FROM</span> <span class="kw">range</span>(<span class="dv">1</span>, <span class="dv">4</span>);</span></code></pre></div>
+<p>A persisted view may read tables and other persisted views, but not a
+temporary view of the pipeline
+(<code>INVALID_TEMP_OBJ_REFERENCE</code>), since the catalog could not
+resolve the view later. A persisted view’s columns must have names:
+<code>CREATE VIEW v AS SELECT 1 + 1</code> is refused
+(<code>CREATE_PERMANENT_VIEW_WITHOUT_ALIAS</code>); write
+<code>SELECT 1 + 1 AS two</code>.</p>
+<p>A dataset defined in two files is an error for both
+(<code>PIPELINE_DUPLICATE_IDENTIFIERS.OUTPUT</code>).</p>
+<h2 data-number="5.6" id="a-file-registers-all-or-nothing"><span
+class="header-section-number">5.6</span> A file registers all or
+nothing</h2>
+<p>If any statement of a file fails to register, none of the file’s
+definitions are kept, and the run fails before anything is written:</p>
+<pre class="text"><code>[PIPELINE_SQL_GRAPH_ELEMENT_REGISTRATION_ERROR] Failed to register ... in files.sql</code></pre>
+<p>The error names the file and the statement. This is stricter than
+Spark, which keeps the definitions registered before the failing
+statement; since the client aborts the run in either case, the
+difference is only what is left registered on the server.</p>
+<h2 data-number="5.7" id="comments-and-separators"><span
+class="header-section-number">5.7</span> Comments and separators</h2>
+<p>Statements are separated by <code>;</code>. SQL comments
+(<code>--</code> and <code>/* */</code>) are allowed anywhere, and a
+<code>;</code> inside a string literal is not a separator. The text of a
+persisted view is taken from the file as written.</p>
+</body>
+</html>

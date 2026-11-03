@@ -1,12 +1,16 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
+use futures::Stream;
 use sail_common::actor::ActorContext;
 use sail_common_datafusion::error::CommonErrorCause;
 use sail_python_udf::error::PyErrExtractor;
 use tokio::sync::mpsc;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 
 use crate::error::{ExecutionError, ExecutionResult};
@@ -18,6 +22,42 @@ use crate::stream::local::{LocalStreamManager, LocalStreamState};
 use crate::stream::reader::TaskStreamSource;
 use crate::stream::writer::TaskStreamChannelSink;
 use crate::task_runner::{TaskRunnerActor, TaskRunnerMessage};
+
+const CANCELED: &str = "task or job has been canceled";
+
+/// A subscription to a created stream that ends, with the cancel cause, as
+/// soon as the stream's producer is stopped. The producer's sink may still be
+/// alive then (its task future dies at its next yield, and a blocking
+/// preparation never yields), so the receiver alone would stay pending and a
+/// Flight response built on it would hold the worker's server open past its
+/// stop bound.
+struct EndedStream {
+    inner: TaskStreamSource,
+    ended: Pin<Box<WaitForCancellationFutureOwned>>,
+    done: bool,
+}
+
+impl Stream for EndedStream {
+    type Item = TaskStreamResult<RecordBatch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.done {
+            return Poll::Ready(None);
+        }
+        if self.ended.as_mut().poll(cx).is_ready() {
+            self.done = true;
+            let cause = CommonErrorCause::Execution(CANCELED.to_string());
+            return Poll::Ready(Some(Err(TaskStreamError::from(cause))));
+        }
+        match self.inner.as_mut().poll_next(cx) {
+            Poll::Ready(None) => {
+                self.done = true;
+                Poll::Ready(None)
+            }
+            other => other,
+        }
+    }
+}
 
 impl LocalStreamManager {
     pub fn new(options: LocalStreamManagerOptions) -> Self {
@@ -59,7 +99,10 @@ impl LocalStreamManager {
                 };
                 match create(senders.clone()) {
                     Ok((stream, sink)) => {
-                        *entry.into_mut() = LocalStreamState::Created { stream };
+                        *entry.into_mut() = LocalStreamState::Created {
+                            stream,
+                            ended: CancellationToken::new(),
+                        };
                         Ok(sink)
                     }
                     Err(e) => {
@@ -72,7 +115,10 @@ impl LocalStreamManager {
             }
             Entry::Vacant(entry) => match create(vec![]) {
                 Ok((stream, sink)) => {
-                    entry.insert(LocalStreamState::Created { stream });
+                    entry.insert(LocalStreamState::Created {
+                        stream,
+                        ended: CancellationToken::new(),
+                    });
                     Ok(sink)
                 }
                 Err(e) => {
@@ -89,21 +135,14 @@ impl LocalStreamManager {
         ctx: &mut ActorContext<TaskRunnerActor>,
         key: &TaskStreamKey,
     ) -> ExecutionResult<TaskStreamSource> {
+        if let Some(subscription) = self.subscribe(key) {
+            return subscription;
+        }
         match self.streams.entry(key.clone()) {
-            Entry::Occupied(mut entry) => match entry.get_mut() {
-                LocalStreamState::Created { stream } => stream.subscribe(),
-                LocalStreamState::Pending { senders } => {
-                    let (tx, rx) = mpsc::channel(self.options.task_stream_buffer);
-                    senders.push(tx);
-                    // There is no need to probe the pending stream again.
-                    Ok(Box::pin(ReceiverStream::new(rx)))
-                }
-                LocalStreamState::Failed { cause } => Err(ExecutionError::InternalError(format!(
-                    "local stream creation has failed for {}: {}",
-                    TaskStreamKeyDisplay(key),
-                    TaskStreamError::from(cause.clone())
-                ))),
-            },
+            Entry::Occupied(_) => Err(ExecutionError::InternalError(format!(
+                "local stream {} changed state during subscription",
+                TaskStreamKeyDisplay(key)
+            ))),
             Entry::Vacant(entry) => {
                 let (tx, rx) = mpsc::channel(self.options.task_stream_buffer);
                 entry.insert(LocalStreamState::Pending { senders: vec![tx] });
@@ -114,6 +153,32 @@ impl LocalStreamManager {
                 Ok(Box::pin(ReceiverStream::new(rx)))
             }
         }
+    }
+
+    /// Subscribes to a stream the manager already knows; `None` for one it
+    /// does not, which `fetch_stream` then registers as pending.
+    fn subscribe(&mut self, key: &TaskStreamKey) -> Option<ExecutionResult<TaskStreamSource>> {
+        let state = self.streams.get_mut(key)?;
+        Some(match state {
+            LocalStreamState::Created { stream, ended } => stream.subscribe().map(|inner| {
+                Box::pin(EndedStream {
+                    inner,
+                    ended: Box::pin(ended.clone().cancelled_owned()),
+                    done: false,
+                }) as TaskStreamSource
+            }),
+            LocalStreamState::Pending { senders } => {
+                let (tx, rx) = mpsc::channel(self.options.task_stream_buffer);
+                senders.push(tx);
+                // There is no need to probe the pending stream again.
+                Ok(Box::pin(ReceiverStream::new(rx)))
+            }
+            LocalStreamState::Failed { cause } => Err(ExecutionError::InternalError(format!(
+                "local stream creation has failed for {}: {}",
+                TaskStreamKeyDisplay(key),
+                TaskStreamError::from(cause.clone())
+            ))),
+        })
     }
 
     pub fn remove_streams(&mut self, job_id: JobId, stage: Option<usize>) {
@@ -137,24 +202,41 @@ impl LocalStreamManager {
         }
     }
 
-    /// A stopped task never creates its output streams. Readers waiting for
-    /// them learn that now, with the right cause, rather than at the creation
-    /// timeout with the wrong one.
-    pub fn fail_task_streams_if_pending(&mut self, task: &TaskKey) {
-        let cause = CommonErrorCause::Execution("task or job has been canceled".to_string());
-        for (key, value) in &mut self.streams {
-            let same_task = key.job_id == task.job_id
+    /// A stopped task never creates its output streams, and stops feeding the
+    /// ones it created. Readers waiting for the former learn that now, with
+    /// the right cause, rather than at the creation timeout with the wrong
+    /// one; subscribers of the latter end now, with the same cause, rather
+    /// than when the task's future gets around to dropping its sink.
+    pub fn end_task_streams(&mut self, task: &TaskKey) {
+        self.end_streams(|key| {
+            key.job_id == task.job_id
                 && key.stage == task.stage
                 && key.partition == task.partition
-                && key.attempt == task.attempt;
-            if !same_task {
+                && key.attempt == task.attempt
+        });
+    }
+
+    /// The runner is shutting down: every stream ends for its subscribers,
+    /// whether or not its producer has noticed yet.
+    pub fn end_all_streams(&mut self) {
+        self.end_streams(|_| true);
+    }
+
+    fn end_streams(&mut self, selected: impl Fn(&TaskStreamKey) -> bool) {
+        let cause = CommonErrorCause::Execution(CANCELED.to_string());
+        for (key, value) in &mut self.streams {
+            if !selected(key) {
                 continue;
             }
-            if let LocalStreamState::Pending { senders } = value {
-                Self::fail_senders(senders, &cause);
-                *value = LocalStreamState::Failed {
-                    cause: cause.clone(),
-                };
+            match value {
+                LocalStreamState::Pending { senders } => {
+                    Self::fail_senders(senders, &cause);
+                    *value = LocalStreamState::Failed {
+                        cause: cause.clone(),
+                    };
+                }
+                LocalStreamState::Created { ended, .. } => ended.cancel(),
+                LocalStreamState::Failed { .. } => {}
             }
         }
     }
@@ -182,6 +264,12 @@ impl LocalStreamManager {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use datafusion::arrow::datatypes::Schema;
+    use futures::StreamExt;
+
     use super::*;
     use crate::id::TaskKey;
 
@@ -213,7 +301,7 @@ mod tests {
             },
         );
 
-        manager.fail_task_streams_if_pending(&TaskKey {
+        manager.end_task_streams(&TaskKey {
             job_id: JobId::from(1u64),
             stage: 0,
             partition: 0,
@@ -236,5 +324,56 @@ mod tests {
             Some(LocalStreamState::Pending { .. })
         ));
         assert!(other_rx.try_recv().is_err());
+    }
+
+    fn task(stage: usize) -> TaskKey {
+        TaskKey {
+            job_id: JobId::from(1u64),
+            stage,
+            partition: 0,
+            attempt: 0,
+        }
+    }
+
+    async fn next_is_canceled(stream: &mut TaskStreamSource) {
+        let item = stream.next().await;
+        assert!(
+            item.as_ref()
+                .is_some_and(|item| format!("{item:?}").contains("canceled")),
+            "{item:?}"
+        );
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stopped_task_ends_its_created_streams_for_their_subscribers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut manager = LocalStreamManager::new(LocalStreamManagerOptions::for_tests());
+        let schema = Arc::new(Schema::empty());
+        let stopped = stream_key(0, 0);
+        let other = stream_key(1, 0);
+        // The sinks stay alive throughout: a producer whose future has not
+        // died yet, or never yields, must not keep its subscribers waiting.
+        let _stopped_sink = manager.create_stream(stopped.clone(), 2, schema.clone())?;
+        let _other_sink = manager.create_stream(other.clone(), 1, schema)?;
+        let mut before = manager.subscribe(&stopped).transpose()?.ok_or("stream")?;
+        let mut untouched = manager.subscribe(&other).transpose()?.ok_or("stream")?;
+
+        manager.end_task_streams(&task(0));
+
+        next_is_canceled(&mut before).await;
+        // A subscriber arriving after the stop ends at once, with the cause.
+        let mut after = manager.subscribe(&stopped).transpose()?.ok_or("stream")?;
+        next_is_canceled(&mut after).await;
+        // Another task's subscribers still wait for their producer.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), untouched.next())
+                .await
+                .is_err()
+        );
+
+        manager.end_all_streams();
+        next_is_canceled(&mut untouched).await;
+        Ok(())
     }
 }

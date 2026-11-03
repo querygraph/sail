@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Alexy Khrabrov ∈ LakeSail Team" />
+  <meta name="dcterms.date" content="2026-11-03" />
+  <meta name="description" content="How Sail implements Apache Spark 4.2.1 Declarative Pipelines for the unchanged pyspark.pipelines client and spark-pipelines CLI, with batch, streaming, Apache Iggy and AutoCDC, and how it was verified against Spark." />
+  <title>Scope decisions, limits and open work</title>
+  <style>
+    div.sitenav { display: flex; flex-direction: row; flex-wrap: wrap; }
+    span.navlink { flex: 1; }
+    span.navlink-label { display: inline-block; min-width: 4em; }
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <link rel="stylesheet" href="book.css" />
+</head>
+<body>
+<nav id="sitenav">
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Up:</span> <a href="chapter-001.html" accesskey="u" rel="up">Sail Declarative Pipelines</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Top:</span> <a href="index.html" accesskey="t" rel="top">Sail Declarative Pipelines</a>
+</span>
+</div>
+<div class="sitenav">
+<span class="navlink">
+<span class="navlink-label">Next:</span> <a href="chapter-009.html" accesskey="n" rel="next">The demo</a>
+</span>
+<span class="navlink">
+<span class="navlink-label">Previous:</span> <a href="chapter-007.html" accesskey="p" rel="previous">Differences from Spark</a>
+</span>
+</div>
+</nav>
+<h1 data-number="7" id="scope-decisions-limits-and-open-work"><span
+class="header-section-number">7</span> Scope decisions, limits and open
+work</h1>
+<h2 data-number="7.1" id="scope-the-user-set"><span
+class="header-section-number">7.1</span> Scope the user set</h2>
+<ul>
+<li>Spark’s internal Scala suites are excluded. The frozen 300 + 67
+ports stand in for them.</li>
+<li>Docker- and S3-backed Hive tests are waived because Docker Desktop
+was down. The Derby Hive profile runs instead. Remote warehouses are
+tested against <code>moto</code>, not real S3.</li>
+<li>Unity Catalog is built from source and run locally.</li>
+<li>The 4 strict expected failures and the 37 wire-invisible partial
+audit entries are accepted.</li>
+<li>Only process death is a qualified crash. Power loss and restore are
+not.</li>
+<li>Delivery is a pushed milestone branch and tag, authorized by the
+user for this milestone. There is no release, and unqualified effects
+are never activated on the shared branch.</li>
+</ul>
+<h2 data-number="7.2" id="architectural-limits"><span
+class="header-section-number">7.2</span> Architectural limits</h2>
+<ul>
+<li><strong>Flows run one at a time.</strong> Execution walks the
+topological order sequentially. Independent flows do not run
+concurrently, although each flow’s plan runs in parallel through
+<code>JobService</code>.</li>
+<li><strong>AvailableNow only.</strong> There is no continuous
+streaming. The append path admits a stateless subset plus
+tumbling-window aggregates.</li>
+<li><strong>Plain file append is at-least-once.</strong> A crash replays
+exactly the recorded batch, which can duplicate rows in a file table
+with no idempotent commit.</li>
+<li><strong>AutoCDC state is local.</strong> The Turso authority,
+archives and file lists live on one machine, even for a remote
+warehouse. V1 is one durable service with no HA claim.</li>
+<li><strong>SCD1 only.</strong> SCD2 is rejected, as in Spark.</li>
+<li><strong>Cluster release with checkpoints fails.</strong> The driver
+cannot confirm remote writers stopped, so it keeps the files and the
+server exits 1.</li>
+<li><strong>ORC.</strong> No hybrid-calendar rebase; memory reservations
+are estimates; not run on real object stores.</li>
+<li><strong>Hive.</strong> The fallback to older metastores and
+S3-backed Hive are unverified.</li>
+</ul>
+<h2 data-number="7.3" id="open-work"><span
+class="header-section-number">7.3</span> Open work</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Item</th>
+<th>State</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Late rows in the append path</td>
+<td>Sail drops late rows by event time. Spark drops a row only when its
+window has ended (<code>window.end &lt;= watermark</code>, with
+watermark = floorDiv(max event µs, 1000) − delay ms, starting at 0,
+never moving back). The next unit of work.</td>
+</tr>
+<tr>
+<td>Delta AutoCDC targets</td>
+<td>Whether accepting them is policy.</td>
+</tr>
+<tr>
+<td>Worker stop</td>
+<td>A worker can wait up to 5 seconds, because a canceled job’s stage-0
+Flight stream stays open after its tasks are aborted.</td>
+</tr>
+<tr>
+<td>CDC durability</td>
+<td>Production durability, fencing and recovery beyond the qualified
+process-death cases: the activation gate, a real backend qualification,
+the recovery trace.</td>
+</tr>
+<tr>
+<td>CDC representation</td>
+<td>Logical canonical encoding or sealed bytes; the tie-break; durable
+staging.</td>
+</tr>
+<tr>
+<td>Session work</td>
+<td>Fallible actor and gateway results; routing non-checkpoint writers
+through the effect owner; cluster worker effects.</td>
+</tr>
+<tr>
+<td>Append sources</td>
+<td>Delta and Iceberg append sources beyond the current reader, rate
+limits, exactly-once for plain file tables.</td>
+</tr>
+<tr>
+<td>Dynamic references</td>
+<td>Frozen SQL inputs; configured dynamic and WithRelations
+binding.</td>
+</tr>
+<tr>
+<td>Performance</td>
+<td>Replay fast path, constant folding, lazy NaNvl.</td>
+</tr>
+<tr>
+<td>Protocol</td>
+<td>Deferred query-function signals and <code>ExecuteOutputFlows</code>,
+which Spark 4.2.1 does not dispatch either.</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

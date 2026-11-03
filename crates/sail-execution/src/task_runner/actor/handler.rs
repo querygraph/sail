@@ -94,9 +94,7 @@ impl TaskRunnerActor {
         if let Some(signal) = self.signals.remove(&key) {
             let _ = signal.send(());
         }
-        self.extensions
-            .local_streams
-            .fail_task_streams_if_pending(&key);
+        self.extensions.local_streams.end_task_streams(&key);
         ActorAction::Continue
     }
 
