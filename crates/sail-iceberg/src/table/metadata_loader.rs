@@ -15,6 +15,7 @@ use std::io::{self, Read, Write};
 use std::sync::Arc;
 
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use datafusion::common::{DataFusionError, Result, plan_err};
 use flate2::Compression;
 use flate2::read::GzDecoder;
@@ -235,43 +236,52 @@ pub async fn find_latest_metadata_file(
 
     let objects = object_store.list(Some(&metadata_prefix));
 
-    let metadata_files: Result<Vec<_>, _> = objects
-        .try_filter_map(|obj| async move {
-            let path_str = obj.location.to_string();
-            if let Some(filename) = path_str.split('/').next_back()
-                && let Some(metadata_file) = parse_metadata_file_name(filename)
-            {
-                return Ok(Some((metadata_file.version, path_str, obj.last_modified)));
-            }
-            Ok(None)
-        })
-        .try_collect()
+    // The newest file is the greatest by (version, last modified, path), so
+    // the listing is folded into that one entry as it streams, instead of
+    // being collected and sorted; the entry chosen is the same. The object's
+    // path is read in place and kept as it came, so nothing is copied per
+    // object, and the chosen path becomes a string once.
+    let latest = objects
+        .try_fold(
+            None::<(i32, ObjectPath, DateTime<Utc>)>,
+            |latest, obj| async move {
+                let Some(filename) = obj.location.as_ref().rsplit('/').next() else {
+                    return Ok(latest);
+                };
+                let Some(metadata_file) = parse_metadata_file_name(filename) else {
+                    return Ok(latest);
+                };
+                log::trace!(
+                    "find_latest_metadata_file: found version {} path={}",
+                    metadata_file.version,
+                    obj.location
+                );
+                let candidate = (metadata_file.version, obj.location, obj.last_modified);
+                let newer = match &latest {
+                    None => true,
+                    Some(latest) => candidate
+                        .0
+                        .cmp(&latest.0)
+                        .then_with(|| candidate.2.cmp(&latest.2))
+                        .then_with(|| candidate.1.as_ref().cmp(latest.1.as_ref()))
+                        .is_gt(),
+                };
+                Ok(if newer { Some(candidate) } else { latest })
+            },
+        )
         .await;
 
-    match metadata_files {
-        Ok(mut files) => {
-            log::trace!("find_latest_metadata_file: found files: {:?}", files);
-            files.sort_by(|left, right| {
-                left.0
-                    .cmp(&right.0)
-                    .then_with(|| left.2.cmp(&right.2))
-                    .then_with(|| left.1.cmp(&right.1))
-            });
-
-            if let Some((version, latest_file, _)) = files.last() {
-                log::trace!(
-                    "find_latest_metadata_file: selected version {} path={}",
-                    version,
-                    latest_file
-                );
-                Ok(latest_file.clone())
-            } else {
-                plan_err!("No metadata files found in table location: {}", table_url)
-            }
+    match latest {
+        Ok(Some((version, latest_file, _))) => {
+            log::trace!(
+                "find_latest_metadata_file: selected version {} path={}",
+                version,
+                latest_file
+            );
+            Ok(latest_file.to_string())
         }
-        Err(e) => {
-            plan_err!("Failed to list metadata directory: {}", e)
-        }
+        Ok(None) => plan_err!("No metadata files found in table location: {}", table_url),
+        Err(e) => plan_err!("Failed to list metadata directory: {}", e),
     }
 }
 
