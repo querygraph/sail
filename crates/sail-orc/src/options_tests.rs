@@ -20,7 +20,7 @@ const KEYS: [&str; 4] = [
     "max_decoded_stripe_footer_bytes",
     "max_schema_depth",
 ];
-const FILE: &[u8] = include_bytes!("../../../tests/fixtures/orc/time_precisions.orc");
+const FILE: &[u8] = include_bytes!("../tests/fixtures/orc/time_precisions.orc");
 
 fn resolve(layers: Vec<OptionLayer>) -> DataSourceResult<OrcReadOptions> {
     OrcReadOptions::resolve(&SessionContext::new().state(), layers)

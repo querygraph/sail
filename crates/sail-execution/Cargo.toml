@@ -7,11 +7,16 @@ rust-version = { workspace = true }
 [lints]
 workspace = true
 
+[features]
+# ORC read and write; off by default, as an optional crate.
+orc = ["dep:sail-orc"]
+
 [dependencies]
 sail-common = { path = "../sail-common" }
 sail-common-datafusion = { path = "../sail-common-datafusion" }
 sail-catalog = { path = "../sail-catalog" }
 sail-data-source = { path = "../sail-data-source" }
+sail-orc = { path = "../sail-orc", optional = true }
 sail-python-udf = { path = "../sail-python-udf" }
 sail-delta-lake = { path = "../sail-delta-lake" }
 sail-iceberg = { path = "../sail-iceberg" }

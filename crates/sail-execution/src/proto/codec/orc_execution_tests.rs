@@ -22,7 +22,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use futures::{StreamExt, TryStreamExt};
 use object_store::ObjectStoreExt;
 use sail_common::spec;
-use sail_data_source::formats::orc::{OrcJavaTimeZoneConfig, OrcSource};
+use sail_orc::{OrcJavaTimeZoneConfig, OrcSource};
 
 use super::{config, decode_node, encode_node, options};
 
@@ -30,15 +30,12 @@ use super::{config, decode_node, encode_node, options};
 mod store;
 use store::ObservedStore;
 
-const TIME: &[u8] =
-    include_bytes!("../../../../sail-data-source/tests/fixtures/orc/time_precisions.orc");
-const INTERVALS: &[u8] =
-    include_bytes!("../../../../sail-data-source/tests/fixtures/orc/intervals.orc");
-const SUBMICRO: &[u8] = include_bytes!(
-    "../../../../sail-data-source/tests/fixtures/orc/timestamps/foreign_submicro.orc"
-);
+const TIME: &[u8] = include_bytes!("../../../../sail-orc/tests/fixtures/orc/time_precisions.orc");
+const INTERVALS: &[u8] = include_bytes!("../../../../sail-orc/tests/fixtures/orc/intervals.orc");
+const SUBMICRO: &[u8] =
+    include_bytes!("../../../../sail-orc/tests/fixtures/orc/timestamps/foreign_submicro.orc");
 const READER_REFERENCE: &str = include_str!(
-    "../../../../sail-data-source/tests/fixtures/orc/timestamps/explicit-reader-reference.json"
+    "../../../../sail-orc/tests/fixtures/orc/timestamps/explicit-reader-reference.json"
 );
 const STORE_URL: &str = "memory://orc-codec";
 const AMPLE: usize = 64 * 1024 * 1024;

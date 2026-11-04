@@ -28,16 +28,14 @@ use sha2::{Digest, Sha256};
 use super::{OrcJavaTimeZoneConfig, OrcSchemaBridge};
 
 const READER_ZONE: &str = "America/Los_Angeles";
-const UTC: &[u8] = include_bytes!("../../../tests/fixtures/orc/timestamps/timestamps_utc.orc");
+const UTC: &[u8] = include_bytes!("../tests/fixtures/orc/timestamps/timestamps_utc.orc");
 const LOS_ANGELES: &[u8] =
-    include_bytes!("../../../tests/fixtures/orc/timestamps/timestamps_los_angeles.orc");
-const NESTED: &[u8] =
-    include_bytes!("../../../tests/fixtures/orc/timestamps/nested_timestamp_nulls.orc");
-const SUBMICRO: &[u8] =
-    include_bytes!("../../../tests/fixtures/orc/timestamps/foreign_submicro.orc");
-const REFERENCE: &str = include_str!("../../../tests/fixtures/orc/timestamps/spark-reference.json");
+    include_bytes!("../tests/fixtures/orc/timestamps/timestamps_los_angeles.orc");
+const NESTED: &[u8] = include_bytes!("../tests/fixtures/orc/timestamps/nested_timestamp_nulls.orc");
+const SUBMICRO: &[u8] = include_bytes!("../tests/fixtures/orc/timestamps/foreign_submicro.orc");
+const REFERENCE: &str = include_str!("../tests/fixtures/orc/timestamps/spark-reference.json");
 const REREAD: &str =
-    include_str!("../../../tests/fixtures/orc/timestamps/explicit-reader-reference.json");
+    include_str!("../tests/fixtures/orc/timestamps/explicit-reader-reference.json");
 const FIXTURES: [(&str, &[u8]); 4] = [
     ("timestamps_utc", UTC),
     ("timestamps_los_angeles", LOS_ANGELES),

@@ -3,9 +3,10 @@ use datafusion::prelude::SessionContext;
 use sail_common_datafusion::datasource::OptionLayer;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_data_source::error::{DataSourceError, DataSourceResult};
-use sail_data_source::formats::orc::OrcReadSessionModes;
 use sail_data_source::options::ResolveOptions;
-use sail_data_source::options::r#gen::{JsonReadOptions, OrcListingReadOptions};
+use sail_data_source::options::r#gen::JsonReadOptions;
+use sail_orc::OrcReadSessionModes;
+use sail_orc::options::r#gen::OrcListingReadOptions;
 
 use super::*;
 use crate::config::ConfigKeyValue;

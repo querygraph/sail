@@ -114,9 +114,7 @@ async fn first_schema_stops_before_later_corruption_but_merge_retains_the_origin
 #[tokio::test]
 async fn merge_preserves_spark_time_annotations_and_rejects_late_precision_mismatch() {
     let fixture = Fixture::new();
-    let spark = Bytes::from_static(include_bytes!(
-        "../../../tests/fixtures/orc/time_precisions.orc"
-    ));
+    let spark = Bytes::from_static(include_bytes!("../tests/fixtures/orc/time_precisions.orc"));
     // The real Spark file reaches the ordinary listing inference path, including
     // its semantic field metadata and Spark-version schema metadata.
     fixture.put("00.orc", spark.clone()).await;
@@ -203,8 +201,8 @@ fn nested(name: &str) -> Bytes {
     // Native ORC writing does not yet support STRUCT. These actual foreign
     // PyArrow files retain generator, readback and hash provenance alongside.
     Bytes::from_static(match name {
-        "Value" => include_bytes!("../../../tests/fixtures/orc/listing_inference/nested_upper.orc"),
-        "value" => include_bytes!("../../../tests/fixtures/orc/listing_inference/nested_lower.orc"),
+        "Value" => include_bytes!("../tests/fixtures/orc/listing_inference/nested_upper.orc"),
+        "value" => include_bytes!("../tests/fixtures/orc/listing_inference/nested_lower.orc"),
         _ => unreachable!(),
     })
 }
@@ -272,7 +270,7 @@ async fn single_file_duplicate_names_are_checked_even_without_merge() {
         ];
         let bytes = if nested_struct {
             Bytes::from_static(include_bytes!(
-                "../../../tests/fixtures/orc/listing_inference/nested_duplicate.orc"
+                "../tests/fixtures/orc/listing_inference/nested_duplicate.orc"
             ))
         } else {
             file(Schema::new(fields), columns, 1)

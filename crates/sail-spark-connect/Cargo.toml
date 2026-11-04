@@ -10,6 +10,8 @@ workspace = true
 [features]
 # Apache Iggy as a bounded streaming source; off by default, since Spark has no Iggy source.
 iggy = ["dep:sail-iggy-bounded", "sail-session/iggy"]
+# ORC read and write; off by default, as an optional crate.
+orc = ["dep:sail-orc", "sail-session/orc", "sail-execution/orc"]
 
 [dependencies]
 grust-columns = { path = "../../vendor/grust-columns" }
@@ -22,6 +24,7 @@ sail-common = { path = "../sail-common" }
 sail-common-datafusion = { path = "../sail-common-datafusion" }
 sail-data-source = { path = "../sail-data-source" }
 sail-iggy-bounded = { path = "../sail-iggy-bounded", optional = true }
+sail-orc = { path = "../sail-orc", optional = true }
 sail-plan = { path = "../sail-plan" }
 sail-python-udf = { path = "../sail-python-udf" }
 sail-sql-analyzer = { path = "../sail-sql-analyzer" }

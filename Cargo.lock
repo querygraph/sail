@@ -8341,9 +8341,7 @@ dependencies = [
  "memchr",
  "object_store",
  "once_cell",
- "orc-rust",
  "percent-encoding",
- "prost 0.13.5",
  "pyo3",
  "regex",
  "sail-build-scripts",
@@ -8355,7 +8353,6 @@ dependencies = [
  "sail-sql-parser",
  "serde",
  "serde_json",
- "sha2",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -8449,6 +8446,7 @@ dependencies = [
  "sail-iceberg",
  "sail-logical-plan",
  "sail-object-store",
+ "sail-orc",
  "sail-physical-plan",
  "sail-python-udf",
  "sail-system-store",
@@ -8708,6 +8706,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "sail-orc"
+version = "0.7.2"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "datafusion",
+ "datafusion-common",
+ "datafusion-datasource",
+ "datafusion-expr",
+ "futures",
+ "object_store",
+ "orc-rust",
+ "prost 0.13.5",
+ "sail-build-scripts",
+ "sail-common",
+ "sail-common-datafusion",
+ "sail-data-source",
+ "sail-object-store",
+ "sail-sql-analyzer",
+ "sail-sql-parser",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "sail-physical-optimizer"
 version = "0.7.2"
 dependencies = [
@@ -8897,6 +8925,7 @@ dependencies = [
  "sail-logical-plan",
  "sail-native-resource-ffi",
  "sail-object-store",
+ "sail-orc",
  "sail-physical-optimizer",
  "sail-physical-plan",
  "sail-plan",
@@ -8954,6 +8983,7 @@ dependencies = [
  "sail-execution",
  "sail-function",
  "sail-iggy-bounded",
+ "sail-orc",
  "sail-physical-optimizer",
  "sail-plan",
  "sail-python-udf",

@@ -6,10 +6,10 @@ use datafusion::physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner};
 use datafusion::prelude::{col, lit};
 use datafusion_common::{Column, ScalarValue};
 use datafusion_datasource::source::DataSourceExec;
+use sail_data_source::listing::planner::ListingPhysicalPlanner;
+use sail_data_source::listing::table::ListingTableSource;
 
 use super::*;
-use crate::listing::planner::ListingPhysicalPlanner;
-use crate::listing::table::ListingTableSource;
 
 async fn plan(
     fixture: &Fixture,

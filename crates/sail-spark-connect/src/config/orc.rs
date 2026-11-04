@@ -1,4 +1,4 @@
-use sail_data_source::formats::orc::{
+use sail_orc::{
     OrcListingSessionDefaults, OrcReadSessionModes, OrcWriteCompression, OrcWriteSessionDefaults,
 };
 

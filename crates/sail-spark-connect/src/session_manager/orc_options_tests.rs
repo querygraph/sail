@@ -2,9 +2,9 @@ use datafusion::execution::SessionState;
 use datafusion::prelude::SessionContext;
 use sail_common_datafusion::datasource::OptionLayer;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
-use sail_data_source::formats::orc::OrcListingSessionDefaults;
 use sail_data_source::options::ResolveOptions;
-use sail_data_source::options::r#gen::OrcListingReadOptions;
+use sail_orc::OrcListingSessionDefaults;
+use sail_orc::options::r#gen::OrcListingReadOptions;
 
 use super::*;
 use crate::config::ConfigKeyValue;
@@ -179,22 +179,20 @@ fn later_invalid_merge_value_keeps_the_earlier_partial_update() -> TestResult {
 
 const COMPRESSION: &str = "spark.sql.orc.compression.codec";
 
-fn write_compression(
-    state: &SessionState,
-) -> TestResult<sail_data_source::formats::orc::OrcWriteCompression> {
-    Ok(sail_data_source::formats::orc::OrcWriteConfig::resolve(state, vec![])?.compression)
+fn write_compression(state: &SessionState) -> TestResult<sail_orc::OrcWriteCompression> {
+    Ok(sail_orc::OrcWriteConfig::resolve(state, vec![])?.compression)
 }
 
 /// The codec a session writes with when nothing is set: the default of the
 /// Spark version the session resolves (`zstd` from 4.2, `snappy` before, and
 /// 3.5 when no PySpark is importable), not a codec this file assumes.
-fn default_write_compression() -> TestResult<sail_data_source::formats::orc::OrcWriteCompression> {
+fn default_write_compression() -> TestResult<sail_orc::OrcWriteCompression> {
     write_compression(&context()?.state())
 }
 
 #[test]
 fn write_defaults_follow_creation_set_unset_and_preserve_snapshots() -> TestResult {
-    use sail_data_source::formats::orc::OrcWriteCompression as Codec;
+    use sail_orc::OrcWriteCompression as Codec;
     let default = default_write_compression()?;
     let spark = spark_session()?;
     spark.set_config(vec![pair(COMPRESSION, "snappy").into()])?;
@@ -213,7 +211,7 @@ fn write_defaults_follow_creation_set_unset_and_preserve_snapshots() -> TestResu
 
 #[test]
 fn invalid_write_defaults_do_not_mutate_either_configuration() -> TestResult {
-    use sail_data_source::formats::orc::OrcWriteCompression as Codec;
+    use sail_orc::OrcWriteCompression as Codec;
     let ctx = context()?;
     handle_config_set(&ctx, vec![pair(COMPRESSION, "lz4")])?;
     for value in ["", "gzip", " zstd ", "\0zstd\0", "\u{a0}zstd\u{a0}"] {
@@ -241,7 +239,7 @@ fn invalid_write_defaults_do_not_mutate_either_configuration() -> TestResult {
 
 #[test]
 fn partial_write_config_updates_refresh_without_replacing_original_error() -> TestResult {
-    use sail_data_source::formats::orc::OrcWriteCompression as Codec;
+    use sail_orc::OrcWriteCompression as Codec;
     let default = default_write_compression()?;
     for orc_first in [true, false] {
         let ctx = context()?;

@@ -17,7 +17,7 @@ use sail_common_datafusion::datasource::{DataSource, OptionLayer, SourceInfo};
 use url::Url;
 
 use super::*;
-use crate::formats::orc::OrcDataSource;
+use crate::OrcDataSource;
 use crate::options::{ResolveOptions, option_list};
 
 #[path = "read_inference_tests.rs"]

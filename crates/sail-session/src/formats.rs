@@ -9,7 +9,6 @@ use sail_data_source::formats::console::ConsoleDataSource;
 use sail_data_source::formats::csv::CsvDataSource;
 use sail_data_source::formats::json::JsonDataSource;
 use sail_data_source::formats::noop::NoopDataSource;
-use sail_data_source::formats::orc::OrcDataSource;
 use sail_data_source::formats::parquet::ParquetDataSource;
 use sail_data_source::formats::python::{PythonDataSourceAdapter, discover_data_sources};
 use sail_data_source::formats::rate::RateDataSource;
@@ -19,6 +18,8 @@ use sail_delta_lake::DeltaLakeSource;
 use sail_iceberg::IcebergLakeSource;
 #[cfg(feature = "iggy")]
 use sail_iggy_bounded::IggyDataSource;
+#[cfg(feature = "orc")]
+use sail_orc::OrcDataSource;
 
 pub(crate) fn create_data_source_registry() -> Result<Arc<DataSourceRegistry>> {
     let registry = Arc::new(DataSourceRegistry::new());
@@ -33,7 +34,10 @@ fn register_builtin_data_sources(registry: &DataSourceRegistry) -> Result<()> {
     registry.register_data_source(Arc::new(BinaryDataSource::default()))?;
     registry.register_data_source(Arc::new(CsvDataSource::default()))?;
     registry.register_data_source(Arc::new(JsonDataSource::default()))?;
+    #[cfg(feature = "orc")]
     registry.register_data_source(Arc::new(OrcDataSource::default()))?;
+    #[cfg(not(feature = "orc"))]
+    registry.register_data_source(Arc::new(orc_off::OrcUnavailable))?;
     registry.register_data_source(Arc::new(ParquetDataSource::default()))?;
     registry.register_data_source(Arc::new(TextDataSource::default()))?;
     registry.register_data_source(Arc::new(SocketDataSource))?;
@@ -57,6 +61,43 @@ fn register_external_data_sources(registry: &DataSourceRegistry) -> Result<()> {
     Ok(())
 }
 
+/// Without the `orc` feature the format is still a known name, so a request
+/// for it is refused with the reason rather than as an unknown provider.
+#[cfg(not(feature = "orc"))]
+mod orc_off {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use datafusion::catalog::Session;
+    use datafusion::common::{Result, plan_err};
+    use datafusion::logical_expr::{LogicalPlan, TableSource};
+    use sail_common_datafusion::datasource::{DataSource, SinkInfo, SourceInfo};
+
+    pub(super) const ORC_FEATURE_OFF: &str =
+        "the orc format needs Sail built with the `orc` feature; this build has it off";
+
+    pub(super) struct OrcUnavailable;
+
+    #[async_trait]
+    impl DataSource for OrcUnavailable {
+        fn name(&self) -> &str {
+            "orc"
+        }
+
+        async fn create_source(
+            &self,
+            _ctx: &dyn Session,
+            _info: SourceInfo,
+        ) -> Result<Arc<dyn TableSource>> {
+            plan_err!("{ORC_FEATURE_OFF}")
+        }
+
+        async fn create_writer(&self, _ctx: &dyn Session, _info: SinkInfo) -> Result<LogicalPlan> {
+            plan_err!("{ORC_FEATURE_OFF}")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use datafusion::logical_expr::LogicalPlanBuilder;
@@ -70,7 +111,12 @@ mod tests {
         let registry = DataSourceRegistry::new();
         register_builtin_data_sources(&registry)?;
 
-        for name in ["orc", "parquet", "rate", "console"] {
+        let names = if cfg!(feature = "orc") {
+            vec!["orc", "parquet", "rate", "console"]
+        } else {
+            vec!["parquet", "rate", "console"]
+        };
+        for name in names {
             assert!(registry.get_data_source(name).is_ok());
             assert!(registry.get_lake_source(name).is_err());
         }
@@ -81,6 +127,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "orc")]
     #[tokio::test]
     async fn registered_orc_source_plans_writing() -> Result<()> {
         let registry = DataSourceRegistry::new();
@@ -106,6 +153,37 @@ mod tests {
             )
             .await?;
         assert!(!output.exists());
+        Ok(())
+    }
+
+    #[cfg(not(feature = "orc"))]
+    #[tokio::test]
+    async fn orc_is_refused_by_its_reason_without_the_feature() -> Result<()> {
+        let registry = DataSourceRegistry::new();
+        register_builtin_data_sources(&registry)?;
+        let context = SessionContext::new();
+        let Err(error) = registry
+            .get_data_source("orc")?
+            .create_writer(
+                &context.state(),
+                SinkInfo {
+                    input: LogicalPlanBuilder::empty(true).build()?,
+                    mode: SinkMode::Append,
+                    partition_by: vec![],
+                    bucket_by: None,
+                    sort_order: vec![],
+                    lakehouse_table: None,
+                    options: vec![OptionLayer::OptionList { items: vec![] }],
+                },
+            )
+            .await
+        else {
+            return datafusion::common::internal_err!("a default build must refuse the orc format");
+        };
+        assert!(
+            error.to_string().contains(super::orc_off::ORC_FEATURE_OFF),
+            "{error}"
+        );
         Ok(())
     }
 }

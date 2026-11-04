@@ -302,6 +302,7 @@ pub(crate) fn handle_config_unset(
     })
 }
 
+#[cfg(feature = "orc")]
 fn update_orc_config(
     ctx: &SessionContext,
     spark: &SparkSession,
@@ -322,6 +323,16 @@ fn update_orc_config(
     // Refresh the snapshot in that case and preserve the original error.
     result?;
     config.map(|_| ())
+}
+
+/// Without the `orc` feature `affects_orc_config` is never true, so no snapshot exists to refresh.
+#[cfg(not(feature = "orc"))]
+fn update_orc_config(
+    _ctx: &SessionContext,
+    _spark: &SparkSession,
+    update: impl FnOnce() -> SparkResult<()>,
+) -> SparkResult<()> {
+    update()
 }
 
 pub(crate) fn handle_config_is_modifiable(

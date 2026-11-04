@@ -1,0 +1,43 @@
+[package]
+name = "sail-orc"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+publish = false
+description = "ORC read and write for Sail, behind the host's `orc` feature"
+
+[lints]
+workspace = true
+
+[dependencies]
+sail-common = { path = "../sail-common" }
+sail-common-datafusion = { path = "../sail-common-datafusion" }
+sail-data-source = { path = "../sail-data-source" }
+sail-object-store = { path = "../sail-object-store" }
+sail-sql-analyzer = { path = "../sail-sql-analyzer" }
+sail-sql-parser = { path = "../sail-sql-parser" }
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }
+datafusion = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-datasource = { workspace = true }
+datafusion-expr = { workspace = true }
+object_store = { workspace = true }
+orc-rust = { workspace = true }
+url = { workspace = true }
+bytes = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+arrow = { workspace = true }
+
+[build-dependencies]
+sail-build-scripts = { path = "../sail-build-scripts" }
+
+[dev-dependencies]
+# ORC's public footer messages use the older protobuf runtime.
+prost013 = { package = "prost", version = "0.13.5" }
+# Verify the retained Java oracle digests without a runtime hashing dependency.
+sha2 = "0.11.0"

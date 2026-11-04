@@ -14,6 +14,7 @@ path = "src/main.rs"
 [features]
 mimalloc = ["dep:sail-mimalloc"]
 iggy = ["sail-spark-connect/iggy", "sail-session/iggy"]
+orc = ["sail-spark-connect/orc", "sail-session/orc"]
 default = ["mimalloc"]
 
 [dependencies]

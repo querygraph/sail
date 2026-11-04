@@ -355,7 +355,7 @@ async fn explicit_ranges_select_stripe_starts_once_with_half_open_boundaries() {
 #[tokio::test]
 async fn file_stream_preserves_captured_reader_identity_separately_from_display_zone() {
     let bytes = Bytes::from_static(include_bytes!(
-        "../../../tests/fixtures/orc/timestamps/foreign_submicro.orc"
+        "../tests/fixtures/orc/timestamps/foreign_submicro.orc"
     ));
     let metadata = metadata(&bytes);
     let scan = Scan::new(bytes).await;

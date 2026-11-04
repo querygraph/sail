@@ -23,10 +23,10 @@ use sail_common::spec::IntervalFieldType::{Day, Hour, Minute, Month, Second, Yea
 
 use super::OrcSchemaBridge;
 
-const TIME: &[u8] = include_bytes!("../../../tests/fixtures/orc/time_precisions.orc");
-const CAST_TIME: &[u8] = include_bytes!("../../../tests/fixtures/orc/time_cast_precisions.orc");
-const INTERVALS: &[u8] = include_bytes!("../../../tests/fixtures/orc/intervals.orc");
-const NESTED: &[u8] = include_bytes!("../../../tests/fixtures/orc/daytime_time_nested.orc");
+const TIME: &[u8] = include_bytes!("../tests/fixtures/orc/time_precisions.orc");
+const CAST_TIME: &[u8] = include_bytes!("../tests/fixtures/orc/time_cast_precisions.orc");
+const INTERVALS: &[u8] = include_bytes!("../tests/fixtures/orc/intervals.orc");
+const NESTED: &[u8] = include_bytes!("../tests/fixtures/orc/daytime_time_nested.orc");
 
 fn read_fixture(file: &'static [u8], batch_size: usize) -> RecordBatch {
     let mut bytes = Bytes::from_static(file);

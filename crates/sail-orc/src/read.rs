@@ -9,11 +9,11 @@ use datafusion_datasource::file_scan_config::{FileScanConfig, FileScanConfigBuil
 use orc_rust::reader::metadata::read_metadata_async_with_options;
 use sail_common_datafusion::column_change::validate_field_names;
 use sail_common_datafusion::schema_merge::merge_spark_file_schemas;
-
-use super::{OrcJavaTimeZoneConfig, OrcObjectReader, OrcRequestedSchemaAdapter, OrcSource};
-use crate::listing::source::{
+use sail_data_source::listing::source::{
     ListingFileSample, ListingFileSelection, ListingScanInput, PreparedExplicitSchema, ReadFormat,
 };
+
+use super::{OrcJavaTimeZoneConfig, OrcObjectReader, OrcRequestedSchemaAdapter, OrcSource};
 use crate::options::r#gen::{OrcListingReadOptions, OrcReadOptions};
 
 /// Ordinary listing reads with a captured reader zone and display label.

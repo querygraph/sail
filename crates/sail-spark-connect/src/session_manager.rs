@@ -90,14 +90,18 @@ fn spark_session_config(mut config: SessionConfig, spark: SparkSession) -> Resul
             .session_timezone
             .to_string(),
     );
-    let (orc_defaults, orc_modes, orc_write_defaults) = spark
-        .orc_config()
-        .map_err(|e| internal_datafusion_err!("{e}"))?;
+    #[cfg(feature = "orc")]
+    let config = {
+        let (orc_defaults, orc_modes, orc_write_defaults) = spark
+            .orc_config()
+            .map_err(|e| internal_datafusion_err!("{e}"))?;
+        config
+            .with_extension(Arc::new(orc_defaults))
+            .with_extension(Arc::new(orc_modes))
+            .with_extension(Arc::new(orc_write_defaults))
+    };
     let spark = Arc::new(spark);
     Ok(config
-        .with_extension(Arc::new(orc_defaults))
-        .with_extension(Arc::new(orc_modes))
-        .with_extension(Arc::new(orc_write_defaults))
         .with_extension(Arc::new(SessionOperationsService::new(spark.clone())))
         .with_extension(spark))
 }
@@ -138,10 +142,10 @@ pub async fn create_spark_session_manager_with_factory(
     .await?)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "orc"))]
 #[path = "session_manager/orc_options_tests.rs"]
 mod orc_options_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "orc"))]
 #[path = "session_manager/orc_modes_tests.rs"]
 mod orc_modes_tests;

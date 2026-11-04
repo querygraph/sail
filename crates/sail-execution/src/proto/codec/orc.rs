@@ -1,5 +1,5 @@
 use datafusion::common::{Result, plan_datafusion_err};
-use sail_data_source::options::r#gen::OrcReadOptions;
+use sail_orc::options::r#gen::OrcReadOptions;
 
 use crate::plan::r#gen;
 

@@ -163,6 +163,10 @@ impl TaskPreparation {
 #[path = "preparation/file_scan_tests.rs"]
 mod file_scan_tests;
 
+#[cfg(all(test, feature = "orc"))]
+#[path = "preparation/file_scan_orc_tests.rs"]
+mod file_scan_orc_tests;
+
 /// Dropping the pending stream cancels preparation cooperatively. The blocking task owns
 /// its inputs and result, so Tokio drops an abandoned result even after the monitor exits.
 fn preparation_stream(

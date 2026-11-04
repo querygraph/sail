@@ -9,7 +9,7 @@ use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
 use datafusion::physical_plan::ExecutionPlanProperties;
 use sail_common::spec;
-use sail_data_source::options::r#gen::OrcReadOptions;
+use sail_orc::options::r#gen::OrcReadOptions;
 
 use super::*;
 use crate::proto::converter::RemotePhysicalProtoConverter;

@@ -11,9 +11,8 @@ use futures::future::join_all;
 use sail_common::utils::datetime::get_system_timezone;
 use sail_common_datafusion::extension::SessionExtension;
 use sail_common_datafusion::session::lifecycle::SessionOperations;
-use sail_data_source::formats::orc::{
-    OrcListingSessionDefaults, OrcReadSessionModes, OrcWriteSessionDefaults,
-};
+#[cfg(feature = "orc")]
+use sail_orc::{OrcListingSessionDefaults, OrcReadSessionModes, OrcWriteSessionDefaults};
 use sail_plan::config::PlanConfig;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -142,6 +141,7 @@ impl SparkSession {
         Ok(Arc::new(config))
     }
 
+    #[cfg(feature = "orc")]
     pub(crate) fn orc_config(
         &self,
     ) -> SparkResult<(

@@ -8,7 +8,7 @@ use bytes::Bytes;
 use orc_rust::reader::metadata::{MetadataReadOptions, read_metadata_with_options};
 
 use super::*;
-use crate::formats::orc::{OrcJavaTimeZoneConfig, OrcSchemaBridge, infer_orc_schema};
+use crate::{OrcJavaTimeZoneConfig, OrcSchemaBridge, infer_orc_schema};
 
 fn field(name: &str, data_type: DataType) -> FieldRef {
     Arc::new(Field::new(name, data_type, true))
@@ -357,7 +357,7 @@ fn invalid_projections_input_and_unqualified_conversions_are_explicit() {
 #[test]
 fn real_spark_fractional_time_file_is_reinterpreted_after_native_bridge() {
     let mut bytes = Bytes::from_static(include_bytes!(
-        "../../../../tests/fixtures/orc/time_precisions.orc"
+        "../../tests/fixtures/orc/time_precisions.orc"
     ));
     let metadata = Arc::new(
         read_metadata_with_options(

@@ -117,9 +117,6 @@ use sail_data_source::formats::binary::source::BinarySource;
 use sail_data_source::formats::console::ConsoleSinkExec;
 use sail_data_source::formats::csv::CsvSource;
 use sail_data_source::formats::noop::NoopSinkExec;
-use sail_data_source::formats::orc::{
-    OrcJavaTimeZoneConfig, OrcSink, OrcSource, OrcWriteCompression, OrcWriterOptions,
-};
 use sail_data_source::formats::python::{
     InputPartition, PythonDataSourceExec, PythonDataSourceWriteCommitExec,
     PythonDataSourceWriteExec,
@@ -302,6 +299,8 @@ use sail_iceberg::spec::Transform as IcebergTransform;
 use sail_iceberg::{IcebergWriteContext, IcebergWriterExecOptions, SnapshotUpdateKind};
 use sail_logical_plan::range::Range;
 use sail_logical_plan::show_string::{ShowStringFormat, ShowStringStyle};
+#[cfg(feature = "orc")]
+use sail_orc::{OrcJavaTimeZoneConfig, OrcSink, OrcSource, OrcWriteCompression, OrcWriterOptions};
 use sail_physical_plan::barrier::BarrierExec;
 use sail_physical_plan::catalog_command::CatalogCommandExec;
 use sail_physical_plan::coalesce::CoalesceExec;
@@ -367,7 +366,12 @@ use crate::proto::encode::{try_encode_physical_expr, try_encode_physical_plan};
 #[path = "codec/fenced_commit_tests.rs"]
 mod fenced_commit_tests;
 mod file_scan_identity;
+#[cfg(feature = "orc")]
 mod orc;
+
+#[cfg(not(feature = "orc"))]
+const ORC_FEATURE_OFF: &str =
+    "the orc format needs Sail built with the `orc` feature; this build has it off";
 
 use file_scan_identity::{encode_file_scan_identity, parse_file_scan_config_with_identity};
 
@@ -878,6 +882,9 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 )?;
                 Ok(Arc::new(DataSourceExec::new(Arc::new(source))))
             }
+            #[cfg(not(feature = "orc"))]
+            NodeKind::Orc(_) => plan_err!("{ORC_FEATURE_OFF}"),
+            #[cfg(feature = "orc")]
             NodeKind::Orc(r#gen::OrcExecNode {
                 base_config,
                 options,
@@ -1491,6 +1498,9 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                     sort_order,
                 )))
             }
+            #[cfg(not(feature = "orc"))]
+            NodeKind::OrcSink(_) => plan_err!("{ORC_FEATURE_OFF}"),
+            #[cfg(feature = "orc")]
             NodeKind::OrcSink(r#gen::OrcSinkExecNode {
                 input,
                 base_config,
@@ -2706,29 +2716,38 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                         proto_converter,
                     )?)?;
                     NodeKind::Avro(r#gen::AvroExecNode { base_config })
-                } else if let Some(orc_source) = file_source.downcast_ref::<OrcSource>() {
-                    // The shared base protobuf omits outer compression. Reject
-                    // the unsupported driver configuration instead of decoding
-                    // it as a different, uncompressed scan on a worker.
-                    if file_scan.file_compression_type.is_compressed() {
-                        return plan_err!("ORC does not support outer file compression");
-                    }
-                    let base_config = try_encode_message(serialize_file_scan_config(
-                        file_scan,
-                        self,
-                        proto_converter,
-                    )?)?;
-                    NodeKind::Orc(r#gen::OrcExecNode {
-                        base_config,
-                        options: Some(orc::encode_read_options(orc_source.options())?),
-                        reader_timezone_json: self
-                            .try_encode_json(orc_source.reader_timezone(), "ORC reader timezone")?,
-                        session_timezone: orc_source.session_timezone().to_owned(),
-                        read_case_sensitive: orc_source.read_case_sensitive(),
-                        output_partitioning,
-                    })
                 } else {
+                    #[cfg(not(feature = "orc"))]
                     return plan_err!("unsupported data source node: {data_source:?}");
+                    #[cfg(feature = "orc")]
+                    {
+                        let Some(orc_source) = file_source.downcast_ref::<OrcSource>() else {
+                            return plan_err!("unsupported data source node: {data_source:?}");
+                        };
+
+                        // The shared base protobuf omits outer compression. Reject
+                        // the unsupported driver configuration instead of decoding
+                        // it as a different, uncompressed scan on a worker.
+                        if file_scan.file_compression_type.is_compressed() {
+                            return plan_err!("ORC does not support outer file compression");
+                        }
+                        let base_config = try_encode_message(serialize_file_scan_config(
+                            file_scan,
+                            self,
+                            proto_converter,
+                        )?)?;
+                        NodeKind::Orc(r#gen::OrcExecNode {
+                            base_config,
+                            options: Some(orc::encode_read_options(orc_source.options())?),
+                            reader_timezone_json: self.try_encode_json(
+                                orc_source.reader_timezone(),
+                                "ORC reader timezone",
+                            )?,
+                            session_timezone: orc_source.session_timezone().to_owned(),
+                            read_case_sensitive: orc_source.read_case_sensitive(),
+                            output_partitioning,
+                        })
+                    }
                 }
             } else if let Some(memory) = source.downcast_ref::<MemorySourceConfig>() {
                 // `memory.schema()` is the schema after projection.
@@ -3061,21 +3080,28 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                     compression_type_variant,
                     sort_order,
                 })
-            } else if let Some(sink) = data_sink.sink().downcast_ref::<OrcSink>() {
-                let base_config = try_encode_message(
-                    datafusion_proto::protobuf::FileSinkConfig::try_from(sink.config())
-                        .map_err(|e| plan_datafusion_err!("failed to encode ORC sink: {e}"))?,
-                )?;
-                let schema = try_encode_schema(data_sink.schema().as_ref())?;
-                NodeKind::OrcSink(r#gen::OrcSinkExecNode {
-                    input,
-                    base_config,
-                    schema,
-                    sort_order,
-                    compression: sink.options().compression.orc_name().to_string(),
-                })
             } else {
+                #[cfg(not(feature = "orc"))]
                 return plan_err!("unsupported data sink node: {data_sink:?}");
+                #[cfg(feature = "orc")]
+                {
+                    let Some(sink) = data_sink.sink().downcast_ref::<OrcSink>() else {
+                        return plan_err!("unsupported data sink node: {data_sink:?}");
+                    };
+
+                    let base_config = try_encode_message(
+                        datafusion_proto::protobuf::FileSinkConfig::try_from(sink.config())
+                            .map_err(|e| plan_datafusion_err!("failed to encode ORC sink: {e}"))?,
+                    )?;
+                    let schema = try_encode_schema(data_sink.schema().as_ref())?;
+                    NodeKind::OrcSink(r#gen::OrcSinkExecNode {
+                        input,
+                        base_config,
+                        schema,
+                        sort_order,
+                        compression: sink.options().compression.orc_name().to_string(),
+                    })
+                }
             }
         } else if let Some(stream_collector) = node.downcast_ref::<StreamCollectorExec>() {
             let input = try_encode_physical_plan_with_converter(
@@ -9478,7 +9504,7 @@ mod time_precision_cast_tests;
 #[cfg(test)]
 mod file_scan_identity_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "orc"))]
 mod orc_tests;
 
 #[cfg(test)]

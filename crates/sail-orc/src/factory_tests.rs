@@ -4,9 +4,9 @@ use std::cell::Cell;
 
 use datafusion::prelude::{SessionConfig, SessionContext};
 use sail_common::error::CommonError;
+use sail_data_source::listing::source::ReadFormat;
 
 use super::*;
-use crate::listing::source::ReadFormat;
 use crate::options::option_list;
 
 #[test]

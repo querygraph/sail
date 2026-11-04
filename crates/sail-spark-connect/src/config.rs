@@ -13,6 +13,7 @@ use crate::spark::config::{
 use crate::spark::connect;
 
 mod boolean;
+#[cfg(feature = "orc")]
 mod orc;
 
 const TYPES_FRAMEWORK_ENABLED: &str = "spark.sql.types.framework.enabled";
@@ -29,7 +30,14 @@ pub(crate) struct EncoderSchemaSettings {
 
 #[cfg(test)]
 mod decimal_tests;
+#[cfg(feature = "orc")]
 pub(crate) use orc::affects_orc_config;
+
+/// Without the `orc` feature no setting reaches an ORC reader or writer.
+#[cfg(not(feature = "orc"))]
+pub(crate) fn affects_orc_config(_key: &str) -> bool {
+    false
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd)]
 pub struct ConfigKeyValue {
@@ -186,9 +194,11 @@ impl SparkRuntimeConfig {
         if key == SparkConfigKey::SPARK_SQL_LEGACY_ALLOW_NEGATIVE_SCALE_OF_DECIMAL {
             boolean::parse_config_bool(&key, &value)?;
         }
+        #[cfg(feature = "orc")]
         if key == SparkConfigKey::SPARK_SQL_ORC_MERGE_SCHEMA {
             orc::parse_merge_schema(&value)?;
         }
+        #[cfg(feature = "orc")]
         if key == orc::ORC_COMPRESSION {
             orc::parse_write_compression(&value)?;
         }

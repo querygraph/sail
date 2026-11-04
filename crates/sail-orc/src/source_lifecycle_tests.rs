@@ -287,7 +287,7 @@ async fn source_passes_case_policy_to_each_file_mapper() {
 #[tokio::test]
 async fn full_requested_timestamp_compatibility_precedes_required_projection() {
     let bytes = Bytes::from_static(include_bytes!(
-        "../../../tests/fixtures/orc/timestamps/foreign_submicro.orc"
+        "../tests/fixtures/orc/timestamps/foreign_submicro.orc"
     ));
     let actual = super::super::super::infer_orc_schema(&metadata(&bytes), "UTC").unwrap();
     let mut fields = actual
