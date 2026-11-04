@@ -50,6 +50,7 @@ use sail_common_datafusion::streaming::bounded::{
 use sail_delta_lake::stream::{
     DeltaStream, DeltaStreamError, DeltaStreamFailure, DeltaStreamOffset, DeltaStreamRange,
 };
+#[cfg(feature = "iggy")]
 use sail_iggy_bounded::{FORMAT as IGGY_FORMAT, IggyBoundedConfig, IggyBoundedSource};
 use sail_plan::config::PlanConfig;
 use sail_plan::error::{PlanError, PlanResult};
@@ -71,6 +72,13 @@ const HIVE_DEFAULT_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
 const STATE_FILE: &str = "state.json";
 const MAX_VIEW_DEPTH: usize = 32;
 /// The most rows one partition adds to a batch. A range is held in memory.
+#[cfg_attr(
+    all(not(feature = "iggy"), not(test)),
+    expect(
+        dead_code,
+        reason = "the only BoundedSource shipped is Iggy, behind the `iggy` feature; the bounded plumbing stays for the next implementor"
+    )
+)]
 const MAX_RANGE_ROWS: usize = 100_000;
 
 /// One flow's progress. `pending` is the batch being written.
@@ -128,6 +136,13 @@ struct Batch {
     /// A partition has rows past this batch, up to the frontier.
     more: bool,
     /// This run rebuilds the table, so a source must still hold its start.
+    #[cfg_attr(
+        not(feature = "iggy"),
+        expect(
+            dead_code,
+            reason = "the only BoundedSource shipped is Iggy, behind the `iggy` feature; the bounded plumbing stays for the next implementor"
+        )
+    )]
     reset: bool,
 }
 
@@ -436,6 +451,16 @@ pub(super) fn source_name(source: &spec::ReadDataSource) -> Name {
     };
     vec![STREAM_SOURCE_PART.to_string(), format, location]
 }
+
+/// The Iggy format name, kept when the feature is off so the format can be
+/// refused by name.
+#[cfg(not(feature = "iggy"))]
+const IGGY_FORMAT: &str = "iggy";
+
+/// Named refusal of the Iggy format on a build without the feature.
+#[cfg(not(feature = "iggy"))]
+pub(crate) const IGGY_FEATURE_OFF: &str =
+    "the iggy source needs Sail built with the `iggy` feature; this build has it off";
 
 fn is_iggy(format: &str) -> bool {
     format.eq_ignore_ascii_case(IGGY_FORMAT)
@@ -902,6 +927,13 @@ async fn source_schema(
 }
 
 /// A source's calls block on its own runtime.
+#[cfg_attr(
+    not(feature = "iggy"),
+    expect(
+        dead_code,
+        reason = "the only BoundedSource shipped is Iggy, behind the `iggy` feature; the bounded plumbing stays for the next implementor"
+    )
+)]
 async fn bounded_call<T, E>(call: impl FnOnce() -> Result<T, E> + Send + 'static) -> SparkResult<T>
 where
     T: Send + 'static,
@@ -917,6 +949,13 @@ where
 /// frontier. A partition first seen starts at its earliest position. Offsets
 /// are never moved past a gap or into a recreated partition: the source
 /// refuses the scan, or this refuses the range.
+#[cfg_attr(
+    all(not(feature = "iggy"), not(test)),
+    expect(
+        dead_code,
+        reason = "the only BoundedSource shipped is Iggy, behind the `iggy` feature; the bounded plumbing stays for the next implementor"
+    )
+)]
 fn plan_ranges(
     source: &dyn BoundedSource,
     offsets: &BTreeMap<String, BoundedOffset>,
@@ -998,6 +1037,13 @@ fn plan_ranges(
 
 /// The rows of a bounded source that this flow has not read, or of the
 /// replayed batch.
+#[cfg_attr(
+    not(feature = "iggy"),
+    expect(
+        dead_code,
+        reason = "the only BoundedSource shipped is Iggy, behind the `iggy` feature; the bounded plumbing stays for the next implementor"
+    )
+)]
 async fn bounded_plan(
     source: Arc<dyn BoundedSource>,
     name: &Name,
@@ -1131,14 +1177,19 @@ fn bind_streams<'a>(
                 continue;
             }
             if source.format.as_deref().is_some_and(is_iggy) {
-                let schema = source_schema(ctx, config, &source).await?;
-                let options = IggyBoundedConfig::from_options(source.options.iter().cloned())
-                    .map_err(SparkError::from)?;
-                let iggy: Arc<dyn BoundedSource> =
-                    Arc::new(IggyBoundedSource::try_new(options, schema)?);
-                let plan = bounded_plan(iggy, &name, state, batch).await?;
-                streams.insert(name, plan);
-                continue;
+                #[cfg(not(feature = "iggy"))]
+                return Err(SparkError::unsupported(IGGY_FEATURE_OFF));
+                #[cfg(feature = "iggy")]
+                {
+                    let schema = source_schema(ctx, config, &source).await?;
+                    let options = IggyBoundedConfig::from_options(source.options.iter().cloned())
+                        .map_err(SparkError::from)?;
+                    let iggy: Arc<dyn BoundedSource> =
+                        Arc::new(IggyBoundedSource::try_new(options, schema)?);
+                    let plan = bounded_plan(iggy, &name, state, batch).await?;
+                    streams.insert(name, plan);
+                    continue;
+                }
             }
             let source = file_source(ctx, config, source).await?;
             check_stream_options(&source.options)?;

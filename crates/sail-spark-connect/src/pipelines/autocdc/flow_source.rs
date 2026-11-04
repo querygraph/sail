@@ -20,7 +20,10 @@ use datafusion::prelude::{SessionContext, col, lit};
 use sail_common::spec;
 use sail_common_datafusion::rename::logical_plan::rename_logical_plan;
 use sail_delta_lake::stream::{DeltaStream, DeltaStreamRange};
+#[cfg(feature = "iggy")]
 use sail_iggy_bounded::{FORMAT as IGGY_FORMAT, IggyBoundedConfig, IggyBoundedSource};
+#[cfg(not(feature = "iggy"))]
+const IGGY_FORMAT: &str = "iggy";
 use sail_plan::config::PlanConfig;
 use sail_plan::error::{PlanError, PlanResult};
 use sail_plan::resolver::PlanResolver;
@@ -32,6 +35,8 @@ use super::state::{Snapshot, StateKeys, collect};
 use super::stateful::{JoinWatermarks, Within, with_state};
 use crate::error::{SparkError, SparkResult};
 use crate::pipelines::analysis::GraphScope;
+#[cfg(not(feature = "iggy"))]
+use crate::pipelines::append::IGGY_FEATURE_OFF;
 use crate::pipelines::append::{
     SOURCE_ALIAS, TableSource, check_stateless, data_files, delta_error, is_delta, partition_plan,
     partition_values, qualified, reads_a_stream, spec_schema, table_source, view_flow,
@@ -473,6 +478,13 @@ fn now_ms() -> SparkResult<u64> {
 }
 
 enum Leaf {
+    #[cfg_attr(
+        not(feature = "iggy"),
+        expect(
+            dead_code,
+            reason = "the only BoundedSource shipped is Iggy, behind the `iggy` feature"
+        )
+    )]
     Bounded(Arc<dyn BoundedSource + Send + Sync>),
     Files(Box<FileLeaf>),
     Rate(RateLeaf),
@@ -1212,11 +1224,16 @@ async fn source_leaf(
     let schema: SchemaRef = Arc::new(plan.schema().as_arrow().clone());
     let format = source.format.clone().unwrap_or_default();
     if format.eq_ignore_ascii_case(IGGY_FORMAT) {
-        let options = IggyBoundedConfig::from_options(source.options.iter().cloned())
-            .map_err(SparkError::from)?;
-        let iggy = IggyBoundedSource::try_new(options, schema)?;
-        iggy.describe()?;
-        return Ok(Leaf::Bounded(Arc::new(iggy)));
+        #[cfg(not(feature = "iggy"))]
+        return Err(SparkError::unsupported(IGGY_FEATURE_OFF));
+        #[cfg(feature = "iggy")]
+        {
+            let options = IggyBoundedConfig::from_options(source.options.iter().cloned())
+                .map_err(SparkError::from)?;
+            let iggy = IggyBoundedSource::try_new(options, schema)?;
+            iggy.describe()?;
+            return Ok(Leaf::Bounded(Arc::new(iggy)));
+        }
     }
     if format.eq_ignore_ascii_case("rate") {
         let option = |name: &str| {

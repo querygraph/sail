@@ -9,6 +9,7 @@ workspace = true
 
 [features]
 mimalloc = ["dep:sail-mimalloc"]
+iggy = ["sail-spark-connect/iggy"]
 default = ["mimalloc"]
 
 [dependencies]

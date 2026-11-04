@@ -7,6 +7,10 @@ rust-version = { workspace = true }
 [lints]
 workspace = true
 
+[features]
+# Apache Iggy as a bounded streaming source; off by default, since Spark has no Iggy source.
+iggy = ["dep:sail-iggy-bounded", "sail-session/iggy"]
+
 [dependencies]
 grust-columns = { path = "../../vendor/grust-columns" }
 grust-topology = { path = "../../vendor/grust-topology" }
@@ -17,7 +21,7 @@ sail-catalog = { path = "../sail-catalog" }
 sail-common = { path = "../sail-common" }
 sail-common-datafusion = { path = "../sail-common-datafusion" }
 sail-data-source = { path = "../sail-data-source" }
-sail-iggy-bounded = { path = "../sail-iggy-bounded" }
+sail-iggy-bounded = { path = "../sail-iggy-bounded", optional = true }
 sail-plan = { path = "../sail-plan" }
 sail-python-udf = { path = "../sail-python-udf" }
 sail-sql-analyzer = { path = "../sail-sql-analyzer" }

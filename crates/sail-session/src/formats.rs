@@ -17,6 +17,7 @@ use sail_data_source::formats::socket::SocketDataSource;
 use sail_data_source::formats::text::TextDataSource;
 use sail_delta_lake::DeltaLakeSource;
 use sail_iceberg::IcebergLakeSource;
+#[cfg(feature = "iggy")]
 use sail_iggy_bounded::IggyDataSource;
 
 pub(crate) fn create_data_source_registry() -> Result<Arc<DataSourceRegistry>> {
@@ -41,6 +42,7 @@ fn register_builtin_data_sources(registry: &DataSourceRegistry) -> Result<()> {
     registry.register_data_source(Arc::new(NoopDataSource))?;
     registry.register_data_source(Arc::new(DeltaLakeSource))?;
     registry.register_data_source(Arc::new(IcebergLakeSource))?;
+    #[cfg(feature = "iggy")]
     registry.register_data_source(Arc::new(IggyDataSource))?;
     Ok(())
 }
